@@ -29,8 +29,9 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 from perceval.utils.algorithms.circuit_optimizer import CircuitOptimizer
 
 import merlin as ML
+import numpy
 from data import GENERATORS
-from data.photonic_quantum import parity_of_key
+from data.photonic_quantum import parity_of_key, majority_score_of_key
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +149,7 @@ class QuantumClassifier(nn.Module):
         depth: int = 1,
         m_circuit: int | None = None,
         n_features: int | None = None,
+        learner_encoding="parity",
         parity_modes=None,
         init_scale: float = 0.01,
         use_bias: bool = False,
@@ -165,6 +167,7 @@ class QuantumClassifier(nn.Module):
         n_features = n_features if n_features is not None else m - 1
         self.n_features = n_features
         m_c = self.m_circuit
+        self.learner_encoding = learner_encoding
 
         # Build the circuit directly with pcvl.GenericInterferometer.
         #
@@ -247,11 +250,18 @@ class QuantumClassifier(nn.Module):
                     p.data.normal_(0.0, init_scale * math.pi)
 
         # Fixed parity vector: +1 / -1 per Fock state (not trainable)
-        parity_vals = torch.tensor(
-            [parity_of_key(key, self.parity_modes)
-             for key in self.quantum_layer.output_keys],
-            dtype=torch.float32,
-        )
+        if self.learner_encoding == "parity":
+            parity_vals = torch.tensor(
+                [parity_of_key(key, self.parity_modes) #majority_score_of_key(key, m_c, k) #
+                for key in self.quantum_layer.output_keys],
+                dtype=torch.float32,
+            )
+        elif self.learner_encoding == "majority":
+            parity_vals = torch.tensor(
+                [majority_score_of_key(key, m_c, k) #
+                for key in self.quantum_layer.output_keys],
+                dtype=torch.float32,
+            )
         self.register_buffer("parity_vec", parity_vals)  # (n_fock,)
 
         # Scalar bias b ∈ [-1, 1] (Havlíček et al. decision rule: sign(p + b)).
@@ -318,6 +328,8 @@ def train_and_eval_quantum(
     depth: int = 1,
     m_circuit: int | None = None,
     n_features: int | None = None,
+    data_encoding: str = "parity",
+    learner_encoding: str = "parity",
     epochs: int = 200,
     lr: float = 1e-2,
     batch_size: int = 64,
@@ -360,6 +372,7 @@ def train_and_eval_quantum(
     use_bias = (loss == "hloss")
     model = QuantumClassifier(m=m, k=k, depth=depth, m_circuit=m_circuit,
                               n_features=n_features,
+                              learner_encoding=learner_encoding,
                               parity_modes=parity_modes, init_scale=0.05,
                               use_bias=use_bias)
     ce_criterion = nn.CrossEntropyLoss()
@@ -594,6 +607,7 @@ def train_and_eval_quantum(
                 TensorDataset(X_tr2, y_tr2),
                 batch_size=batch_size, shuffle=True,
             )
+        grad_list =[]
 
         model.train()
         for ep in range(epochs):
@@ -607,8 +621,18 @@ def train_and_eval_quantum(
                     xb, yb = batch
                     lv = _train_loss(model, xb, yb, None)
                 lv.backward()
+            
+                
+                grad_val = [p.grad.detach().cpu().numpy()
+                    for p in model.parameters() if p.grad is not None]
+                grad_val=numpy.concatenate(grad_val, axis=0)
+                
+                
+                grad_list.append(grad_val)
+
                 optimizer.step()
                 epoch_loss += lv.item()
+            
             scheduler.step(epoch_loss / len(loader))
 
             if ep % 10 == 0 or ep == epochs - 1:
@@ -643,6 +667,9 @@ def train_and_eval_quantum(
                 if no_improve_epochs >= early_stopping_patience:
                     print(f"[depth={depth}] Early stop at epoch {ep} (no improvement for {no_improve_epochs} epochs)")
                     break
+        
+        numpy.save(f"grad_data\{m}_{k}grad_{data_encoding}_data_{learner_encoding}_learner_{int(best_val_acc*10000)}_best_acc.npy",numpy.array(grad_list))
+
 
         if best_state is not None:
             model.load_state_dict(best_state)
@@ -668,6 +695,8 @@ def find_min_depth(
     dataset_size: int = 2000,
     depths: list[int] | None = None,
     m_circuits: list[int] | None = None,
+    data_encoding: str = "parity",
+    learner_encoding: str = "parity",
     optimizer_name: str = "Adam",
     test_fraction: float = 0.20,
     epochs: int = 300,
@@ -775,6 +804,8 @@ def find_min_depth(
                 X_train, y_train, X_test, y_test,
                 m=m, k=k, depth=d, m_circuit=m_c,
                 n_features=eff_n_features,
+                data_encoding=data_encoding,
+                learner_encoding=learner_encoding,
                 epochs=epochs,
                 lr=lr,
                 batch_size=batch_size,

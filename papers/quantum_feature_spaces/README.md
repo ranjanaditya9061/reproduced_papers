@@ -99,32 +99,32 @@ papers/quantum_feature_spaces/
 
 ```bash
 # Photonic learner on photonic-generated data, m=6, k=3
-python papers/quantum_feature_spaces/train.py \
+python train.py \
   --learner photonic_quantum --generator photonic_quantum \
   --m 6 --k 3 --balanced --min-margin 0.10 \
   --depths 1 2 3 --sizes 6 8 10 \
   --loss hloss --epochs 300
 
 # Classical MLP learner on quantum data
-python papers/quantum_feature_spaces/train.py \
+python train.py \
   --learner mlp --generator photonic_quantum \
   --m 6 --k 3 --balanced --min-margin 0.10 \
   --hidden-sizes 64 "64,64" "128,128"
 
 # SVM learner (RBF kernel + Fourier features) on quantum data
-python papers/quantum_feature_spaces/train.py \
+python train.py \
   --learner svm --generator photonic_quantum \
   --m 6 --k 3 --balanced --min-margin 0.10 \
   --C-values 0.1 1 10 100
 
 # Qubit learner on qubit-generated data (paper setting)
-python papers/quantum_feature_spaces/train.py \
+python train.py \
   --learner qubit_quantum --generator qubit_quantum \
   --m 6 --k 3 --balanced --min-margin 0.30 \
   --depths 1 2 3 4
 
 # Photonic learner with majority observable, 2 features on a 6-mode circuit
-python papers/quantum_feature_spaces/train.py \
+python train.py \
   --learner photonic_quantum --generator photonic_quantum \
   --m 6 --k 3 --n-features 2 --observable majority \
   --balanced --min-margin 0.10 --depths 1 2 3
@@ -133,8 +133,8 @@ python papers/quantum_feature_spaces/train.py \
 ### Full grid benchmark
 
 ```bash
-python papers/quantum_feature_spaces/benchmark_6.py             # runs all 12 cells in parallel
-python papers/quantum_feature_spaces/benchmark_6.py --dry-run   # preview commands without running
+python benchmark_6.py             # runs all 12 cells in parallel
+python benchmark_6.py --dry-run   # preview commands without running
 ```
 
 Logs are saved to `/tmp/bench_<learner>_<generator>.log`.
@@ -144,7 +144,7 @@ Logs are saved to `/tmp/bench_<learner>_<generator>.log`.
 ## `train.py` — reference
 
 ```
-python papers/quantum_feature_spaces/train.py --learner LEARNER --generator GENERATOR [options]
+python train.py --learner LEARNER --generator GENERATOR [options]
 ```
 
 ### Problem definition
@@ -295,19 +295,19 @@ Columns (fixed order): Photonic×parity | Photonic×majority | Photonic×bunchin
 
 ```bash
 # 2D direct (commands used to generate the figures above)
-python papers/quantum_feature_spaces/plot_data_generation.py \
+python plot_data_generation.py \
   --n-features 2 --k 3 --m 6 --seed 2 --size 1000 --balanced \
-  --save papers/quantum_feature_spaces/img/observable_2d.png --no-show
+  --save img/observable_2d.png --no-show
 
 # 3D sliced (3 x₂ bins, 500 pts/panel → 1500 total per generator)
-python papers/quantum_feature_spaces/plot_data_generation.py \
+python plot_data_generation.py \
   --n-features 3 --k 3 --m 6 --seed 2 --size 500 --balanced --n-slices 3 \
-  --save papers/quantum_feature_spaces/img/observable_3d_sliced.png --no-show
+  --save img/observable_3d_sliced.png --no-show
 
 # High-dimensional via PCA
-python papers/quantum_feature_spaces/plot_data_generation.py \
+python plot_data_generation.py \
   --n-features 5 --k 3 --m 6 --seed 2 --size 1000 --balanced \
-  --save papers/quantum_feature_spaces/img/observable_pca.png --no-show
+  --save img/observable_pca.png --no-show
 ```
 
 Key options:
@@ -328,10 +328,10 @@ Compares parity / majority / bunching / single_output observables across multipl
 
 ```bash
 # 2D direct, three (m,k) configurations
-python papers/quantum_feature_spaces/plot_photonic_observables.py --seed 2
+python plot_photonic_observables.py --seed 2
 
 # 3D sliced for a single (m, k) config
-python papers/quantum_feature_spaces/plot_photonic_observables.py \
+python plot_photonic_observables.py \
     --n-features 3 --configs 6,3 --n-slices 3 --seed 2
 ```
 

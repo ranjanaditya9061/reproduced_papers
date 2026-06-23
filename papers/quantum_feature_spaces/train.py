@@ -196,6 +196,19 @@ if __name__ == "__main__":
         ),
     )
     ph_group.add_argument(
+        "--learner_encoding",
+        choices=["parity", "majority", "bunching", "single_output"],
+        default="parity",
+        help=(
+            "Photonic teacher learner encoding (photonic_quantum generator only). "
+            "'parity': (-1)^{n_left}. "
+            "'majority': sign(n_left - n_right). Requires even m. "
+            # "'bunching': P(anti-bunched) - P(bunched). "
+            # "'single_output': P(output=input_state) - P(output=reversed_input_state). "
+            "Default: parity."
+        ),
+    )
+    ph_group.add_argument(
         "--nshots",
         type=int,
         default=0,
@@ -338,5 +351,7 @@ if __name__ == "__main__":
                        max_resample_iter=cli.max_resample_iter,
                        early_stopping_patience=cli.early_stopping_patience,
                        observable=cli.observable,
+                       data_encoding = cli.observable,
+                       learner_encoding = cli.learner_encoding,
                        n_features=cli.n_features,
                        nsample=cli.nshots)
