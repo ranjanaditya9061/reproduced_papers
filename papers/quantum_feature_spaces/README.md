@@ -99,28 +99,28 @@ papers/quantum_feature_spaces/
 
 ```bash
 # Photonic learner on photonic-generated data, m=6, k=3
-python train.py \
-  --learner photonic_quantum --generator photonic_quantum \
-  --m 6 --k 3 --balanced --min-margin 0.10 \
-  --depths 1 2 3 --sizes 6 8 10 \
+python train.py `
+  --learner photonic_quantum --generator photonic_quantum `
+  --m 6 --k 3 --balanced --min-margin 0.10 `
+  --depths 1 2 3 --sizes 6 8 10 `
   --loss hloss --epochs 300
 
 # Classical MLP learner on quantum data
-python train.py \
-  --learner mlp --generator photonic_quantum \
-  --m 6 --k 3 --balanced --min-margin 0.10 \
+python train.py `
+  --learner mlp --generator photonic_quantum `
+  --m 6 --k 3 --balanced --min-margin 0.10 `
   --hidden-sizes 64 "64,64" "128,128"
 
 # SVM learner (RBF kernel + Fourier features) on quantum data
-python train.py \
-  --learner svm --generator photonic_quantum \
-  --m 6 --k 3 --balanced --min-margin 0.10 \
+python train.py `
+  --learner svm --generator photonic_quantum `
+  --m 6 --k 3 --balanced --min-margin 0.10 `
   --C-values 0.1 1 10 100
 
 # Qubit learner on qubit-generated data (paper setting)
-python train.py \
-  --learner qubit_quantum --generator qubit_quantum \
-  --m 6 --k 3 --balanced --min-margin 0.30 \
+python train.py `
+  --learner qubit_quantum --generator qubit_quantum `
+  --m 6 --k 3 --balanced --min-margin 0.30 `
   --depths 1 2 3 4
 
 # Photonic learner with majority observable, 2 features on a 6-mode circuit
