@@ -7,24 +7,22 @@ python3 -m Generator --config .\configs\data_spoqc_photonic_parity.yaml
 python3 -m Generator --config .\configs\data_spoqc_photonic.yaml
 
 
+python3 -m Generator --config .\configs\data_spoqc_photonic_one.yaml
 
+python3 -m Generator --config .\configs\data_spoqc_photonic_two.yaml
 
+python3 -m Generator --config .\configs\data_spoqc_photonic_three.yaml
 
+python3 -m Generator --config .\configs\data_spoqc_photonic_four.yaml
 
+python3 -m Generator --config .\configs\data_spoqc_photonic_layer_2.yaml
 
+python3 -m Generator --config .\configs\data_spoqc_photonic_layer_3.yaml
 
+python3 -m Generator --config .\configs\data_spoqc_photonic_layer_4.yaml
 
+python3 -m embedding --config .\configs\embed_example.yaml                             
 
+python -m learn.grid --datasets spoqc_photonic spoqc_photonic_one spoqc_photonic_two spoqc_photonic_three --reg 1e-3
 
-
-
-
-
-
-
-
-
-
-
-
-python3 -m Generator --config .\configs\example_photonic.yaml
+python3 .\render_dataset.py --config .\configs\data_spoqc_photonic.yaml  

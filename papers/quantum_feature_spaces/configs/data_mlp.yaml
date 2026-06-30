@@ -1,8 +1,8 @@
 # Grid dataset: teacher = mlp
 #   python -m Generator --config configs/data_mlp.yaml
 problem:
-  m: 6
-  k: 3
+  m: 8
+  k: 4
   observable: parity
   n_features: null          # -> m-1 = 5
 generation:

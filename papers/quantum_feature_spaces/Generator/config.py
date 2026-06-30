@@ -33,6 +33,7 @@ class ProblemConfig:
     k: int = 3
     observable: str = "parity"
     n_features: int | None = None
+    cx_pairs: list | None = None   # spoqc-only: CX entanglers in the spin prep, e.g. [[0,1],[1,2]]
 
 
 @dataclass
