@@ -66,9 +66,12 @@ RANDOM_ORDER_NAME = ["RBF Kernel", f"Fourier\nRBF Kernel", f"Random\nQubit Kerne
 #: dataset short-name -> data config (the only thing that varies across the grid)
 DEFAULT_DATASETS = {
     "photonic": "configs/data_photonic.yaml",
+    "photonic_parity": "configs/data_photonic_parity.yaml",
     "qubit": "configs/data_qubit.yaml",
     "analytical": "configs/data_analytical.yaml",
     "mlp": "configs/data_mlp.yaml",
+    "spoqc_photonic": "configs/data_spoqc_photonic.yaml",
+    "spoqc_photonic_parity": "configs/data_spoqc_photonic_parity.yaml"
 }
 
 

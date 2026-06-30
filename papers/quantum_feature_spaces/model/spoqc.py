@@ -54,8 +54,8 @@ def _sandwich_concrete(m: int, n_features: int, seed: int, x):
     return c
 
 
-def _spoqc_soft_row(x, *, m, n_q, n_features, observable, seed, rx, ry) -> float:
-    """Continuous score for one input ``x`` from the spin-prepared photonic circuit."""
+def _build_processor(x, *, m, n_q, n_features, seed, rx, ry):
+    """Construct the spin-prepared photonic HybridProcessor for one input ``x``."""
     from perceval import Detector
     from perceval_spoqc import Gate, HybridProcessor
 
@@ -72,6 +72,12 @@ def _spoqc_soft_row(x, *, m, n_q, n_features, observable, seed, rx, ry) -> float
     p.add(0, _sandwich_concrete(m, n_features, seed, x))   # same embedding as the photonic teacher
     for mode in range(m):
         p.add(mode, Detector())
+    return p
+
+
+def _spoqc_soft_row(x, *, m, n_q, n_features, observable, seed, rx, ry) -> float:
+    """Continuous score for one input ``x`` from the spin-prepared photonic circuit."""
+    p = _build_processor(x, m=m, n_q=n_q, n_features=n_features, seed=seed, rx=rx, ry=ry)
 
     parity_modes = tuple(range((m + 1) // 2))
     s = 0.0
@@ -82,8 +88,14 @@ def _spoqc_soft_row(x, *, m, n_q, n_features, observable, seed, rx, ry) -> float
             s += pr * _majority_score(key, m, n_q)     # normalise by photon count n_q
         else:  # bunching
             s += pr * _bunching_score(key)
-    print(s)
     return float(s)
+
+
+def render_circuit(path="spoqc.png", *, m=6, k=3, n_features=5, seed=42, x=None):
+    """Render the spoqc circuit once to ``path`` (structure is the same for all x)."""
+    out = SpoqcPhotonicTeacher(m=m, k=k, n_features=n_features, seed=seed).render(path, x=x)
+    print(f"[spoqc] saved circuit -> {out}")
+    return out
 
 
 class SpoqcPhotonicTeacher(Teacher):
@@ -115,6 +127,19 @@ class SpoqcPhotonicTeacher(Teacher):
             for row in Xn
         ]
         return torch.tensor(vals, dtype=torch.float32).unsqueeze(-1)  # (N, 1)
+
+    def render(self, path: str, x=None) -> str:
+        """Render the spin-photon circuit (structure is identical for every x)."""
+        import matplotlib.pyplot as plt
+        from perceval_spoqc import Format, pdisplay
+
+        xv = np.zeros(self.n_features) if x is None else np.asarray(x, dtype=float)
+        p = _build_processor(xv, m=self.m, n_q=self.k, n_features=self.n_features,
+                             seed=self.seed, rx=self.rx, ry=self.ry)
+        pdisplay(p, output_format=Format.MPLOT, expanded=True)
+        plt.savefig(path)
+        plt.close("all")                              # avoid the >20-figures leak
+        return path
 
     @classmethod
     def from_config(cls, cfg: "ExperimentConfig") -> "SpoqcPhotonicTeacher":

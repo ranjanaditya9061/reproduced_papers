@@ -1,12 +1,12 @@
-# Grid dataset: teacher = mlp
-#   python -m Generator --config configs/data_mlp.yaml
+# Grid dataset: teacher = photonic_quantum
+#   python -m Generator --config configs/data_photonic.yaml
 problem:
   m: 6
   k: 3
   observable: parity
   n_features: null          # -> m-1 = 5
 generation:
-  generator: mlp
+  generator: spoqc_photonic
   size: 10000                # small pool: kernel SVM is O(N^2); the grid caps rows anyway
   nsample: 0
 split:

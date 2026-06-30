@@ -7,7 +7,7 @@ problem:
   n_features: null          # -> m-1 = 5
 generation:
   generator: qubit_quantum
-  size: 100000                # small pool: kernel SVM is O(N^2); the grid caps rows anyway
+  size: 10000                # small pool: kernel SVM is O(N^2); the grid caps rows anyway
   nsample: 0
 split:
   test_fraction: 0.20

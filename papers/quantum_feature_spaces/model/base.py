@@ -54,6 +54,14 @@ class Teacher(nn.Module):
     def forward(self, X: torch.Tensor) -> torch.Tensor:  # pragma: no cover
         raise NotImplementedError
 
+    def render(self, path: str, x=None) -> str:
+        """Render this teacher's circuit to ``path``; override in circuit-based teachers.
+
+        Non-circuit teachers (analytical, mlp) raise :class:`NotImplementedError`,
+        which callers should treat as "rendering unavailable".
+        """
+        raise NotImplementedError(f"teacher {self.name!r} has no circuit to render")
+
     # --- self-description (override in subclasses) ------------------------- #
 
     @classmethod

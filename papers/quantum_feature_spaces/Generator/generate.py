@@ -41,7 +41,6 @@ from .seeding import seed_everything
 
 def draw_pool(cfg: ExperimentConfig, size: int):
     """Draw a raw ``(X, soft, teacher)`` of ``size`` samples."""
-    print("sampling")
     X = sample_X(size, cfg.resolved_n_features, cfg.seeds.sample_seed)
     teacher = build_teacher(cfg)
     soft = teacher(X)
