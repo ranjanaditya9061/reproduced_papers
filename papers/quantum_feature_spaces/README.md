@@ -68,7 +68,7 @@ All scripts are run from the repository root with `work/` on the Python path:
 cd /path/to/merlin-js
 source venv/bin/activate
 ```
-
+C:\Users\AdityaRanjan\reproduced_papers\papers\quantum_feature_spaces\README.md
 ---
 
 ## Project layout
@@ -100,16 +100,16 @@ papers/quantum_feature_spaces/
 ```bash
 # Photonic learner on photonic-generated data, m=6, k=3
 python train.py `
-  --learner photonic_quantum --generator photonic_quantum `
+  --learner photonic_quantum --generator photonic_quantum --dataset-size 50000`
   --m 6 --k 3 --balanced --min-margin 0.10 `
-  --depths 1 2 3 --sizes 6 8 10 `
+  --depths 1 2 3 --sizes 6`
   --loss hloss --epochs 300
 
 # Classical MLP learner on quantum data
-python train.py `
-  --learner mlp --generator photonic_quantum `
-  --m 6 --k 3 --balanced --min-margin 0.10 `
-  --hidden-sizes 64 "64,64" "128,128"
+python3 train.py \
+  --learner mlp --generator photonic_quantum \
+  --m 6 --k 3 --balanced --min-margin 0.10 \
+  --hidden-sizes 64 "64,64" "128,128" "64,64,64" "64,64,64,64"
 
 # SVM learner (RBF kernel + Fourier features) on quantum data
 python train.py `

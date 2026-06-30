@@ -1,0 +1,24 @@
+# Embedding config — references a data config and lists the kernels to embed with.
+#   python -m embedding --config configs/embed_example.yaml
+#
+# The dataset must be generated first:
+#   python -m Generator --config configs/example_photonic.yaml
+#
+# An embedding's `seed` equal to the dataset's teacher_seed (42) is tagged
+# [MATCHED] (the rigged sanity cell); any other seed is the honest unmatched
+# ensemble.  Swapping kernels here never changes the dataset hash.
+
+dataset: configs/example_photonic.yaml
+
+embeddings:
+  # --- classical baselines (no seed) ------------------------------------- #
+  - {type: rbf}                                    # raw angles (Huang universal baseline)
+  - {type: fourier_rbf, fourier_order: 3}          # [sin(jx), cos(jx)] — periodicity-aware
+
+  # --- qubit projected kernel (Huang) ------------------------------------ #
+  - {type: qubit_projected, depth: 3, seed: 42}    # 42 == teacher_seed -> matched
+  - {type: qubit_projected, depth: 3, seed: 7}     # unmatched ensemble member
+
+  # --- photonic projected kernel ----------------------------------------- #
+  - {type: photonic_projected, seed: 42}           # matched (m, k taken from the data config)
+  - {type: photonic_projected, seed: 7}            # unmatched

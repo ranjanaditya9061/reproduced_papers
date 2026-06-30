@@ -1,0 +1,18 @@
+python train.py --learner photonic_quantum --generator photonic_quantum --m 4 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 4 --loss hloss --epochs 300 --lr 1e-3 --observable majority --learner_encoding majority --bail-threshold 0
+
+python train.py --learner photonic_quantum --generator photonic_quantum --m 4 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 4 --loss hloss --epochs 300 --lr 1e-3 --observable parity --learner_encoding majority --bail-threshold 0
+
+python train.py --learner photonic_quantum --generator photonic_quantum --m 4 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 4 --loss hloss --epochs 300 --lr 1e-3 --observable majority --learner_encoding parity --bail-threshold 0
+
+python train.py --learner photonic_quantum --generator photonic_quantum --m 4 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 4 --loss hloss --epochs 300 --lr 1e-3 --observable parity --learner_encoding parity --bail-threshold 0
+
+
+python train.py --learner photonic_quantum --generator photonic_quantum --m 6 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 6 --loss hloss --epochs 300 --lr 1e-3 --observable majority --learner_encoding majority --bail-threshold 0
+
+python train.py --learner photonic_quantum --generator photonic_quantum --m 6 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 6 --loss hloss --epochs 300 --lr 1e-3 --observable parity --learner_encoding majority --bail-threshold 0
+
+python train.py --learner photonic_quantum --generator photonic_quantum --m 6 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 6 --loss hloss --epochs 300 --lr 1e-3 --observable majority --learner_encoding parity --bail-threshold 0
+
+python train.py --learner photonic_quantum --generator photonic_quantum --m 6 --k 3 --balanced --min-margin 0.10 --depths 1 --sizes 6 --loss hloss --epochs 300 --lr 1e-3 --observable parity --learner_encoding parity --bail-threshold 0
+
+

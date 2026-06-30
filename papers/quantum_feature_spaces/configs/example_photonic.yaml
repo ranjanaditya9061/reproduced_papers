@@ -1,0 +1,25 @@
+# Example experiment config for the generation stage.
+#   python -m Generator --config configs/example_photonic.yaml
+
+problem:
+  m: 6
+  k: 3
+  observable: majority        # parity | majority | bunching | single_output
+  n_features: null          # null -> m-1
+
+generation:
+  generator: spoqc_photonic   # photonic_quantum | qubit_quantum | analytical | mlp
+  size: 10000                  # raw pool size (nothing is discarded at load time)
+  nsample: 0                    # 0 = exact; >0 = finite-shot simulation
+
+split:                          # the one shared train/test partition (over the full pool)
+  test_fraction: 0.20
+  split_seed: 0
+
+seeds:
+  sample_seed: 42               # the input points X       (in the artifact hash)
+  teacher_seed: 42              # the teacher's weights     (in the artifact hash)
+
+# Note: margin filtering / class balancing are a load-time *diagnostic*
+# (`python -m analyzer preview --min-margin ...` / `compare --min-margin ...`),
+# not part of generation.  `model_seed` lives with the learner, not here.
