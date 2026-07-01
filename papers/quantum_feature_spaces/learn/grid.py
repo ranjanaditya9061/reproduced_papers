@@ -74,7 +74,11 @@ DEFAULT_DATASETS = {
     "spoqc_photonic_parity": "configs/data_spoqc_photonic_parity.yaml",
     "spoqc_photonic_one": "configs/data_spoqc_photonic_one.yaml",
     "spoqc_photonic_two": "configs/data_spoqc_photonic_two.yaml",
-    "spoqc_photonic_three": "configs/data_spoqc_photonic_three.yaml"
+    "spoqc_photonic_three": "configs/data_spoqc_photonic_three.yaml",
+    "spoqc_photonic_four": "configs/data_spoqc_photonic_four.yaml",
+    "spoqc_photonic_layer_2": "configs/data_spoqc_photonic_layer_2.yaml",
+    "spoqc_photonic_layer_3": "configs/data_spoqc_photonic_layer_3.yaml",
+    "spoqc_photonic_layer_4": "configs/data_spoqc_photonic_layer_4.yaml"
 }
 
 

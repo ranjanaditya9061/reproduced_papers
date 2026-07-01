@@ -8,7 +8,7 @@
 # [MATCHED] (the rigged sanity cell); any other seed is the honest unmatched
 # ensemble.  Swapping kernels here never changes the dataset hash.
 
-dataset: configs/example_photonic.yaml
+dataset: configs/data_photonic.yaml
 
 embeddings:
   # --- classical baselines (no seed) ------------------------------------- #
