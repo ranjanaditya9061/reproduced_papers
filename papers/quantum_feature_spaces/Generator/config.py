@@ -24,7 +24,7 @@ from pathlib import Path
 
 import yaml
 
-OBSERVABLES = ("parity", "majority", "bunching", "single_output")
+OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first")
 
 
 @dataclass
@@ -107,7 +107,9 @@ def _section(raw: dict, key: str, cls):
 def load_config(path: str | Path) -> ExperimentConfig:
     """Read a YAML file into a validated :class:`ExperimentConfig`."""
     raw = yaml.safe_load(Path(path).read_text()) or {}
-    unknown = set(raw) - {"problem", "generation", "split", "seeds"}
+    # 'name' is an optional display-only label (used by the grid to label configs);
+    # it does not affect the config, its validation, or the artifact hash.
+    unknown = set(raw) - {"problem", "generation", "split", "seeds", "name"}
     if unknown:
         raise ValueError(f"unknown top-level config sections: {sorted(unknown)}")
     cfg = ExperimentConfig(

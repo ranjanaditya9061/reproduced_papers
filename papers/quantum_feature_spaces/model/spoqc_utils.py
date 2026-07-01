@@ -12,9 +12,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .photonic import _bunching_score, _majority_score, _parity_score
+from .photonic import _bunching_score, _first_mode_score, _majority_score, _parity_score
 
-OBSERVABLES = ("parity", "majority", "bunching")
+OBSERVABLES = ("parity", "majority", "bunching", "n_first")
 
 
 def apply_cx(state, control: int, target: int, n_qubits: int | None = None):
@@ -123,6 +123,8 @@ def _score_processor(p, *, m, n_q, observable) -> float:
             s += pr * _parity_score(key, parity_modes)
         elif observable == "majority":
             s += pr * _majority_score(key, m, n_q)     # normalise by photon count n_q
+        elif observable == "n_first":
+            s += pr * _first_mode_score(key)           # E[n_0]
         else:  # bunching
             s += pr * _bunching_score(key)
     return float(s)

@@ -1,30 +1,34 @@
-python3 -m Generator --config configs/data_analytical.yaml
-python3 -m Generator --config configs/data_mlp.yaml
-python3 -m Generator --config configs/data_photonic_parity.yaml
-python3 -m Generator --config configs/data_photonic.yaml
-python3 -m Generator --config configs/data_qubit.yaml
-python3 -m Generator --config configs/data_spoqc_photonic_parity.yaml
-python3 -m Generator --config configs/data_spoqc_photonic.yaml
+python3 -m Generator --config configs\data_analytical.yaml
+python3 -m Generator --config configs\data_mlp.yaml
+python3 -m Generator --config configs\data_photonic_parity.yaml
+python3 -m Generator --config configs\data_photonic.yaml
+python3 -m Generator --config configs\data_qubit.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_parity.yaml
+python3 -m Generator --config configs\data_spoqc_photonic.yaml
 
+python -m Generator --configs-dir configs\Datasets
 
-python3 -m Generator --config configs/data_spoqc_photonic_one.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_one.yaml
 
-python3 -m Generator --config configs/data_spoqc_photonic_two.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_two.yaml
 
-python3 -m Generator --config configs/data_spoqc_photonic_three.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_three.yaml
 
-python3 -m Generator --config configs/data_spoqc_photonic_four.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_four.yaml
 
-python3 -m Generator --config configs/data_spoqc_photonic_layer_2.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_layer_2.yaml
 
-python3 -m Generator --config configs/data_spoqc_photonic_layer_3.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_layer_3.yaml
 
-python3 -m Generator --config configs/data_spoqc_photonic_layer_4.yaml
+python3 -m Generator --config configs\data_spoqc_photonic_layer_4.yaml
 
-python3 -m embedding --config configs/embed_example.yaml                             
+python3 -m embedding --config configs\embed_example.yaml                             
 
-python -m learn.grid --datasets analytical mlp qubit photonic photonic_parity spoqc_photonic spoqc_photonic_parity --reg 1e-3
-python -m learn.grid --datasets spoqc_photonic spoqc_photonic_one spoqc_photonic_two spoqc_photonic_three spoqc_photonic_four --reg 1e-3
-python -m learn.grid --datasets spoqc_photonic_four spoqc_photonic_layer_2 spoqc_photonic_layer_3 spoqc_photonic_layer_4 --reg 1e-3
+python -m learn.grid --configs-dir configs\Datasets --reg 1e-3
+python -m learn.grid --configs-dir configs\CX_Gates --reg 1e-3
 
-python3 render_dataset.py --config configs/data_spoqc_photonic.yaml  
+python -m learn.grid --configs-dir configs\Layers --reg 1e-3
+
+python -m learn.capacity --configs-dir configs/datasets
+
+python3 render_dataset.py --config configs\data_spoqc_photonic.yaml  

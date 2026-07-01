@@ -23,7 +23,7 @@ from .base import Teacher
 if TYPE_CHECKING:
     from Generator.config import ExperimentConfig
 
-OBSERVABLES = ("parity", "majority", "bunching", "single_output")
+OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first")
 
 
 def _default_input_state(m: int, k: int) -> list[int]:
@@ -67,6 +67,11 @@ def _majority_score(key, m: int, k: int) -> float:
 
 def _bunching_score(key) -> int:
     return 1 if max(int(n) for n in key) <= 1 else -1
+
+
+def _first_mode_score(key) -> int:
+    """Photon count in the first mode; dotted with probs gives ``E[n_0]`` (in [0, k])."""
+    return int(key[0])
 
 
 def _single_output_score(key, input_state) -> int:
@@ -153,6 +158,8 @@ class PhotonicTeacher(Teacher):
             vec = [_majority_score(key, m, k) for key in keys]
         elif observable == "bunching":
             vec = [_bunching_score(key) for key in keys]
+        elif observable == "n_first":
+            vec = [_first_mode_score(key) for key in keys]   # soft = E[n_0]
         else:  # single_output
             vec = [_single_output_score(key, input_state) for key in keys]
         self.register_buffer("score_vec", torch.tensor(vec, dtype=torch.float32))

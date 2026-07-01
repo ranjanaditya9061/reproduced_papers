@@ -81,15 +81,27 @@ def _print_summary(cfg, path, X, soft) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Generate and save a raw dataset pool.")
-    parser.add_argument("--config", required=True, help="path to a YAML experiment config")
+    parser = argparse.ArgumentParser(description="Generate and save raw dataset pool(s).")
+    parser.add_argument("--config", help="path to a single YAML experiment config")
+    parser.add_argument("--configs-dir", help="generate every *.yaml in this folder")
     parser.add_argument("--out-root", default="datasets", help="root dir for artifacts")
     parser.add_argument("--force", action="store_true",
                         help="regenerate from scratch even if the artifact exists")
     args = parser.parse_args(argv)
 
-    cfg = load_config(args.config)
-    generate(cfg, out_root=args.out_root, force=args.force)
+    if bool(args.config) == bool(args.configs_dir):
+        parser.error("give exactly one of --config or --configs-dir")
+
+    if args.config:
+        paths = [args.config]
+    else:
+        paths = [str(p) for p in sorted(Path(args.configs_dir).glob("*.yaml"))]
+        if not paths:
+            parser.error(f"no *.yaml configs found in {args.configs_dir}")
+        print(f"[generate] {len(paths)} config(s) in {args.configs_dir}")
+
+    for p in paths:
+        generate(load_config(p), out_root=args.out_root, force=args.force)
 
 
 if __name__ == "__main__":

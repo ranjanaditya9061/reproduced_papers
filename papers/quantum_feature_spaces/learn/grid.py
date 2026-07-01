@@ -63,23 +63,9 @@ RANDOM_ORDER = [
 ]
 RANDOM_ORDER_NAME = ["RBF Kernel", f"Fourier\nRBF Kernel", f"Random\nQubit Kernel", f"Random\nPhotonic Kernel"]
 
-#: dataset short-name -> data config (the only thing that varies across the grid)
-DEFAULT_DATASETS = {
-    "photonic": "configs/data_photonic.yaml",
-    "photonic_parity": "configs/data_photonic_parity.yaml",
-    "qubit": "configs/data_qubit.yaml",
-    "analytical": "configs/data_analytical.yaml",
-    "mlp": "configs/data_mlp.yaml",
-    "spoqc_photonic": "configs/data_spoqc_photonic.yaml",
-    "spoqc_photonic_parity": "configs/data_spoqc_photonic_parity.yaml",
-    "spoqc_photonic_one": "configs/data_spoqc_photonic_one.yaml",
-    "spoqc_photonic_two": "configs/data_spoqc_photonic_two.yaml",
-    "spoqc_photonic_three": "configs/data_spoqc_photonic_three.yaml",
-    "spoqc_photonic_four": "configs/data_spoqc_photonic_four.yaml",
-    "spoqc_photonic_layer_2": "configs/data_spoqc_photonic_layer_2.yaml",
-    "spoqc_photonic_layer_3": "configs/data_spoqc_photonic_layer_3.yaml",
-    "spoqc_photonic_layer_4": "configs/data_spoqc_photonic_layer_4.yaml"
-}
+#: default sweep folder: every *.yaml here becomes one column of the grid, labelled
+#: by its config's ``name:`` field.  Override with ``--configs-dir configs/layers`` etc.
+DEFAULT_CONFIGS_DIR = "configs/datasets"
 
 
 def _one_dataset(data_cfg, *, embeddings, n_train, n_test, C, gamma, epsilon,
@@ -150,19 +136,35 @@ def kernel_g_matrix(data_cfg, embeddings, *, n_gram=600, reg=1e-6,
     return names, M
 
 
-def run_grid(datasets=None, *, embeddings=None, n_train=1500, n_test=500,
+def discover_configs(configs_dir) -> dict:
+    """Ordered ``{printable_label: config_path}`` for every ``*.yaml`` in a folder.
+
+    The label is the config's own ``name:`` field (falls back to the filename stem).
+    Files are swept in sorted-filename order, so prefix them (e.g. ``0_...``,
+    ``1_...``) to control the sweep order along the axis.
+    """
+    import yaml
+
+    out = {}
+    for path in sorted(Path(configs_dir).glob("*.yaml")):
+        raw = yaml.safe_load(path.read_text()) or {}
+        label = raw.get("name") or path.stem
+        out[label] = str(path)
+    return out
+
+
+def run_grid(dataset_map=None, *, embeddings=None, n_train=1500, n_test=500,
              C=1.0, gamma="scale", epsilon=0.01, embeddings_root="embeddings",
              dataset_root="datasets", use_cache=True):
-    """Run every dataset against the shared ``embeddings`` list; return
-    ``(row_labels, per_dataset)`` where per_dataset maps dataset -> {learner ->
-    {test_r2}} (RBF-SVR R^2 regressing the teacher's soft output)."""
-    datasets = datasets or list(DEFAULT_DATASETS)
+    """Run each dataset in ``dataset_map`` (``{label: config_path}``) against the
+    shared ``embeddings``; return ``(labels, per)`` where per maps label -> {learner
+    -> {test_r2}} (RBF-SVR R^2 regressing the teacher's soft output)."""
+    dataset_map = discover_configs(DEFAULT_CONFIGS_DIR) if dataset_map is None else dataset_map
     embeddings = embeddings or DEFAULT_EMBEDDINGS
     per_dataset = {}
-    for name in datasets:
-        cfg = DEFAULT_DATASETS[name] if name in DEFAULT_DATASETS else name
-        per_dataset[name] = _one_dataset(
-            cfg, embeddings=embeddings, n_train=n_train, n_test=n_test,
+    for label, path in dataset_map.items():
+        per_dataset[label] = _one_dataset(
+            path, embeddings=embeddings, n_train=n_train, n_test=n_test,
             C=C, gamma=gamma, epsilon=epsilon, embeddings_root=embeddings_root,
             dataset_root=dataset_root, use_cache=use_cache,
         )
@@ -183,7 +185,7 @@ def _matrix(per_dataset, rows, cols, field):
 
 
 def _heatmap(M, rows, cols, col_name, title, save_path, *, vmin=None, vmax=None, cmap="viridis",
-             fmt="{:.2f}", show=False):
+             fmt="{:.2f}", xlabel=None, show=False):
     import matplotlib
     if not show:
         matplotlib.use("Agg")
@@ -194,6 +196,8 @@ def _heatmap(M, rows, cols, col_name, title, save_path, *, vmin=None, vmax=None,
     im = ax.imshow(M, vmin=vmin, vmax=vmax, cmap=cmap, aspect="auto")
     ax.set_xticks(range(len(cols)), col_name, rotation=30, ha="right")
     ax.set_yticks(range(len(rows)), rows)
+    if xlabel:
+        ax.set_xlabel(xlabel)
 
     # pick black/white text per cell by the cell colour's luminance (works for any cmap)
     cmap_obj = plt.get_cmap(cmap)
@@ -232,53 +236,63 @@ def main(argv=None) -> None:
     import argparse
 
     ap = argparse.ArgumentParser(prog="learn.grid",
-                                 description="Datasets x learners R^2 grid + pairwise geometric-difference matrix.")
-    ap.add_argument("--datasets", nargs="+", default=list(DEFAULT_DATASETS),
-                    help="dataset short-names (or embed-config paths)")
+                                 description="Sweep a folder of data configs x learners (R^2) + geometric-difference matrix.")
+    ap.add_argument("--configs-dir", default=DEFAULT_CONFIGS_DIR,
+                    help="folder of data configs to sweep (each *.yaml -> one x-axis column, labelled by its name:)")
+    ap.add_argument("--axis-label", default=None,
+                    help="x-axis title for the sweep (default: the folder name)")
     ap.add_argument("--n-train", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
     ap.add_argument("--n-gram", type=int, default=1000, help="rows for the O(N^3) geometric difference")
     ap.add_argument("--C", type=float, default=1.0)
     ap.add_argument("--gamma", default="scale")
     ap.add_argument("--epsilon", type=float, default=0.01, help="SVR epsilon-insensitive tube")
-    ap.add_argument("--reg", type=float, default=1e-6,
-                    help="ridge for geometric difference; raise if g(rbf||rbf) drifts from 1")
+    ap.add_argument("--reg", type=float, default=1e-3,
+                    help="ridge for geometric difference; raise if g(rbf||rbf) drifts above 1")
     ap.add_argument("--save-dir", default="img", help="directory for the heatmap PNGs")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args(argv)
 
+    dataset_map = discover_configs(args.configs_dir)
+    if not dataset_map:
+        raise SystemExit(f"no *.yaml configs found in {args.configs_dir}")
+    axis_label = args.axis_label or Path(args.configs_dir).name
+
     gamma = float(args.gamma) if args.gamma.replace(".", "", 1).isdigit() else args.gamma
-    rows, per = run_grid(args.datasets, n_train=args.n_train, n_test=args.n_test,
-                         C=args.C, gamma=gamma, epsilon=args.epsilon, use_cache=not args.force)
+    labels, per = run_grid(dataset_map, n_train=args.n_train, n_test=args.n_test,
+                           C=args.C, gamma=gamma, epsilon=args.epsilon, use_cache=not args.force)
 
-    full_cols = [c for c in FULL_ORDER if any(c in per[r] for r in rows)]
-    rand_cols = [c for c in RANDOM_ORDER if any(c in per[r] for r in rows)]
+    # learners present (keep parallel column name lists)
+    full = [(c, nm) for c, nm in zip(FULL_ORDER, FULL_ORDER_NAME) if any(c in per[l] for l in labels)]
+    rand = [(c, nm) for c, nm in zip(RANDOM_ORDER, RANDOM_ORDER_NAME) if any(c in per[l] for l in labels)]
+    full_cols, full_names = [c for c, _ in full], [nm for _, nm in full]
+    rand_cols, rand_names = [c for c, _ in rand], [nm for _, nm in rand]
 
-    r2_full = _matrix(per, rows, full_cols, "test_r2")
-    r2_rand = _matrix(per, rows, rand_cols, "test_r2")
+    r2_full = _matrix(per, labels, full_cols, "test_r2")     # (configs x learners)
+    r2_rand = _matrix(per, labels, rand_cols, "test_r2")
 
-    # kernel x kernel pairwise geometric difference (label-free; same for every dataset
-    # since X is shared) -- computed once on the first dataset.
-    first_cfg = DEFAULT_DATASETS.get(args.datasets[0], args.datasets[0])
+    # kernel x kernel geometric difference (label-free; computed once on the first config)
+    first_cfg = next(iter(dataset_map.values()))
     knames, g_kernel = kernel_g_matrix(first_cfg, DEFAULT_EMBEDDINGS, n_gram=args.n_gram,
                                        reg=args.reg, use_cache=not args.force)
 
-    print("\n=== test R^2 (full grid) ===")
-    _print_matrix(r2_full, rows, full_cols)
-    print("\n=== test R^2 (random-quantum 4x4) ===")
-    _print_matrix(r2_rand, rows, rand_cols)
+    print(f"\n=== test R^2 (rows = {axis_label}, cols = learners) ===")
+    _print_matrix(r2_full, labels, full_cols)
     print("\n=== pairwise geometric difference  g(K_row || K_col)  [diag = 1] ===")
     _print_matrix(g_kernel, knames, knames)
 
     sd = Path(args.save_dir)
-    # R^2: green = high (good, ->1).  g: green = LOW (kernels close), so reverse the cmap.
-    _heatmap(r2_full, rows, full_cols, FULL_ORDER_NAME, "Test R² — full grid (regress soft[:,0])",
-             sd / "grid_r2_full.png", vmin=0.0, vmax=1.0, cmap="RdYlGn", show=args.show)
-    _heatmap(r2_rand, rows, rand_cols, RANDOM_ORDER_NAME, "Test R² — random quantum (4x4)",
-             sd / "grid_r2_random.png", vmin=0.0, vmax=1.0, cmap="RdYlGn", show=args.show)
+    # Transposed so the swept configs are the X-AXIS (= axis_label), learners on Y.
+    _heatmap(r2_full.T, full_names, labels, labels,
+             f"Test R² across {axis_label}", sd / f"grid_r2_{axis_label}_full.png",
+             vmin=0.0, vmax=1.0, cmap="RdYlGn", xlabel=axis_label, show=args.show)
+    _heatmap(r2_rand.T, rand_names, labels, labels,
+             f"Test R² across {axis_label} (random quantum)", sd / f"grid_r2_{axis_label}_random.png",
+             vmin=0.0, vmax=1.0, cmap="RdYlGn", xlabel=axis_label, show=args.show)
     _heatmap(g_kernel, knames, knames, knames, "Pairwise geometric difference  g(K_row || K_col)",
-             sd / "grid_geomdiff_kernels.png", vmin=1.0, cmap="RdYlGn_r", fmt="{:.1f}", show=args.show)
+             sd / f"grid_geomdiff_{axis_label}.png", vmin=1.0, cmap="RdYlGn_r", fmt="{:.1f}",
+             show=args.show)
 
 
 if __name__ == "__main__":
