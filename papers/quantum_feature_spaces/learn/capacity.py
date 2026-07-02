@@ -23,12 +23,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "learn"
 
-from sklearn.svm import SVR
-
 from Generator import artifact_path, generate, load_config, load_raw
 
 from .grid import discover_configs
-from .svm import _split_indices
+from .svm import _fit_score, _split_indices
 
 
 def run_capacity(configs_dir, *, orders=(1, 2, 3, 4, 5, 6), n_train=2000, n_test=1000,
@@ -62,9 +60,9 @@ def run_capacity(configs_dir, *, orders=(1, 2, 3, 4, 5, 6), n_train=2000, n_test
                 embeddings_root=embeddings_root, dataset_root=dataset_root, use_cache=use_cache,
             )
             F = res[0]["blob"]["data"]                           # cached fourier features (full X)
-            reg = SVR(C=C, kernel="rbf", gamma=gamma, epsilon=epsilon).fit(F[tr].numpy(), t_tr)
-            r2s.append(float(reg.score(F[te].numpy(), t_te)))
-            print(r2s)
+            _, test_r2 = _fit_score(F[tr].numpy(), t_tr, F[te].numpy(), t_te,
+                                    C=C, gamma=gamma, epsilon=epsilon)
+            r2s.append(test_r2)
         results[label] = r2s
     return results, orders
 
@@ -108,7 +106,7 @@ def main(argv=None) -> None:
     ap.add_argument("--axis-label", default=None, help="legend/title label (default: folder name)")
     ap.add_argument("--n-train", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
-    ap.add_argument("--C", type=float, default=1.0)
+    ap.add_argument("--C", type=float, default=1.0, help="SVR regularisation (smaller = more regularized)")
     ap.add_argument("--gamma", default="scale")
     ap.add_argument("--epsilon", type=float, default=0.01)
     ap.add_argument("--save-dir", default="img")

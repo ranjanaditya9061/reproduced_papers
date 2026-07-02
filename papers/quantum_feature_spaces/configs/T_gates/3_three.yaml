@@ -1,0 +1,20 @@
+name: "3 T"
+# spoqc_magic sweep: a T after every emission (k=3). NB: the readout-gap T is a
+# phase before the Z readout -> washed out, so t_var=3 == t_var=2 (saturation).
+#   python -m Generator --configs-dir configs/T_gates
+problem:
+  m: 6
+  k: 3
+  observable: parity
+  n_features: null           # -> m-1 = 5
+  t_var: 3
+generation:
+  generator: spoqc_magic_photonic
+  size: 1000
+  nsample: 0
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

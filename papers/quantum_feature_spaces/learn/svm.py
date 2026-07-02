@@ -53,6 +53,25 @@ def _tag(blob) -> str:
     return nm
 
 
+def _fit_score(F_tr, t_tr, F_te, t_te, *, C, gamma, epsilon):
+    """Standardize features **and** target on TRAIN stats, fit RBF-SVR, return
+    ``(train_r2, test_r2)``.
+
+    Per-feature standardization tames the single-``gamma`` RBF; standardizing the
+    target makes ``C``/``epsilon`` mean the same thing across datasets whose ``soft``
+    live on very different scales.  Stats are fit on train only (no leakage), and
+    R^2 is scale/shift-invariant so it stays comparable to the raw-target R^2.
+    """
+    from sklearn.preprocessing import StandardScaler
+
+    xs = StandardScaler().fit(F_tr)
+    Ftr, Fte = xs.transform(F_tr), xs.transform(F_te)
+    mu, sd = float(t_tr.mean()), (float(t_tr.std()) or 1.0)
+    ytr, yte = (t_tr - mu) / sd, (t_te - mu) / sd
+    reg = SVR(C=C, kernel="rbf", gamma=gamma, epsilon=epsilon).fit(Ftr, ytr)
+    return float(reg.score(Ftr, ytr)), float(reg.score(Fte, yte))
+
+
 def run_svm(
     embed_config_path,
     *,
@@ -90,16 +109,15 @@ def run_svm(
     rows = []
     for r in results:
         F = r["blob"]["data"]
-        F_tr, F_te = F[tr].numpy(), F[te].numpy()
-        reg = SVR(C=C, kernel="rbf", gamma=gamma, epsilon=epsilon)
-        reg.fit(F_tr, t_tr)
+        train_r2, test_r2 = _fit_score(F[tr].numpy(), t_tr, F[te].numpy(), t_te,
+                                       C=C, gamma=gamma, epsilon=epsilon)
         rows.append({
             "name": _tag(r["blob"]),
             "dim": int(F.shape[1]),
             "n_train": len(tr),
             "n_test": len(te),
-            "train_r2": float(reg.score(F_tr, t_tr)),
-            "test_r2": float(reg.score(F_te, t_te)),
+            "train_r2": train_r2,
+            "test_r2": test_r2,
         })
     return rows, meta
 
@@ -114,7 +132,7 @@ def main(argv=None) -> None:
     ap.add_argument("--config", required=True, help="embedding config (references a data config)")
     ap.add_argument("--embeddings-root", default="embeddings")
     ap.add_argument("--dataset-root", default="datasets")
-    ap.add_argument("--C", type=float, default=1.0, help="SVR regularisation")
+    ap.add_argument("--C", type=float, default=1.0, help="SVR regularisation (smaller = more regularized)")
     ap.add_argument("--gamma", default="scale", help="RBF gamma ('scale', 'auto', or a float)")
     ap.add_argument("--epsilon", type=float, default=0.01, help="SVR epsilon-insensitive tube")
     ap.add_argument("--n-train", type=int, default=8000, help="cap training rows (O(N^2) SVR)")

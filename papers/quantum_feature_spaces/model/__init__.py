@@ -23,6 +23,9 @@ from .mlp import MLPTeacher
 from .qubit import QubitTeacher
 from .photonic import PhotonicTeacher
 from .spoqc import SpoqcPhotonicTeacher
+from .spoqc_low import SpoqcLowPhotonicTeacher
+from .spoqc_prime import SpoqcPrimePhotonicTeacher
+from .spoqc_magic import SpoqcMagicPhotonicTeacher
 
 __all__ = [
     "Teacher",
@@ -34,4 +37,7 @@ __all__ = [
     "QubitTeacher",
     "PhotonicTeacher",
     "SpoqcPhotonicTeacher",
+    "SpoqcLowPhotonicTeacher",
+    "SpoqcPrimePhotonicTeacher",
+    "SpoqcMagicPhotonicTeacher",
 ]

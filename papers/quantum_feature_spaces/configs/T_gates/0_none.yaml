@@ -1,0 +1,20 @@
+name: "0 T"
+# spoqc_magic sweep: number of magic T gates (t_var). 0 = pure cluster (stabilizer,
+# no magic -> collapses to a classical Fock mixture like the other spoqc teachers).
+#   python -m Generator --configs-dir configs/T_gates
+problem:
+  m: 6
+  k: 3
+  observable: parity
+  n_features: null           # -> m-1 = 5
+  t_var: 0
+generation:
+  generator: spoqc_magic_photonic
+  size: 1000
+  nsample: 0
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

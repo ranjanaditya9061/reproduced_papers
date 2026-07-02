@@ -35,7 +35,7 @@ from Generator import artifact_path, generate, load_config, load_raw
 from kernel import gram_from_cache
 from sklearn.svm import SVR
 
-from .svm import _split_indices, _tag
+from .svm import _fit_score, _split_indices, _tag
 
 #: the learner list — authored ONCE and swept across every dataset (matched seed 42
 #: == teacher_seed; 7 = a random/unmatched circuit).  No per-dataset embed config.
@@ -95,8 +95,9 @@ def _one_dataset(data_cfg, *, embeddings, n_train, n_test, C, gamma, epsilon,
     out = {}
     for r in results:
         F = r["blob"]["data"]
-        reg = SVR(C=C, kernel="rbf", gamma=gamma, epsilon=epsilon).fit(F[tr].numpy(), t_tr)
-        out[_tag(r["blob"])] = {"test_r2": float(reg.score(F[te].numpy(), t_te))}
+        _, test_r2 = _fit_score(F[tr].numpy(), t_tr, F[te].numpy(), t_te,
+                                C=C, gamma=gamma, epsilon=epsilon)
+        out[_tag(r["blob"])] = {"test_r2": test_r2}
     return out
 
 
@@ -244,7 +245,7 @@ def main(argv=None) -> None:
     ap.add_argument("--n-train", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
     ap.add_argument("--n-gram", type=int, default=1000, help="rows for the O(N^3) geometric difference")
-    ap.add_argument("--C", type=float, default=1.0)
+    ap.add_argument("--C", type=float, default=1.0, help="SVR regularisation (smaller = more regularized)")
     ap.add_argument("--gamma", default="scale")
     ap.add_argument("--epsilon", type=float, default=0.01, help="SVR epsilon-insensitive tube")
     ap.add_argument("--reg", type=float, default=1e-3,

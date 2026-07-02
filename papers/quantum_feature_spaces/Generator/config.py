@@ -34,6 +34,8 @@ class ProblemConfig:
     observable: str = "parity"
     n_features: int | None = None
     cx_pairs: list | None = None   # spoqc-only: CX entanglers in the spin prep, e.g. [[0,1],[1,2]]
+    angle_levels: int | None = None  # spoqc_low-only: rx/ry drawn from +-0.1 .. +-0.1*angle_levels
+    t_var: int | None = None       # spoqc_magic-only: # of T gates (magic); 0=none .. k=one per emit
 
 
 @dataclass

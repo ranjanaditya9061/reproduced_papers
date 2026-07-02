@@ -73,6 +73,10 @@ def _ry(t):
     return np.array([[c, -s], [s, c]], dtype=complex)
 
 
+def _rz(t):
+    return np.array([[np.exp(-1j * t / 2), 0], [0, np.exp(1j * t / 2)]], dtype=complex)
+
+
 def _apply_1q(psi, q, g, n):
     """Apply 2x2 gate ``g`` to qubit ``q`` of an ``n``-qubit state vector (qubit 0 = MSB)."""
     U = np.array([[1.0 + 0j]])
@@ -81,30 +85,39 @@ def _apply_1q(psi, q, g, n):
     return U @ psi
 
 
-def _spin_state(n_q, rx, ry, cx_pairs):
-    """Joint source density matrix: H + seeded Rx/Ry per qubit, then the CX chain.
+def _spin_state(n_q, rx, ry, cx_pairs, rz=None):
+    """Joint source density matrix: H + seeded Rx (+ optional Rz) + Ry per qubit,
+    then the CX chain.
 
-    The single-qubit prep happens *before* the CX (in numpy), since a CX on
-    ``|0...0>`` is the identity and spoqc has no two-qubit processor gate.
+    ``rz`` (per-qubit angles, or ``None``) is applied **between Rx and Ry** so the
+    following Ry rotates its phase into the rail populations.  A trailing Rz (after
+    Ry) is a complete no-op: dual-rail emission correlates each spin's Z-basis with
+    its photon's rail, so tracing the unmeasured spins always leaves the photons in
+    a classical mixture over Fock states (only ``|amplitude|^2`` survives) -- and CX
+    is a Z-basis permutation, so it does not rescue a pure phase.  The single-qubit
+    prep happens *before* the CX (in numpy), since a CX on ``|0...0>`` is the
+    identity and spoqc has no two-qubit processor gate.
     """
     psi = np.zeros(2 ** n_q, dtype=complex)
     psi[0] = 1.0                                     # |0...0>
     for q in range(n_q):
         psi = _apply_1q(psi, q, _H, n_q)             # |0> -> |+>
         psi = _apply_1q(psi, q, _rx(float(rx[q])), n_q)   # seeded twists -> Gamma != 1/2 I
+        if rz is not None:
+            psi = _apply_1q(psi, q, _rz(float(rz[q])), n_q)
         psi = _apply_1q(psi, q, _ry(float(ry[q])), n_q)
     for c, t in cx_pairs:
         psi = apply_cx(psi, c, t, n_q)               # entangler(s) on a real superposition
     return np.outer(psi, psi.conj())
 
 
-def _build_processor(x, *, m, n_q, n_features, seed, rx, ry, cx_pairs=()):
+def _build_processor(x, *, m, n_q, n_features, seed, rx, ry, cx_pairs=(), rz=None):
     """Spin-prepared photonic HybridProcessor for one input ``x`` (spin prep in numpy)."""
     from perceval import Detector
     from perceval_spoqc import HybridProcessor
 
     p = HybridProcessor(num_sources=n_q, num_modes=m)
-    p.with_initial_source_state(_spin_state(n_q, rx, ry, cx_pairs))
+    p.with_initial_source_state(_spin_state(n_q, rx, ry, cx_pairs, rz=rz))
     for q in range(n_q):
         p.emit(q, into=(2 * q, 2 * q + 1))           # dual-rail emission into its pair
 
@@ -130,8 +143,8 @@ def _score_processor(p, *, m, n_q, observable) -> float:
     return float(s)
 
 
-def _spoqc_soft_row(x, *, m, n_q, n_features, observable, seed, rx, ry, cx_pairs=()) -> float:
+def _spoqc_soft_row(x, *, m, n_q, n_features, observable, seed, rx, ry, cx_pairs=(), rz=None) -> float:
     """Continuous score for one input ``x`` (``cx_pairs`` selects the spin entangler)."""
     p = _build_processor(x, m=m, n_q=n_q, n_features=n_features, seed=seed, rx=rx, ry=ry,
-                         cx_pairs=cx_pairs)
+                         cx_pairs=cx_pairs, rz=rz)
     return _score_processor(p, m=m, n_q=n_q, observable=observable)

@@ -1,0 +1,19 @@
+name: "1 T"
+# spoqc_magic sweep: one magic T gate (non-stabilizer input).
+#   python -m Generator --configs-dir configs/T_gates
+problem:
+  m: 6
+  k: 3
+  observable: parity
+  n_features: null           # -> m-1 = 5
+  t_var: 1
+generation:
+  generator: spoqc_magic_photonic
+  size: 1000
+  nsample: 0
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

@@ -1,0 +1,18 @@
+name: "2 CX"
+# spoqc_prime teacher (H, discrete Rx/Ry, + per-qubit Rz(prime)) with a CX entangler.
+problem:
+  m: 6
+  k: 3
+  observable: majority
+  n_features: null          # -> m-1 = 5
+  cx_pairs: [[0, 1], [1, 2]]
+generation:
+  generator: spoqc_prime_photonic
+  size: 10000               # spoqc is one-circuit-per-sample -> slow to generate; cached after
+  nsample: 0
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

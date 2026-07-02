@@ -6,7 +6,7 @@ python3 -m Generator --config configs\data_qubit.yaml
 python3 -m Generator --config configs\data_spoqc_photonic_parity.yaml
 python3 -m Generator --config configs\data_spoqc_photonic.yaml
 
-python -m Generator --configs-dir configs\Datasets
+python3 -m Generator --configs-dir configs\CX_Gates_Low
 
 python3 -m Generator --config configs\data_spoqc_photonic_one.yaml
 
@@ -29,6 +29,6 @@ python -m learn.grid --configs-dir configs\CX_Gates --reg 1e-3
 
 python -m learn.grid --configs-dir configs\Layers --reg 1e-3
 
-python -m learn.capacity --configs-dir configs/datasets
+python -m learn.capacity --configs-dir configs\datasets
 
 python3 render_dataset.py --config configs\data_spoqc_photonic.yaml  
