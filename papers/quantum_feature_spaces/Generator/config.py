@@ -43,6 +43,10 @@ class GenerationConfig:
     generator: str = "photonic_quantum"
     size: int = 10000
     nsample: int = 0
+    save_dist: bool = False   # also dump the full per-input distribution next to the pool
+    #                           (spoqc_magic only; side output, does not affect the artifact hash)
+    n_jobs: int = 1           # spoqc_magic per-row parallelism: 1=serial, -1=auto (CPUs-1), N=workers
+    #                           (performance only; does not affect the artifact hash)
 
 
 @dataclass

@@ -1,0 +1,27 @@
+name: "SPOQC magic Rz-prime"
+# Grid dataset: teacher = spoqc_magic_prime_photonic.
+# Same emitter-train / readout / post-select-mu=0 magic gadget as spoqc_magic, but the
+# cluster-gap gate is Rz(prime_j) (primes in radians: 2, 3, 5, ...) instead of the fixed
+# T = P(pi/4) -- a distinct non-Clifford magic angle per gap. t_var = k = 3 -> all three
+# gaps injected (Rz(2), Rz(3), Rz(5)). observable=parity (majority is degenerate ~0 for
+# these magic teachers at m=6). save_dist -> distributions.npz for offline re-scoring
+# (learn.grid/capacity --observable ...). n_jobs=-1 -> auto per-row parallelism.
+#   python -m Generator --config configs/datasets/8_spoqc_magic_prime.yaml
+problem:
+  m: 6
+  k: 3                       # 3 data photons + 1 readout photon (uses modes 6,7)
+  observable: parity
+  n_features: null           # -> m-1 = 5
+  t_var: 3                   # inject Rz(prime_j) in all k gaps: Rz(2), Rz(3), Rz(5)
+generation:
+  generator: spoqc_magic_prime_photonic
+  size: 10000
+  nsample: 0
+  save_dist: true            # dump full per-input Fock distribution (offline re-scoring)
+  n_jobs: -1                 # per-row parallelism: -1 = auto (CPUs-1, RAM-capped)
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

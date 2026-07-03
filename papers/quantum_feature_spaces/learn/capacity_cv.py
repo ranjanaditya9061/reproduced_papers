@@ -23,10 +23,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "learn"
 
-from Generator import artifact_path, generate, load_config, load_raw
+from Generator import generate, load_config
 
 from .grid import discover_configs
-from .svm import _fit_score, _split_indices
+from .svm import _fit_score, _split_indices, load_target
 
 C_VALUES = [0.1, 1.0, 10.0, 100.0]
 GAMMA_VALUES = ["scale", "auto"]
@@ -35,7 +35,7 @@ GAMMA_VALUES = ["scale", "auto"]
 def run_capacity_cv(configs_dir, *, orders=(1, 2, 3, 4, 5, 6), n_train=2000, n_test=1000,
                     C_values=C_VALUES, gamma_values=GAMMA_VALUES, epsilon=0.01,
                     val_fraction=0.25, embeddings_root="embeddings", dataset_root="datasets",
-                    use_cache=True):
+                    use_cache=True, observable=None):
     """Return ``(results, orders, best)``: per dataset, [best-CV test R^2 per order]
     and the chosen ``(C, gamma)`` per order.
 
@@ -50,9 +50,8 @@ def run_capacity_cv(configs_dir, *, orders=(1, 2, 3, 4, 5, 6), n_train=2000, n_t
     for label, path in dataset_map.items():
         dcfg = load_config(path)
         generate(dcfg, out_root=dataset_root)
-        soft = load_raw(artifact_path(dcfg, dataset_root))[1]
-        t = soft[:, 0]
-        tr, te = _split_indices(soft, test_fraction=dcfg.split.test_fraction,
+        t = load_target(dcfg, dataset_root, observable=observable)
+        tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
                                 split_seed=dcfg.split.split_seed)
         tr, te = tr[:n_train], te[:n_test]
         n_fit = int(len(tr) * (1 - val_fraction))
@@ -130,6 +129,9 @@ def main(argv=None) -> None:
                     help="'scale', 'auto', or floats")
     ap.add_argument("--epsilon", type=float, default=0.01)
     ap.add_argument("--val-fraction", type=float, default=0.25)
+    ap.add_argument("--observable", default=None,
+                    help="re-score the saved distribution under this observable instead of "
+                         "the stored soft (spoqc_magic + generation.save_dist only)")
     ap.add_argument("--save-dir", default="img")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--force", action="store_true", help="recompute embeddings (skip cache)")
@@ -137,10 +139,11 @@ def main(argv=None) -> None:
 
     gamma_values = [float(g) if g.replace(".", "", 1).isdigit() else g for g in args.gamma_values]
     axis_label = args.axis_label or Path(args.configs_dir).name
+    obs_tag = f"_{args.observable}" if args.observable else ""
     results, orders, best = run_capacity_cv(
         args.configs_dir, orders=args.orders, n_train=args.n_train, n_test=args.n_test,
         C_values=args.C_values, gamma_values=gamma_values, epsilon=args.epsilon,
-        val_fraction=args.val_fraction, use_cache=not args.force)
+        val_fraction=args.val_fraction, use_cache=not args.force, observable=args.observable)
 
     w = max(len(lbl) for lbl in results)
     print("  " + f"{'dataset':<{w}}  " + "  ".join(f"o={o:>2}" for o in orders))
@@ -150,7 +153,7 @@ def main(argv=None) -> None:
     for label, picks in best.items():
         print(f"  {label:<{w}}  " + "  ".join(f"{C:g}/{g}" for C, g in picks))
 
-    _lineplot(results, orders, axis_label, Path(args.save_dir) / f"capacity_cv_{axis_label}.png",
+    _lineplot(results, orders, axis_label, Path(args.save_dir) / f"capacity_cv_{axis_label}{obs_tag}.png",
               show=args.show)
 
 

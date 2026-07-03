@@ -1,0 +1,27 @@
+name: "SPOQC magic"
+# Grid dataset: teacher = spoqc_magic_photonic (MBQC T-teleportation).
+# Unlike the other spoqc teachers, the interferometer input is a PURE non-stabilizer
+# (magic) state -- the spin's T-phase is teleported onto the photons via a readout
+# photon measurement + feedforward (the spin is never measured directly).
+# T-gate baseline for the 3-way magic comparison (8 = Rz-prime, 9 = random-U): same
+# m/k/t_var/observable, only the gap gate differs.  observable=parity (majority is
+# degenerate ~0 for these magic teachers at m=6).
+#   python -m Generator --config configs/datasets/7_spoqc_magic.yaml
+problem:
+  m: 6
+  k: 3                       # 3 data photons + 1 readout photon (uses modes 6,7)
+  observable: parity
+  n_features: null           # -> m-1 = 5
+  t_var: 3                   # number of magic T gates: 0=none (stabilizer) .. k=one per emit
+generation:
+  generator: spoqc_magic_photonic
+  size: 10000
+  nsample: 0
+  save_dist: true            # dump full per-input Fock distribution (offline re-scoring)
+  n_jobs: -1                 # per-row parallelism: -1 = auto (CPUs-1, RAM-capped)
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

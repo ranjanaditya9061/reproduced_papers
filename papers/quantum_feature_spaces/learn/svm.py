@@ -31,6 +31,32 @@ import torch
 from sklearn.svm import SVR
 
 from Generator import artifact_path, load_raw
+from Generator.generate import DIST_FILENAME
+
+
+def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.Tensor:
+    """Continuous regression target for a dataset, as a 1-D float tensor of length N.
+
+    Default (``observable=None``): the stored teacher output ``soft[:, 0]``.  When an
+    ``observable`` is given, re-score the saved full distribution (``distributions.npz``,
+    written by the ``spoqc_magic`` teacher with ``generation.save_dist``) under that
+    observable instead -- so a single generated dataset can be swept across *different*
+    measurements without regenerating.  Raises if no distribution file is present.
+    """
+    if observable is None:
+        return load_raw(artifact_path(dcfg, dataset_root))[1][:, 0]
+
+    from model.spoqc_magic import load_distributions, score_from_distribution
+
+    dpath = artifact_path(dcfg, dataset_root) / DIST_FILENAME
+    if not dpath.exists():
+        raise FileNotFoundError(
+            f"observable override {observable!r} needs a saved distribution, but "
+            f"{dpath} is missing -- regenerate the dataset with generation.save_dist: true "
+            "(spoqc_magic only)"
+        )
+    dist = load_distributions(dpath)
+    return torch.tensor(score_from_distribution(dist, observable), dtype=torch.float32)
 
 
 def _split_indices(soft, *, test_fraction, split_seed):
@@ -83,6 +109,7 @@ def run_svm(
     embeddings_root="embeddings",
     dataset_root="datasets",
     use_cache: bool = True,
+    observable: str | None = None,
 ):
     """Fit an RBF-SVR per embedding to **regress the teacher's continuous output**.
 
@@ -98,10 +125,9 @@ def run_svm(
         embed_config_path, embeddings_root=embeddings_root,
         dataset_root=dataset_root, use_cache=use_cache,
     )
-    soft = load_raw(artifact_path(dcfg, dataset_root))[1]
-    t = soft[:, 0]                                   # continuous target (no labelling)
+    t = load_target(dcfg, dataset_root, observable=observable)   # soft[:,0] or re-scored
 
-    tr, te = _split_indices(soft, test_fraction=dcfg.split.test_fraction,
+    tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
                             split_seed=dcfg.split.split_seed)
     tr, te = tr[:n_train], te[:n_test]
     t_tr, t_te = t[tr].numpy(), t[te].numpy()
@@ -137,6 +163,9 @@ def main(argv=None) -> None:
     ap.add_argument("--epsilon", type=float, default=0.01, help="SVR epsilon-insensitive tube")
     ap.add_argument("--n-train", type=int, default=8000, help="cap training rows (O(N^2) SVR)")
     ap.add_argument("--n-test", type=int, default=2000, help="cap test rows")
+    ap.add_argument("--observable", default=None,
+                    help="re-score the saved distribution under this observable instead of "
+                         "the stored soft (spoqc_magic + generation.save_dist only)")
     ap.add_argument("--force", action="store_true", help="recompute embeddings (skip cache)")
     args = ap.parse_args(argv)
 
@@ -145,7 +174,7 @@ def main(argv=None) -> None:
         args.config, C=args.C, gamma=gamma, epsilon=args.epsilon,
         n_train=args.n_train, n_test=args.n_test,
         embeddings_root=args.embeddings_root, dataset_root=args.dataset_root,
-        use_cache=not args.force,
+        use_cache=not args.force, observable=args.observable,
     )
 
     n_tr = rows[0]["n_train"] if rows else 0

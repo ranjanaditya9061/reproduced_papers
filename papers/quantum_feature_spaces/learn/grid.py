@@ -35,7 +35,7 @@ from Generator import artifact_path, generate, load_config, load_raw
 from kernel import gram_from_cache
 from sklearn.svm import SVR
 
-from .svm import _fit_score, _split_indices, _tag
+from .svm import _fit_score, _split_indices, _tag, load_target
 
 #: the learner list — authored ONCE and swept across every dataset (matched seed 42
 #: == teacher_seed; 7 = a random/unmatched circuit).  No per-dataset embed config.
@@ -69,11 +69,12 @@ DEFAULT_CONFIGS_DIR = "configs/datasets"
 
 
 def _one_dataset(data_cfg, *, embeddings, n_train, n_test, C, gamma, epsilon,
-                 embeddings_root, dataset_root, use_cache):
+                 embeddings_root, dataset_root, use_cache, observable=None):
     """Return ``{learner_name: {test_r2}}`` for one dataset (one data config).
 
-    Regresses each embedding onto the teacher's continuous ``soft[:, 0]`` with an
-    RBF-SVR (no labelling, no balancing); reports R^2.
+    Regresses each embedding onto the teacher's continuous target (``soft[:, 0]``, or
+    the saved distribution re-scored under ``observable``) with an RBF-SVR (no
+    labelling, no balancing); reports R^2.
     """
     from embedding import build_embeddings_for
 
@@ -84,10 +85,9 @@ def _one_dataset(data_cfg, *, embeddings, n_train, n_test, C, gamma, epsilon,
         dcfg, embeddings, embeddings_root=embeddings_root,
         dataset_root=dataset_root, use_cache=use_cache,
     )
-    soft = load_raw(artifact_path(dcfg, dataset_root))[1]
-    t = soft[:, 0]                                   # continuous target (no labelling)
+    t = load_target(dcfg, dataset_root, observable=observable)   # soft[:,0] or re-scored
 
-    tr, te = _split_indices(soft, test_fraction=dcfg.split.test_fraction,
+    tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
                             split_seed=dcfg.split.split_seed)
     tr, te = tr[:n_train], te[:n_test]
     t_tr, t_te = t[tr].numpy(), t[te].numpy()
@@ -156,10 +156,11 @@ def discover_configs(configs_dir) -> dict:
 
 def run_grid(dataset_map=None, *, embeddings=None, n_train=1500, n_test=500,
              C=1.0, gamma="scale", epsilon=0.01, embeddings_root="embeddings",
-             dataset_root="datasets", use_cache=True):
+             dataset_root="datasets", use_cache=True, observable=None):
     """Run each dataset in ``dataset_map`` (``{label: config_path}``) against the
     shared ``embeddings``; return ``(labels, per)`` where per maps label -> {learner
-    -> {test_r2}} (RBF-SVR R^2 regressing the teacher's soft output)."""
+    -> {test_r2}} (RBF-SVR R^2 regressing the teacher's soft output, or the saved
+    distribution re-scored under ``observable``)."""
     dataset_map = discover_configs(DEFAULT_CONFIGS_DIR) if dataset_map is None else dataset_map
     embeddings = embeddings or DEFAULT_EMBEDDINGS
     per_dataset = {}
@@ -167,7 +168,7 @@ def run_grid(dataset_map=None, *, embeddings=None, n_train=1500, n_test=500,
         per_dataset[label] = _one_dataset(
             path, embeddings=embeddings, n_train=n_train, n_test=n_test,
             C=C, gamma=gamma, epsilon=epsilon, embeddings_root=embeddings_root,
-            dataset_root=dataset_root, use_cache=use_cache,
+            dataset_root=dataset_root, use_cache=use_cache, observable=observable,
         )
     return list(per_dataset), per_dataset
 
@@ -250,6 +251,9 @@ def main(argv=None) -> None:
     ap.add_argument("--epsilon", type=float, default=0.01, help="SVR epsilon-insensitive tube")
     ap.add_argument("--reg", type=float, default=1e-3,
                     help="ridge for geometric difference; raise if g(rbf||rbf) drifts above 1")
+    ap.add_argument("--observable", default=None,
+                    help="re-score the saved distribution under this observable instead of "
+                         "the stored soft (spoqc_magic + generation.save_dist only)")
     ap.add_argument("--save-dir", default="img", help="directory for the heatmap PNGs")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--force", action="store_true")
@@ -259,10 +263,13 @@ def main(argv=None) -> None:
     if not dataset_map:
         raise SystemExit(f"no *.yaml configs found in {args.configs_dir}")
     axis_label = args.axis_label or Path(args.configs_dir).name
+    # tag outputs by observable so re-scoring the same sweep doesn't overwrite the default
+    obs_tag = f"_{args.observable}" if args.observable else ""
 
     gamma = float(args.gamma) if args.gamma.replace(".", "", 1).isdigit() else args.gamma
     labels, per = run_grid(dataset_map, n_train=args.n_train, n_test=args.n_test,
-                           C=args.C, gamma=gamma, epsilon=args.epsilon, use_cache=not args.force)
+                           C=args.C, gamma=gamma, epsilon=args.epsilon,
+                           use_cache=not args.force, observable=args.observable)
 
     # learners present (keep parallel column name lists)
     full = [(c, nm) for c, nm in zip(FULL_ORDER, FULL_ORDER_NAME) if any(c in per[l] for l in labels)]
@@ -284,12 +291,13 @@ def main(argv=None) -> None:
     _print_matrix(g_kernel, knames, knames)
 
     sd = Path(args.save_dir)
+    title_obs = f" [{args.observable}]" if args.observable else ""
     # Transposed so the swept configs are the X-AXIS (= axis_label), learners on Y.
     _heatmap(r2_full.T, full_names, labels, labels,
-             f"Test R² across {axis_label}", sd / f"grid_r2_{axis_label}_full.png",
+             f"Test R² across {axis_label}{title_obs}", sd / f"grid_r2_{axis_label}{obs_tag}_full.png",
              vmin=0.0, vmax=1.0, cmap="RdYlGn", xlabel=axis_label, show=args.show)
     _heatmap(r2_rand.T, rand_names, labels, labels,
-             f"Test R² across {axis_label} (random quantum)", sd / f"grid_r2_{axis_label}_random.png",
+             f"Test R² across {axis_label}{title_obs} (random quantum)", sd / f"grid_r2_{axis_label}{obs_tag}_random.png",
              vmin=0.0, vmax=1.0, cmap="RdYlGn", xlabel=axis_label, show=args.show)
     _heatmap(g_kernel, knames, knames, knames, "Pairwise geometric difference  g(K_row || K_col)",
              sd / f"grid_geomdiff_{axis_label}.png", vmin=1.0, cmap="RdYlGn_r", fmt="{:.1f}",

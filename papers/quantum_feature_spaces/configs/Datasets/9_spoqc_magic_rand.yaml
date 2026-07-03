@@ -1,0 +1,27 @@
+name: "SPOQC magic random-U"
+# Grid dataset: teacher = spoqc_magic_rand_photonic.
+# Same emitter-train / readout / post-select-mu=0 magic gadget as spoqc_magic, but each
+# cluster-gap gate is a Haar-random SU(2) (Rz Ry Rz), drawn once from teacher_seed and
+# fixed for the teacher. t_var = k = 3 -> all three gaps injected. observable=parity
+# (majority is degenerate ~0 for these magic teachers at m=6). Different teacher_seed ->
+# different random unitaries -> different dataset. save_dist -> distributions.npz for
+# offline re-scoring (learn.grid/capacity --observable ...). n_jobs=-1 -> auto parallelism.
+#   python -m Generator --config configs/datasets/9_spoqc_magic_rand.yaml
+problem:
+  m: 6
+  k: 3                       # 3 data photons + 1 readout photon (uses modes 6,7)
+  observable: parity
+  n_features: null           # -> m-1 = 5
+  t_var: 3                   # inject a random SU(2) in all k gaps
+generation:
+  generator: spoqc_magic_rand_photonic
+  size: 10000
+  nsample: 0
+  save_dist: true            # dump full per-input Fock distribution (offline re-scoring)
+  n_jobs: -1                 # per-row parallelism: -1 = auto (CPUs-1, RAM-capped)
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

@@ -1,0 +1,18 @@
+name: "Qubit"
+# Grid dataset: teacher = qubit_quantum
+#   python -m Generator --config configs/data_qubit.yaml
+problem:
+  m: 6
+  k: 3
+  observable: parity
+  n_features: null          # -> m-1 = 5
+generation:
+  generator: qubit_quantum
+  size: 10000                # small pool: kernel SVM is O(N^2); the grid caps rows anyway
+  nsample: 0
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

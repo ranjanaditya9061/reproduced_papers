@@ -148,3 +148,61 @@ def _spoqc_soft_row(x, *, m, n_q, n_features, observable, seed, rx, ry, cx_pairs
     p = _build_processor(x, m=m, n_q=n_q, n_features=n_features, seed=seed, rx=rx, ry=ry,
                          cx_pairs=cx_pairs, rz=rz)
     return _score_processor(p, m=m, n_q=n_q, observable=observable)
+
+
+# --- per-row parallelism (each row is an independent perceval simulation) ---- #
+#
+# The spoqc teachers all evaluate one input row at a time, and the rows are fully
+# independent, so the per-row loop parallelizes trivially.  We must use *processes*
+# (not threads): building the embedding calls ``pcvl.random_seed`` / ``torch.manual_seed``
+# (global state), which concurrent threads would race on.  Separate processes each
+# hold their own global RNG, so results are deterministic and order-independent.
+
+def _resolve_workers(n_jobs, n_rows, *, per_worker_mb=512) -> int:
+    """Number of processes to use: ``n_jobs`` capped by CPUs and (if psutil) free RAM.
+
+    ``n_jobs``: ``1`` = serial (default), ``-1``/``0``/``None`` = auto (CPUs - 1), or an
+    explicit worker count.  Below two rows there is nothing to parallelize.  The memory
+    gate is best-effort -- without ``psutil`` we fall back to the CPU cap only.
+    """
+    import os
+
+    if n_rows < 2 or n_jobs == 1:
+        return 1
+    cpu = os.cpu_count() or 1
+    want = max(1, cpu - 1) if n_jobs in (None, 0, -1) else int(n_jobs)
+    want = min(want, n_rows, cpu)
+    try:
+        import psutil
+
+        avail_mb = psutil.virtual_memory().available / (1024 ** 2)
+        want = min(want, max(1, int(0.7 * avail_mb / per_worker_mb)))
+    except Exception:
+        pass
+    return max(1, want)
+
+
+def parallel_row_map(worker, tasks, n_jobs):
+    """Map ``worker`` over ``tasks``, returning results **in input order**.
+
+    Serial when ``n_jobs == 1`` or there is <2 rows; otherwise a process pool whose
+    ordered ``map`` keeps results row-aligned even though rows finish out of order.
+    ``worker`` must be a module-level (picklable) callable and each task a picklable
+    tuple, so any accumulation the caller does afterwards stays deterministic.
+    """
+    workers = _resolve_workers(n_jobs, len(tasks))
+    if workers == 1:
+        return [worker(t) for t in tasks]
+
+    import concurrent.futures as cf
+
+    chunk = max(1, len(tasks) // (workers * 4))
+    with cf.ProcessPoolExecutor(max_workers=workers) as ex:
+        return list(ex.map(worker, tasks, chunksize=chunk))
+
+
+def _spoqc_row_worker(task):
+    """Score one row for the plain spoqc teachers (picklable process-pool worker)."""
+    row, m, n_q, n_features, observable, seed, rx, ry, cx_pairs, rz = task
+    return _spoqc_soft_row(row, m=m, n_q=n_q, n_features=n_features, observable=observable,
+                           seed=seed, rx=rx, ry=ry, cx_pairs=cx_pairs, rz=rz)

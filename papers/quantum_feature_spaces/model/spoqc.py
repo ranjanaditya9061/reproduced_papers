@@ -31,7 +31,9 @@ from .spoqc_utils import (  # noqa: F401  (apply_cx re-exported for convenience)
     OBSERVABLES,
     apply_cx,
     _build_processor,
+    _spoqc_row_worker,
     _spoqc_soft_row,
+    parallel_row_map,
 )
 
 if TYPE_CHECKING:
@@ -59,7 +61,7 @@ class SpoqcPhotonicTeacher(Teacher):
     name = "spoqc_photonic"
 
     def __init__(self, m: int, k: int, n_features: int,
-                 observable: str = "parity", seed: int = 1234, cx_pairs=None):
+                 observable: str = "parity", seed: int = 1234, cx_pairs=None, n_jobs: int = 1):
         super().__init__(n_features)
         if observable not in OBSERVABLES:
             raise ValueError(f"observable must be one of {OBSERVABLES}, got {observable!r}")
@@ -69,6 +71,7 @@ class SpoqcPhotonicTeacher(Teacher):
             raise ValueError(f"need 2*k <= m for dual-rail emission (k={k}, m={m})")
         self.m, self.k, self.observable, self.seed = m, k, observable, int(seed)
         self.cx_pairs = _normalize_cx_pairs(cx_pairs, k)
+        self.n_jobs = int(n_jobs)         # 1=serial, -1=auto (CPUs-1), N=explicit workers
         rng = np.random.default_rng(self.seed)
         self.rx = rng.uniform(0.0, 2 * np.pi, size=k)
         self.ry = rng.uniform(0.0, 2 * np.pi, size=k)
@@ -76,12 +79,9 @@ class SpoqcPhotonicTeacher(Teacher):
     @torch.no_grad()
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         Xn = X.detach().cpu().numpy()
-        vals = [
-            _spoqc_soft_row(row, m=self.m, n_q=self.k, n_features=self.n_features,
-                            observable=self.observable, seed=self.seed, rx=self.rx, ry=self.ry,
-                            cx_pairs=self.cx_pairs)
-            for row in Xn
-        ]
+        tasks = [(row, self.m, self.k, self.n_features, self.observable, self.seed,
+                  self.rx, self.ry, self.cx_pairs, None) for row in Xn]
+        vals = parallel_row_map(_spoqc_row_worker, tasks, self.n_jobs)
         return torch.tensor(vals, dtype=torch.float32).unsqueeze(-1)
 
     def render(self, path: str, x=None) -> str:
@@ -101,7 +101,7 @@ class SpoqcPhotonicTeacher(Teacher):
     def from_config(cls, cfg: "ExperimentConfig") -> "SpoqcPhotonicTeacher":
         return cls(m=cfg.problem.m, k=cfg.problem.k, n_features=cfg.resolved_n_features,
                    observable=cfg.problem.observable, seed=cfg.seeds.teacher_seed,
-                   cx_pairs=cfg.problem.cx_pairs)
+                   cx_pairs=cfg.problem.cx_pairs, n_jobs=cfg.generation.n_jobs)
 
     @classmethod
     def hash_spec(cls, cfg: "ExperimentConfig") -> dict:

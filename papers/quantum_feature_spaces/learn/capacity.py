@@ -23,19 +23,20 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "learn"
 
-from Generator import artifact_path, generate, load_config, load_raw
+from Generator import generate, load_config
 
 from .grid import discover_configs
-from .svm import _fit_score, _split_indices
+from .svm import _fit_score, _split_indices, load_target
 
 
 def run_capacity(configs_dir, *, orders=(1, 2, 3, 4, 5, 6), n_train=2000, n_test=1000,
                  C=1.0, gamma="scale", epsilon=0.01, embeddings_root="embeddings",
-                 dataset_root="datasets", use_cache=True):
+                 dataset_root="datasets", use_cache=True, observable=None):
     """Return ``(results, orders)`` where results maps dataset label -> [R^2 per order].
 
     For each dataset, build the ``fourier_rbf`` embedding at each ``order`` through
-    the embedding stage (cached), then regress the teacher's ``soft[:, 0]`` with an
+    the embedding stage (cached), then regress the teacher's continuous target
+    (``soft[:, 0]``, or the saved distribution re-scored under ``observable``) with an
     RBF-SVR on those features (same train/test split as the grid).
     """
     from embedding import build_embeddings_for
@@ -46,9 +47,8 @@ def run_capacity(configs_dir, *, orders=(1, 2, 3, 4, 5, 6), n_train=2000, n_test
     for label, path in dataset_map.items():
         dcfg = load_config(path)
         generate(dcfg, out_root=dataset_root)                    # ensure the artifact exists
-        soft = load_raw(artifact_path(dcfg, dataset_root))[1]
-        t = soft[:, 0]
-        tr, te = _split_indices(soft, test_fraction=dcfg.split.test_fraction,
+        t = load_target(dcfg, dataset_root, observable=observable)
+        tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
                                 split_seed=dcfg.split.split_seed)
         tr, te = tr[:n_train], te[:n_test]
         t_tr, t_te = t[tr].numpy(), t[te].numpy()
@@ -109,6 +109,9 @@ def main(argv=None) -> None:
     ap.add_argument("--C", type=float, default=1.0, help="SVR regularisation (smaller = more regularized)")
     ap.add_argument("--gamma", default="scale")
     ap.add_argument("--epsilon", type=float, default=0.01)
+    ap.add_argument("--observable", default=None,
+                    help="re-score the saved distribution under this observable instead of "
+                         "the stored soft (spoqc_magic + generation.save_dist only)")
     ap.add_argument("--save-dir", default="img")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--force", action="store_true", help="recompute embeddings (skip cache)")
@@ -116,16 +119,17 @@ def main(argv=None) -> None:
 
     gamma = float(args.gamma) if args.gamma.replace(".", "", 1).isdigit() else args.gamma
     axis_label = args.axis_label or Path(args.configs_dir).name
+    obs_tag = f"_{args.observable}" if args.observable else ""
     results, orders = run_capacity(args.configs_dir, orders=args.orders, n_train=args.n_train,
                                    n_test=args.n_test, C=args.C, gamma=gamma, epsilon=args.epsilon,
-                                   use_cache=not args.force)
+                                   use_cache=not args.force, observable=args.observable)
 
     w = max(len(lbl) for lbl in results)
     print("  " + f"{'dataset':<{w}}  " + "  ".join(f"o={o:>2}" for o in orders))
     for label, r2s in results.items():
         print(f"  {label:<{w}}  " + "  ".join(f"{v:>5.2f}" for v in r2s))
 
-    _lineplot(results, orders, axis_label, Path(args.save_dir) / f"capacity_{axis_label}.png",
+    _lineplot(results, orders, axis_label, Path(args.save_dir) / f"capacity_{axis_label}{obs_tag}.png",
               show=args.show)
 
 

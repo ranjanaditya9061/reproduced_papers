@@ -1,0 +1,18 @@
+name: "SPOQC"
+# Photonic teacher, observable = n_first: soft = E[n_0], the mean photon number
+# of the first mode (a first-order occupation observable, range [0, k]).
+problem:
+  m: 6
+  k: 3
+  observable: parity
+  n_features: null          # -> m-1 = 5
+generation:
+  generator: spoqc_photonic
+  size: 10000
+  nsample: 0
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42
