@@ -25,6 +25,12 @@ The point (see the module docstring in :mod:`learn.capacity` for the model-size 
   classical/quantum separation, quantified.
 
     python -m learn.mkl --configs-dir configs/Datasets --dict-kind poly --degrees 1 2 3 4 5 6
+
+Pass ``--gcv`` to choose the KRR ridge per degree by closed-form GCV -- the fair way to
+compare across capacities.  At a *fixed* ``--lam`` a higher-degree kernel overfits and its
+test R^2 dives (the extra capacity fits noise); GCV matches the ridge to the capacity, so
+the curve reflects genuine learnability and only stays flat/low when the target really is
+not learnable in that dictionary.
 """
 
 from __future__ import annotations
@@ -117,7 +123,7 @@ def alignf(Ks, y):
 # --- closed-form KRR evaluation --------------------------------------------- #
 
 def krr_eval(Ktr, Kte, ytr, yte, *, lam):
-    """KRR on a *precomputed* combined kernel: ``(test_r2, rkhs_norm2, d_eff)``, all closed form.
+    """KRR on a *precomputed* combined kernel: ``(test_r2, rkhs_norm2, d_eff, lam)``, closed form.
 
     ``rkhs_norm2 = alpha^T K alpha`` (``alpha = (K+lam I)^{-1} y`` = ``KernelRidge.dual_coef_``)
     is the learnability certificate: O(1) when the target lives in the kernel's top modes,
@@ -131,21 +137,63 @@ def krr_eval(Ktr, Kte, ytr, yte, *, lam):
     r2 = float(reg.score(Kte, yte))
     n = Ktr.shape[0]
     d_eff = float(np.trace(np.linalg.solve(Ktr + lam * np.eye(n), Ktr)))
-    return r2, rkhs_norm2, d_eff
+    return r2, rkhs_norm2, d_eff, lam
+
+
+def krr_eval_gcv(Ktr, Kte, ytr, yte, *, lambdas):
+    """KRR with the ridge ``lam`` chosen by **closed-form GCV**; returns
+    ``(test_r2, rkhs_norm2, d_eff, lam*)``.
+
+    Growing the dictionary at *fixed* ``lam`` overfits (test R^2 dives) because the
+    regularization isn't matched to the growing capacity.  GCV picks ``lam`` per kernel in
+    closed form -- no CV loop -- so the curve reflects genuine learnability, not fixed-``lam``
+    overfitting.  One eigendecomposition of ``Ktr = V diag(sigma) V^T`` makes every ``lam``
+    on the grid O(N): with ``z = V^T y`` and filter ``lam/(sigma+lam)`` (the eigenvalues of
+    ``I - K(K+lam I)^{-1}``),
+
+        GCV(lam) = N * ||(I-S)y||^2 / tr(I-S)^2 = N * sum_i (f_i z_i)^2 / (sum_i f_i)^2.
+    """
+    sigma, V = np.linalg.eigh(Ktr)                     # Ktr symmetric PSD
+    sigma = sigma.clip(min=0.0)
+    z = V.T @ ytr                                      # target in the kernel eigenbasis
+    N = len(ytr)
+
+    best_lam, best_gcv = None, np.inf
+    for lam in lambdas:
+        f = lam / (sigma + lam)                        # (I - S) eigenvalues
+        gcv = N * float(np.sum((f * z) ** 2)) / (float(np.sum(f)) ** 2 + 1e-30)
+        if gcv < best_gcv:
+            best_gcv, best_lam = gcv, float(lam)
+
+    coef = z / (sigma + best_lam)                      # alpha in eigenbasis
+    alpha = V @ coef
+    rkhs_norm2 = float(np.sum(sigma * coef ** 2))      # alpha^T K alpha
+    d_eff = float(np.sum(sigma / (sigma + best_lam)))
+    yhat = Kte @ alpha
+    ss_res = float(np.sum((yte - yhat) ** 2))
+    ss_tot = float(np.sum((yte - yte.mean()) ** 2))
+    r2 = 1.0 - ss_res / (ss_tot + 1e-30)
+    return r2, rkhs_norm2, d_eff, best_lam
 
 
 # --- driver ----------------------------------------------------------------- #
 
 def run_mkl(configs_dir, *, degrees=(1, 2, 3, 4, 5), dict_kind="poly", fourier_order=3,
-            n_fit=2000, n_test=1000, lam=1e-2, dataset_root="datasets", use_cache=True,
-            observable=None):
-    """Return ``(results, degrees)`` with ``results[label] = [{degree, r2, rkhs_norm2, d_eff}]``.
+            n_fit=2000, n_test=1000, lam=1e-2, gcv=False, lambdas=None,
+            dataset_root="datasets", use_cache=True, observable=None):
+    """Return ``(results, degrees)`` with ``results[label] = [{degree, r2, rkhs_norm2, d_eff, lam}]``.
 
     For each dataset, sweep the dictionary size ``degree``; at each size pick the best
-    linear kernel combination by :func:`alignf` and score it with :func:`krr_eval`.  Grams
-    are built on an ``n_fit``-row train subsample and an ``n_test`` test subsample (both
-    from the dataset's own split) to keep the ``O(N^2)`` Grams tractable.
+    linear kernel combination by :func:`alignf` and score it with KRR.  Grams are built on
+    an ``n_fit``-row train subsample and an ``n_test`` test subsample (both from the
+    dataset's own split) to keep the ``O(N^2)`` Grams tractable.
+
+    ``gcv=True`` chooses the ridge per degree by closed-form GCV (:func:`krr_eval_gcv`) over
+    ``lambdas`` -- the fair way to compare across capacities, since a *fixed* ``lam`` makes
+    higher-degree kernels overfit (test R^2 dives).  ``gcv=False`` uses the fixed ``lam``.
     """
+    if gcv and lambdas is None:
+        lambdas = np.geomspace(1e-6, 1e2, 25)
     from sklearn.preprocessing import StandardScaler
 
     dataset_map = discover_configs(configs_dir)
@@ -180,8 +228,11 @@ def run_mkl(configs_dir, *, degrees=(1, 2, 3, 4, 5), dict_kind="poly", fourier_o
             mu = alignf(Ks_tr, yc)                                    # closed-form best combo
             Ktr = sum(m * K for m, K in zip(mu, Ks_tr))
             Kte = sum(m * K for m, K in zip(mu, Ks_te))
-            r2, rkhs, deff = krr_eval(Ktr, Kte, ytr, yte, lam=lam)
-            rows.append({"degree": d, "r2": r2, "rkhs_norm2": rkhs, "d_eff": deff})
+            if gcv:
+                r2, rkhs, deff, lam_used = krr_eval_gcv(Ktr, Kte, ytr, yte, lambdas=lambdas)
+            else:
+                r2, rkhs, deff, lam_used = krr_eval(Ktr, Kte, ytr, yte, lam=lam)
+            rows.append({"degree": d, "r2": r2, "rkhs_norm2": rkhs, "d_eff": deff, "lam": lam_used})
         results[label] = rows
     return results, degrees
 
@@ -192,12 +243,13 @@ def _lineplot(results, degrees, axis_label, save_path, *, metric="r2", show=Fals
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    ylabel = {"r2": "Test R²", "rkhs_norm2": "||f||_H^2  (log)", "d_eff": "effective dim"}[metric]
+    ylabel = {"r2": "Test R²", "rkhs_norm2": "||f||_H^2  (log)", "d_eff": "effective dim",
+              "lam": "GCV-chosen λ  (log)"}[metric]
     fig, ax = plt.subplots(figsize=(7, 5))
     for label, rows in results.items():
         ys = [r[metric] for r in rows]
         ax.plot(degrees, ys, marker="o", label=label)
-    if metric == "rkhs_norm2":
+    if metric in ("rkhs_norm2", "lam"):
         ax.set_yscale("log")
     elif metric == "r2":
         ax.axhline(0.0, color="grey", lw=0.8, ls="--")
@@ -224,15 +276,20 @@ def main(argv=None) -> None:
         prog="learn.mkl",
         description="MKL learnability curve: best linear kernel combo (alignment) + KRR, per dataset.")
     ap.add_argument("--configs-dir", default="configs/Datasets")
-    ap.add_argument("--dict-kind", default="poly", choices=["poly", "rbf"],
-                    help="'poly' (interaction-carrying, degree ladder) or 'rbf' (bandwidth grid)")
+    ap.add_argument("--dict-kind", default="poly", choices=["poly", "rbf", "fourier"],
+                    help="'poly' (interactions on raw x), 'rbf' (bandwidth grid), or "
+                         "'fourier' (interactions on Fourier features -- matched basis for angle inputs)")
     ap.add_argument("--degrees", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6],
                     help="dictionary sizes / max degrees on the x-axis")
-    ap.add_argument("--metric", default="r2", choices=["r2", "rkhs_norm2", "d_eff"],
+    ap.add_argument("--fourier-order", type=int, default=3,
+                    help="Fourier band [sin(jx),cos(jx)]_{j<=order} for --dict-kind fourier")
+    ap.add_argument("--metric", default="r2", choices=["r2", "rkhs_norm2", "d_eff", "lam"],
                     help="which closed-form quantity to plot")
     ap.add_argument("--n-fit", type=int, default=2000, help="train subsample (O(N^2) Grams)")
     ap.add_argument("--n-test", type=int, default=1000)
-    ap.add_argument("--lam", type=float, default=1e-2, help="KRR ridge (the closed-form lambda)")
+    ap.add_argument("--lam", type=float, default=1e-2, help="KRR ridge (fixed; ignored under --gcv)")
+    ap.add_argument("--gcv", action="store_true",
+                    help="choose the ridge per degree by closed-form GCV (fair across capacities)")
     ap.add_argument("--axis-label", default=None)
     ap.add_argument("--observable", default=None,
                     help="re-score the saved distribution under this observable (spoqc_magic only)")
@@ -243,15 +300,22 @@ def main(argv=None) -> None:
 
     axis_label = args.axis_label or Path(args.configs_dir).name
     results, degrees = run_mkl(args.configs_dir, degrees=args.degrees, dict_kind=args.dict_kind,
-                               n_fit=args.n_fit, n_test=args.n_test, lam=args.lam,
-                               use_cache=not args.force, observable=args.observable)
+                               fourier_order=args.fourier_order, n_fit=args.n_fit, n_test=args.n_test,
+                               lam=args.lam, gcv=args.gcv, use_cache=not args.force,
+                               observable=args.observable)
 
     w = max(len(lbl) for lbl in results)
-    print(f"  dict_kind={args.dict_kind}  lam={args.lam}  n_fit={args.n_fit}\n")
+    ridge = "GCV" if args.gcv else f"lam={args.lam}"
+    print(f"  dict_kind={args.dict_kind}  ridge={ridge}  n_fit={args.n_fit}\n")
     print("  " + f"{'dataset':<{w}}  " + "  ".join(f"d={d:>2}" for d in degrees) + "   metric=" + args.metric)
     for label, rows in results.items():
         vals = "  ".join(f"{r[args.metric]:>6.2f}" for r in rows)
         print(f"  {label:<{w}}  {vals}")
+    if args.gcv:                                                  # show the ridge GCV picked per degree
+        print("\n  GCV-chosen lambda:")
+        for label, rows in results.items():
+            vals = "  ".join(f"{r['lam']:>6.0e}" for r in rows)
+            print(f"  {label:<{w}}  {vals}")
 
     obs_tag = f"_{args.observable}" if args.observable else ""
     save = Path(args.save_dir) / f"mkl_{args.dict_kind}_{args.metric}_{axis_label}{obs_tag}.png"
