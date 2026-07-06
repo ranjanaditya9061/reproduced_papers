@@ -20,6 +20,8 @@ Subclass with a ``name`` to auto-register in :data:`EMBEDDINGS`.
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from model.mlp import fourier_features
@@ -139,6 +141,60 @@ class FourierEmbedding(Embedding):
     @classmethod
     def from_spec(cls, spec: dict, cfg=None) -> "FourierEmbedding":
         return cls(fourier_order=spec.get("fourier_order", 3))
+
+
+def gaussian_bump_features(X: torch.Tensor, n_bumps: int,
+                           x_min: float = 0.0, x_max: float = 2 * math.pi,
+                           width: float | None = None) -> torch.Tensor:
+    """Localized RBF bumps ``exp(-(x-c_k)^2 / 2s^2)`` at ``n_bumps`` centers spanning
+    ``[x_min, x_max]``: angles ``(N, d)`` -> ``(N, d*n_bumps)``.
+
+    The *local* complement to the (global) Fourier basis; ``width`` defaults to the
+    center spacing so adjacent bumps overlap.  Centers are fixed (not data-dependent)
+    so train and test share the same map.
+    """
+    centers = torch.linspace(x_min, x_max, n_bumps, device=X.device, dtype=X.dtype)
+    s = width if width is not None else (x_max - x_min) / max(n_bumps - 1, 1)
+    diff = X.unsqueeze(-1) - centers                              # (N, d, n_bumps)
+    return torch.exp(-(diff ** 2) / (2 * s * s)).reshape(X.shape[0], -1)
+
+
+class ComboEmbedding(Embedding):
+    """``[x | Fourier(x) | Gaussian bumps]`` concatenated -- a broad, target-agnostic basis.
+
+    Stacks three complementary views of the angles: the raw ``x`` (linear/identity
+    structure), the periodic Fourier features ``[sin(jx), cos(jx)]_{j=1..order}``
+    (global oscillations), and localized Gaussian bumps (local structure).  Fed through
+    the Nystrom-RBF rank sweep (:func:`learn.svm._fit_score_rank`) this gives the kernel
+    both periodic and local resolution, so its RKHS covers a wide range of targets
+    without hand-picking a basis per dataset.  Width = ``2*order*d + d + n_bumps*d``.
+    """
+
+    name = "combo"
+
+    def __init__(self, fourier_order: int = 4, n_bumps: int = 8,
+                 x_min: float = 0.0, x_max: float = 2 * math.pi):
+        self.fourier_order = int(fourier_order)
+        self.n_bumps = int(n_bumps)
+        self.x_min, self.x_max = float(x_min), float(x_max)
+
+    def features(self, X: torch.Tensor) -> torch.Tensor:
+        return torch.cat([
+            X,                                                   # x itself
+            fourier_features(X, self.fourier_order),             # Fourier of x
+            gaussian_bump_features(X, self.n_bumps, self.x_min, self.x_max),  # "anti-Fourier"
+        ], dim=1)
+
+    def spec(self) -> dict:
+        return {"name": self.name, "fourier_order": self.fourier_order,
+                "n_bumps": self.n_bumps, "x_min": self.x_min, "x_max": self.x_max}
+
+    @classmethod
+    def from_spec(cls, spec: dict, cfg=None) -> "ComboEmbedding":
+        return cls(fourier_order=spec.get("fourier_order", 4),
+                   n_bumps=spec.get("n_bumps", 8),
+                   x_min=spec.get("x_min", 0.0),
+                   x_max=spec.get("x_max", 2 * math.pi))
 
 
 class QubitProjectedEmbedding(Embedding):
