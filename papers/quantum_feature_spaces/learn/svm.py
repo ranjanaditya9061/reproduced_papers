@@ -98,6 +98,36 @@ def _fit_score(F_tr, t_tr, F_te, t_te, *, C, gamma, epsilon):
     return float(reg.score(Ftr, ytr)), float(reg.score(Fte, yte))
 
 
+def _fit_score_rank(F_tr, t_tr, F_te, t_te, *, D, gamma="scale", alpha=1e-2, seed=0):
+    """RBF Kernel Ridge via a rank-``D`` Nystrom feature map; returns ``(train_r2, test_r2)``.
+
+    The *model-size* analogue of :func:`_fit_score`: the capacity knob is the Nystrom
+    rank ``D`` (number of landmarks) approximating the RBF Gram, at fixed dataset size.
+    Increasing ``D`` strictly improves the low-rank approximation, so the test-R^2
+    curve climbs monotonically toward exact RBF kernel ridge and then *saturates* --
+    and the ``alpha`` ridge penalty keeps the extra capacity from overfitting, so
+    there is no bias/variance U-turn as ``D`` grows.  ``D`` is clamped to ``n_train``
+    (the Nystrom rank cannot exceed the sample count).  Same TRAIN-only feature/target
+    standardization as :func:`_fit_score`; ``gamma='scale'`` maps to ``1/n_features``
+    (features are standardized, so ``Var(X) ~ 1``).
+    """
+    from sklearn.kernel_approximation import Nystroem
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+
+    xs = StandardScaler().fit(F_tr)
+    Ftr, Fte = xs.transform(F_tr), xs.transform(F_te)
+    mu, sd = float(t_tr.mean()), (float(t_tr.std()) or 1.0)
+    ytr, yte = (t_tr - mu) / sd, (t_te - mu) / sd
+
+    g = 1.0 / Ftr.shape[1] if gamma in ("scale", "auto") else float(gamma)
+    d = min(int(D), Ftr.shape[0])                       # Nystrom rank <= n_train
+    ny = Nystroem(kernel="rbf", gamma=g, n_components=d, random_state=seed).fit(Ftr)
+    Ptr, Pte = ny.transform(Ftr), ny.transform(Fte)
+    reg = Ridge(alpha=alpha).fit(Ptr, ytr)              # ridge keeps the curve monotone
+    return float(reg.score(Ptr, ytr)), float(reg.score(Pte, yte))
+
+
 def run_svm(
     embed_config_path,
     *,
