@@ -1,0 +1,262 @@
+"""MKL learnability curve: does a *linear combination* of classical kernels learn the
+target, and how much kernel dictionary does it take?  One line per dataset.
+
+The complexity axis is the **kernel dictionary** (its size / max interaction degree),
+*not* the sample count.  At each dictionary size we:
+
+1. build the candidate kernels (:func:`kernel_dictionary`),
+2. find the best nonnegative linear combination ``K = sum_i mu_i K_i`` in closed form by
+   **centered kernel-target alignment** (:func:`alignf`, Cortes-Mohri-Rostamizadeh 2012) --
+   no training in the loop,
+3. evaluate that single combined kernel with **closed-form KRR** (:func:`krr_eval`),
+   reading off test ``R^2``, the RKHS-norm certificate ``||f||_H^2 = alpha^T K alpha``
+   (small = learnable, exponential = not), and the effective dimension.
+
+The point (see the module docstring in :mod:`learn.capacity` for the model-size cousin):
+
+- ``dict_kind='rbf'`` -- a grid of RBF bandwidths.  Every kernel is *rotation-invariant*,
+  so is every combination, so this obeys the degree lower bound: it learns low-degree
+  targets and **stays flat on a high-degree one (qubit parity) no matter how many
+  bandwidths you add**.
+- ``dict_kind='poly'`` -- polynomial kernels of degree ``1..d``.  These *carry
+  interactions*, so as ``d`` grows the dictionary can represent higher-degree targets --
+  but a degree-``n`` target (parity) needs ``d=n``, i.e. a dictionary of feature dimension
+  ``~2^n``.  So the qubit curve only lifts at exponential dictionary size: the
+  classical/quantum separation, quantified.
+
+    python -m learn.mkl --configs-dir configs/Datasets --dict-kind poly --degrees 1 2 3 4 5 6
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+# Support `python -m learn.mkl` and `python learn/mkl.py`.
+if __package__ in (None, ""):
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "learn"
+
+import numpy as np
+
+from Generator import generate, load_config
+
+from .grid import discover_configs
+from .svm import _split_indices, load_target
+
+
+# --- kernel dictionary ------------------------------------------------------ #
+
+def kernel_dictionary(Xa, Xb, *, kind: str, degree: int, n_features: int, fourier_order: int = 3):
+    """Candidate (cross-)Grams ``[K_1(Xa, Xb), ...]`` for a dictionary of size ``degree``.
+
+    Each returned matrix is ``(len(Xa), len(Xb))`` so the same call builds the train Gram
+    (``Xa=Xb=Xtr``) and the test cross-Gram (``Xa=Xte, Xb=Xtr``).
+
+    - ``kind='rbf'``: ``degree`` RBF kernels at geometrically spaced bandwidths (all
+      rotation-invariant -> combination cannot beat the degree lower bound).
+    - ``kind='poly'``: polynomial kernels of degree ``1..degree`` (carry interactions ->
+      degree-``d`` targets become representable at ``d``, dictionary cost ``~n^d``).
+    - ``kind='fourier'``: interaction-degree ladder in the **Fourier** basis -- polynomial
+      kernels of degree ``1..degree`` on the Fourier features ``[sin(jx), cos(jx)]_{j<=order}``.
+      The periodic basis natural to angle inputs, and the *matched* one for the (band-limited,
+      cross-qubit) quantum targets; degree ``d`` = interaction order among Fourier modes.
+      **Feed raw angles here, not standardized ones** (periodicity lives in ``x``, not ``z``).
+    """
+    from sklearn.metrics.pairwise import polynomial_kernel, rbf_kernel
+
+    if kind == "rbf":
+        gammas = np.geomspace(1.0 / (4 * n_features), 4.0 / n_features, degree)
+        return [rbf_kernel(Xa, Xb, gamma=float(g)) for g in gammas]
+    if kind == "poly":
+        # degree-d homogeneous-ish polynomial kernels; coef0=1 keeps all lower orders too.
+        return [polynomial_kernel(Xa, Xb, degree=int(d), gamma=1.0 / n_features, coef0=1.0)
+                for d in range(1, degree + 1)]
+    if kind == "fourier":
+        import torch
+
+        from model.mlp import fourier_features
+        Fa = fourier_features(torch.as_tensor(Xa, dtype=torch.float32), fourier_order).numpy()
+        Fb = fourier_features(torch.as_tensor(Xb, dtype=torch.float32), fourier_order).numpy()
+        # interaction-order ladder among the Fourier modes (cross-qubit parity terms appear
+        # at high degree, as in `poly`, but in the periodic basis matched to the target).
+        return [polynomial_kernel(Fa, Fb, degree=int(d), gamma=1.0 / Fa.shape[1], coef0=1.0)
+                for d in range(1, degree + 1)]
+    raise ValueError(f"dict_kind must be 'rbf', 'poly', or 'fourier', got {kind!r}")
+
+
+# --- closed-form combination (ALIGNF) --------------------------------------- #
+
+def _center(K):
+    """Center a square Gram: ``H K H`` with ``H = I - 11^T/n`` (Mercer wrt empirical measure)."""
+    n = K.shape[0]
+    Kr = K - K.mean(0, keepdims=True)
+    return Kr - Kr.mean(1, keepdims=True)
+
+
+def alignf(Ks, y):
+    """Nonnegative weights ``mu`` maximizing centered alignment of ``sum_i mu_i K_i`` with
+    ``yy^T`` -- the closed-form MKL of Cortes-Mohri-Rostamizadeh (2012).
+
+    Solves ``argmin_{mu>=0} || sum mu_i K_i^c - yy^T ||_F^2 = mu^T M mu - 2 mu^T a`` (a tiny
+    nonnegative least-squares), with ``a_i = y^T K_i^c y`` and ``M_ij = <K_i^c, K_j^c>``.
+    ``Ks`` are the (square, train) Grams; ``y`` is the centered target.
+    """
+    from scipy.optimize import nnls
+
+    Kc = [_center(K) for K in Ks]
+    a = np.array([float(y @ Kc_i @ y) for Kc_i in Kc])
+    M = np.array([[float((Ki * Kj).sum()) for Kj in Kc] for Ki in Kc])
+    L = np.linalg.cholesky(M + 1e-9 * np.trace(M) / len(M) * np.eye(len(M)))  # M = L L^T
+    mu, _ = nnls(L.T, np.linalg.solve(L, a))               # argmin_{mu>=0} ||L^T mu - L^{-1}a||^2
+    s = mu.sum()
+    return mu / s if s > 0 else mu
+
+
+# --- closed-form KRR evaluation --------------------------------------------- #
+
+def krr_eval(Ktr, Kte, ytr, yte, *, lam):
+    """KRR on a *precomputed* combined kernel: ``(test_r2, rkhs_norm2, d_eff)``, all closed form.
+
+    ``rkhs_norm2 = alpha^T K alpha`` (``alpha = (K+lam I)^{-1} y`` = ``KernelRidge.dual_coef_``)
+    is the learnability certificate: O(1) when the target lives in the kernel's top modes,
+    blowing up when it needs exponentially-suppressed modes.  ``d_eff = tr[K(K+lam I)^{-1}]``.
+    """
+    from sklearn.kernel_ridge import KernelRidge
+
+    reg = KernelRidge(kernel="precomputed", alpha=lam).fit(Ktr, ytr)
+    alpha = np.asarray(reg.dual_coef_).ravel()
+    rkhs_norm2 = float(alpha @ Ktr @ alpha)
+    r2 = float(reg.score(Kte, yte))
+    n = Ktr.shape[0]
+    d_eff = float(np.trace(np.linalg.solve(Ktr + lam * np.eye(n), Ktr)))
+    return r2, rkhs_norm2, d_eff
+
+
+# --- driver ----------------------------------------------------------------- #
+
+def run_mkl(configs_dir, *, degrees=(1, 2, 3, 4, 5), dict_kind="poly", fourier_order=3,
+            n_fit=2000, n_test=1000, lam=1e-2, dataset_root="datasets", use_cache=True,
+            observable=None):
+    """Return ``(results, degrees)`` with ``results[label] = [{degree, r2, rkhs_norm2, d_eff}]``.
+
+    For each dataset, sweep the dictionary size ``degree``; at each size pick the best
+    linear kernel combination by :func:`alignf` and score it with :func:`krr_eval`.  Grams
+    are built on an ``n_fit``-row train subsample and an ``n_test`` test subsample (both
+    from the dataset's own split) to keep the ``O(N^2)`` Grams tractable.
+    """
+    from sklearn.preprocessing import StandardScaler
+
+    dataset_map = discover_configs(configs_dir)
+    degrees = list(degrees)
+    results = {}
+    for label, path in dataset_map.items():
+        dcfg = load_config(path)
+        generate(dcfg, out_root=dataset_root)                        # ensure the artifact exists
+        nfeat = dcfg.resolved_n_features
+        t = load_target(dcfg, dataset_root, observable=observable)
+        tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
+                                split_seed=dcfg.split.split_seed)
+        tr, te = tr[:n_fit], te[:n_test]
+
+        from Generator import artifact_path, load_raw
+        X = load_raw(artifact_path(dcfg, dataset_root))[0].numpy()
+        xtr_raw, xte_raw = X[tr.numpy()], X[te.numpy()]
+        if dict_kind == "fourier":
+            Xtr, Xte = xtr_raw, xte_raw                              # Fourier: keep raw angles (periodic)
+        else:
+            xs = StandardScaler().fit(xtr_raw)
+            Xtr, Xte = xs.transform(xtr_raw), xs.transform(xte_raw)
+        ytr, yte = t[tr].numpy(), t[te].numpy()
+        yc = ytr - ytr.mean()                                        # centered target for alignment
+
+        rows = []
+        for d in degrees:
+            Ks_tr = kernel_dictionary(Xtr, Xtr, kind=dict_kind, degree=d, n_features=nfeat,
+                                      fourier_order=fourier_order)
+            Ks_te = kernel_dictionary(Xte, Xtr, kind=dict_kind, degree=d, n_features=nfeat,
+                                      fourier_order=fourier_order)
+            mu = alignf(Ks_tr, yc)                                    # closed-form best combo
+            Ktr = sum(m * K for m, K in zip(mu, Ks_tr))
+            Kte = sum(m * K for m, K in zip(mu, Ks_te))
+            r2, rkhs, deff = krr_eval(Ktr, Kte, ytr, yte, lam=lam)
+            rows.append({"degree": d, "r2": r2, "rkhs_norm2": rkhs, "d_eff": deff})
+        results[label] = rows
+    return results, degrees
+
+
+def _lineplot(results, degrees, axis_label, save_path, *, metric="r2", show=False):
+    import matplotlib
+    if not show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ylabel = {"r2": "Test R²", "rkhs_norm2": "||f||_H^2  (log)", "d_eff": "effective dim"}[metric]
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for label, rows in results.items():
+        ys = [r[metric] for r in rows]
+        ax.plot(degrees, ys, marker="o", label=label)
+    if metric == "rkhs_norm2":
+        ax.set_yscale("log")
+    elif metric == "r2":
+        ax.axhline(0.0, color="grey", lw=0.8, ls="--")
+    ax.set_xlabel("kernel dictionary size / max degree")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"MKL (alignment + KRR) {metric} across {axis_label}")
+    ax.set_xticks(degrees)
+    ax.grid(True, alpha=0.3)
+    ax.legend(title=axis_label)
+    fig.tight_layout()
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=140)
+        print(f"[mkl] saved {save_path}")
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
+def main(argv=None) -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        prog="learn.mkl",
+        description="MKL learnability curve: best linear kernel combo (alignment) + KRR, per dataset.")
+    ap.add_argument("--configs-dir", default="configs/Datasets")
+    ap.add_argument("--dict-kind", default="poly", choices=["poly", "rbf"],
+                    help="'poly' (interaction-carrying, degree ladder) or 'rbf' (bandwidth grid)")
+    ap.add_argument("--degrees", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6],
+                    help="dictionary sizes / max degrees on the x-axis")
+    ap.add_argument("--metric", default="r2", choices=["r2", "rkhs_norm2", "d_eff"],
+                    help="which closed-form quantity to plot")
+    ap.add_argument("--n-fit", type=int, default=2000, help="train subsample (O(N^2) Grams)")
+    ap.add_argument("--n-test", type=int, default=1000)
+    ap.add_argument("--lam", type=float, default=1e-2, help="KRR ridge (the closed-form lambda)")
+    ap.add_argument("--axis-label", default=None)
+    ap.add_argument("--observable", default=None,
+                    help="re-score the saved distribution under this observable (spoqc_magic only)")
+    ap.add_argument("--save-dir", default="img")
+    ap.add_argument("--show", action="store_true")
+    ap.add_argument("--force", action="store_true", help="recompute datasets (skip cache)")
+    args = ap.parse_args(argv)
+
+    axis_label = args.axis_label or Path(args.configs_dir).name
+    results, degrees = run_mkl(args.configs_dir, degrees=args.degrees, dict_kind=args.dict_kind,
+                               n_fit=args.n_fit, n_test=args.n_test, lam=args.lam,
+                               use_cache=not args.force, observable=args.observable)
+
+    w = max(len(lbl) for lbl in results)
+    print(f"  dict_kind={args.dict_kind}  lam={args.lam}  n_fit={args.n_fit}\n")
+    print("  " + f"{'dataset':<{w}}  " + "  ".join(f"d={d:>2}" for d in degrees) + "   metric=" + args.metric)
+    for label, rows in results.items():
+        vals = "  ".join(f"{r[args.metric]:>6.2f}" for r in rows)
+        print(f"  {label:<{w}}  {vals}")
+
+    obs_tag = f"_{args.observable}" if args.observable else ""
+    save = Path(args.save_dir) / f"mkl_{args.dict_kind}_{args.metric}_{axis_label}{obs_tag}.png"
+    _lineplot(results, degrees, axis_label, save, metric=args.metric, show=args.show)
+
+
+if __name__ == "__main__":
+    main()

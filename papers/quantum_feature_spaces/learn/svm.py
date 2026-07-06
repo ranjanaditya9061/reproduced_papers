@@ -98,20 +98,32 @@ def _fit_score(F_tr, t_tr, F_te, t_te, *, C, gamma, epsilon):
     return float(reg.score(Ftr, ytr)), float(reg.score(Fte, yte))
 
 
-def _fit_score_rank(F_tr, t_tr, F_te, t_te, *, D, gamma="scale", alpha=1e-2, seed=0):
-    """RBF Kernel Ridge via a rank-``D`` Nystrom feature map; returns ``(train_r2, test_r2)``.
+def _fit_score_rank(F_tr, t_tr, F_te, t_te, *, D, gamma="scale", alpha=1e-2, seed=0,
+                    kernel="nystroem", F_lin_tr=None, F_lin_te=None):
+    """RBF-dynamics-as-features + a LINEAR ridge readout; returns ``(train_r2, test_r2)``.
 
-    The *model-size* analogue of :func:`_fit_score`: the capacity knob is the Nystrom
-    rank ``D`` (number of landmarks) approximating the RBF Gram, at fixed dataset size.
-    Increasing ``D`` strictly improves the low-rank approximation, so the test-R^2
-    curve climbs monotonically toward exact RBF kernel ridge and then *saturates* --
-    and the ``alpha`` ridge penalty keeps the extra capacity from overfitting, so
-    there is no bias/variance U-turn as ``D`` grows.  ``D`` is clamped to ``n_train``
-    (the Nystrom rank cannot exceed the sample count).  Same TRAIN-only feature/target
-    standardization as :func:`_fit_score`; ``gamma='scale'`` maps to ``1/n_features``
-    (features are standardized, so ``Var(X) ~ 1``).
+    The *model-size* analogue of :func:`_fit_score`: the capacity knob is ``D``, the
+    number of explicit RBF features, at fixed dataset size.  Both back-ends realize the
+    same object -- linear ridge on a finite-``D`` approximation of the RBF feature map,
+    i.e. RBF kernel ridge -- so the test-R^2 curve climbs monotonically toward exact
+    RBF kernel ridge and then *saturates*, with ``alpha`` keeping it from a bias/variance
+    U-turn:
+
+    - ``kernel='nystroem'`` (default): data-dependent landmarks; ``D`` is clamped to
+      ``n_train`` (a Nystrom rank cannot exceed the sample count).
+    - ``kernel='rff'``: random Fourier features (``RBFSampler``); ``D`` is unbounded, so
+      it can exceed ``n_train`` and push further up the curve.
+
+    **Junk separation.**  The RBF dynamics are built *only* on ``F`` -- keep that a
+    clean feature map (``combo`` is).  ``F_lin`` (optional) bypasses the kernel and is
+    concatenated straight into the linear ridge, so redundant/uninformative ("junk")
+    columns are down-weighted by ridge instead of dilating the RBF distance (which the
+    kernel cannot undo).  So: kernel sees ``F`` (clean); the linear layer trains on the
+    RBF features *plus* ``F_lin`` (junk and all).  Same TRAIN-only feature/target
+    standardization as :func:`_fit_score`; ``gamma='scale'`` maps to ``1/n_features``.
     """
-    from sklearn.kernel_approximation import Nystroem
+    import numpy as np
+    from sklearn.kernel_approximation import Nystroem, RBFSampler
     from sklearn.linear_model import Ridge
     from sklearn.preprocessing import StandardScaler
 
@@ -121,10 +133,24 @@ def _fit_score_rank(F_tr, t_tr, F_te, t_te, *, D, gamma="scale", alpha=1e-2, see
     ytr, yte = (t_tr - mu) / sd, (t_te - mu) / sd
 
     g = 1.0 / Ftr.shape[1] if gamma in ("scale", "auto") else float(gamma)
-    d = min(int(D), Ftr.shape[0])                       # Nystrom rank <= n_train
-    ny = Nystroem(kernel="rbf", gamma=g, n_components=d, random_state=seed).fit(Ftr)
-    Ptr, Pte = ny.transform(Ftr), ny.transform(Fte)
-    reg = Ridge(alpha=alpha).fit(Ptr, ytr)              # ridge keeps the curve monotone
+    if kernel == "linear":
+        Ptr, Pte = Ftr, Fte                             # no kernel step: plain linear ridge on F
+    elif kernel == "rff":
+        approx = RBFSampler(n_components=int(D), gamma=g, random_state=seed)
+        Ptr, Pte = approx.fit(Ftr).transform(Ftr), approx.transform(Fte)
+    elif kernel == "nystroem":
+        d = min(int(D), Ftr.shape[0])                   # Nystrom rank <= n_train
+        approx = Nystroem(kernel="rbf", gamma=g, n_components=d, random_state=seed)
+        Ptr, Pte = approx.fit(Ftr).transform(Ftr), approx.transform(Fte)
+    else:
+        raise ValueError(f"kernel must be 'nystroem', 'rff', or 'linear', got {kernel!r}")
+
+    if F_lin_tr is not None:                            # junk bypasses the kernel -> linear layer
+        ls = StandardScaler().fit(F_lin_tr)
+        Ptr = np.hstack([Ptr, ls.transform(F_lin_tr)])
+        Pte = np.hstack([Pte, ls.transform(F_lin_te)])
+
+    reg = Ridge(alpha=alpha).fit(Ptr, ytr)              # ridge keeps the curve monotone + kills junk
     return float(reg.score(Ptr, ytr)), float(reg.score(Pte, yte))
 
 

@@ -159,42 +159,73 @@ def gaussian_bump_features(X: torch.Tensor, n_bumps: int,
     return torch.exp(-(diff ** 2) / (2 * s * s)).reshape(X.shape[0], -1)
 
 
-class ComboEmbedding(Embedding):
-    """``[x | Fourier(x) | Gaussian bumps]`` concatenated -- a broad, target-agnostic basis.
+def rff_features(X: torch.Tensor, n_rff: int, gamma: float = 0.1,
+                 seed: int = 0) -> torch.Tensor:
+    """Random Fourier features approximating the RBF kernel ``exp(-gamma||x-x'||^2)``:
+    ``sqrt(2/n_rff) * cos(X W + b)`` with ``W ~ N(0, 2*gamma)``, ``b ~ U[0, 2pi)``.
 
-    Stacks three complementary views of the angles: the raw ``x`` (linear/identity
-    structure), the periodic Fourier features ``[sin(jx), cos(jx)]_{j=1..order}``
-    (global oscillations), and localized Gaussian bumps (local structure).  Fed through
-    the Nystrom-RBF rank sweep (:func:`learn.svm._fit_score_rank`) this gives the kernel
-    both periodic and local resolution, so its RKHS covers a wide range of targets
-    without hand-picking a basis per dataset.  Width = ``2*order*d + d + n_bumps*d``.
+    This is the *explicit* RBF feature map: a **linear** model over these columns is
+    RBF kernel ridge (exact as ``n_rff -> inf``).  Unlike ``x``/Fourier/bumps (which are
+    per-feature), the dense ``W`` mixes features, so these columns carry the cross-feature
+    *interactions*.  Weights are seeded/deterministic, so the map round-trips through the
+    embedding cache.  ``gamma`` is in raw-angle units (``x`` here is unstandardized).
+    """
+    if n_rff <= 0:
+        return X[:, :0]
+    d = X.shape[1]
+    g = torch.Generator(device=X.device).manual_seed(seed)
+    W = torch.randn(d, n_rff, generator=g, device=X.device, dtype=X.dtype) * math.sqrt(2.0 * gamma)
+    b = torch.rand(n_rff, generator=g, device=X.device, dtype=X.dtype) * (2 * math.pi)
+    return math.sqrt(2.0 / n_rff) * torch.cos(X @ W + b)
+
+
+class ComboEmbedding(Embedding):
+    """``[x | Fourier(x) | Gaussian bumps | RFF(x)]`` concatenated -- a broad basis meant
+    for a **linear** ridge readout (``kernel='linear'`` in :func:`learn.svm._fit_score_rank`).
+
+    Four complementary views of the angles: the raw ``x`` (linear/identity), periodic
+    Fourier ``[sin(jx), cos(jx)]`` (global oscillations), localized Gaussian bumps (local
+    structure), and ``n_rff`` random Fourier features (the *RBF dynamics* -- the only block
+    that mixes features, so it carries the interactions).  A linear model over all four is
+    RBF kernel ridge plus hand-crafted structure, and stays junk-tolerant because ridge can
+    down-weight any useless column (nothing goes through a kernel distance).  Set
+    ``n_rff=0`` to recover the original ``[x | Fourier | bumps]`` combo.
     """
 
     name = "combo"
 
     def __init__(self, fourier_order: int = 4, n_bumps: int = 8,
-                 x_min: float = 0.0, x_max: float = 2 * math.pi):
+                 x_min: float = 0.0, x_max: float = 2 * math.pi,
+                 n_rff: int = 256, rff_gamma: float = 0.1, rff_seed: int = 0):
         self.fourier_order = int(fourier_order)
         self.n_bumps = int(n_bumps)
         self.x_min, self.x_max = float(x_min), float(x_max)
+        self.n_rff = int(n_rff)
+        self.rff_gamma = float(rff_gamma)
+        self.rff_seed = int(rff_seed)
 
     def features(self, X: torch.Tensor) -> torch.Tensor:
         return torch.cat([
             X,                                                   # x itself
             fourier_features(X, self.fourier_order),             # Fourier of x
-            gaussian_bump_features(X, self.n_bumps, self.x_min, self.x_max),  # "anti-Fourier"
+            gaussian_bump_features(X, self.n_bumps, self.x_min, self.x_max),  # local bumps
+            rff_features(X, self.n_rff, self.rff_gamma, self.rff_seed),       # RBF dynamics
         ], dim=1)
 
     def spec(self) -> dict:
         return {"name": self.name, "fourier_order": self.fourier_order,
-                "n_bumps": self.n_bumps, "x_min": self.x_min, "x_max": self.x_max}
+                "n_bumps": self.n_bumps, "x_min": self.x_min, "x_max": self.x_max,
+                "n_rff": self.n_rff, "rff_gamma": self.rff_gamma, "rff_seed": self.rff_seed}
 
     @classmethod
     def from_spec(cls, spec: dict, cfg=None) -> "ComboEmbedding":
         return cls(fourier_order=spec.get("fourier_order", 4),
                    n_bumps=spec.get("n_bumps", 8),
                    x_min=spec.get("x_min", 0.0),
-                   x_max=spec.get("x_max", 2 * math.pi))
+                   x_max=spec.get("x_max", 2 * math.pi),
+                   n_rff=spec.get("n_rff", 256),
+                   rff_gamma=spec.get("rff_gamma", 0.1),
+                   rff_seed=spec.get("rff_seed", 0))
 
 
 class QubitProjectedEmbedding(Embedding):

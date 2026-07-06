@@ -79,16 +79,18 @@ def run_capacity(configs_dir, *, orders=(1, 2, 3, 4, 5, 6), n_train=2000, n_test
 
 def run_capacity_rank(configs_dir, *, ranks=(2, 4, 8, 16, 32, 64, 128, 256),
                       embedding=None, n_train=8000, n_test=2000, gamma="scale",
-                      alpha=1e-2, n_seeds=3, embeddings_root="embeddings",
-                      dataset_root="datasets", use_cache=True, observable=None):
-    """Return ``(results, ranks)``: test R^2 vs Nystrom kernel rank D, one line per dataset.
+                      alpha=1e-2, n_seeds=3, kernel="nystroem",
+                      embeddings_root="embeddings", dataset_root="datasets",
+                      use_cache=True, observable=None):
+    """Return ``(results, ranks)``: test R^2 vs RBF-feature count D, one line per dataset.
 
     The *model-size* companion to :func:`run_capacity`.  Instead of growing the
     Fourier order, this fixes the feature map (``embedding`` spec, default the raw
-    ``rbf`` angles) and sweeps the **Nystrom rank D** approximating the RBF Gram --
+    ``rbf`` angles) and sweeps ``D``, the number of explicit RBF features (``kernel``:
+    ``nystroem`` landmarks or ``rff`` random Fourier features) fed to a linear ridge --
     a genuine capacity axis at *fixed* dataset size.  Each D's R^2 is averaged over
-    ``n_seeds`` random landmark draws (Nystrom landmarks are random) for a smooth,
-    climb-then-saturate curve.  See :func:`learn.svm._fit_score_rank`.
+    ``n_seeds`` random draws for a smooth, climb-then-saturate curve.  See
+    :func:`learn.svm._fit_score_rank`.
     """
     from embedding import build_embeddings_for
 
@@ -115,9 +117,9 @@ def run_capacity_rank(configs_dir, *, ranks=(2, 4, 8, 16, 32, 64, 128, 256),
         r2s = []
         for D in ranks:
             seed_r2 = [_fit_score_rank(F_tr, t_tr, F_te, t_te, D=int(D), gamma=gamma,
-                                       alpha=alpha, seed=s)[1] for s in range(n_seeds)]
-            r2s.append(float(np.mean(seed_r2)))                  # average over landmark draws
-            print(r2s)
+                                       alpha=alpha, seed=s, kernel=kernel)[1]
+                       for s in range(n_seeds)]
+            r2s.append(float(np.mean(seed_r2)))                  # average over random draws
         results[label] = r2s
     return results, ranks
 
@@ -165,6 +167,9 @@ def main(argv=None) -> None:
                          "Kernel Ridge) instead of Fourier order -- climbs then saturates")
     ap.add_argument("--embedding-type", default="rbf",
                     help="feature map the RBF kernel is built on for the rank sweep")
+    ap.add_argument("--kernel", default="nystroem", choices=["nystroem", "rff"],
+                    help="RBF-feature back-end for the rank sweep: 'nystroem' (D<=n_train) "
+                         "or 'rff' random Fourier features (D unbounded)")
     ap.add_argument("--alpha", type=float, default=1e-2, help="ridge penalty (rank sweep)")
     ap.add_argument("--seeds", type=int, default=3,
                     help="Nystrom landmark draws to average per rank (rank sweep)")
@@ -190,9 +195,10 @@ def main(argv=None) -> None:
         results, xs = run_capacity_rank(
             args.configs_dir, ranks=args.ranks, embedding={"type": args.embedding_type},
             n_train=args.n_train, n_test=args.n_test, gamma=gamma, alpha=args.alpha,
-            n_seeds=args.seeds, use_cache=not args.force, observable=args.observable)
-        xlabel = f"Nystrom kernel rank D   (feature map: {args.embedding_type})"
-        title, col = "RBF-kernel (Nystrom) capacity", "D"
+            n_seeds=args.seeds, kernel=args.kernel, use_cache=not args.force,
+            observable=args.observable)
+        xlabel = f"RBF features D   ({args.kernel}; feature map: {args.embedding_type})"
+        title, col = f"RBF-dynamics ({args.kernel}) + linear ridge capacity", "D"
         save_path = Path(args.save_dir) / f"capacity_rank_{axis_label}{obs_tag}.png"
     else:                                                        # capacity axis: Fourier order
         results, xs = run_capacity(
