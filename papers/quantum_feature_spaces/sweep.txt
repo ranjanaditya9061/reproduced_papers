@@ -8,7 +8,28 @@ python3 -m Generator --config configs\data_spoqc_photonic.yaml
 
 python3 -m Generator --configs-dir configs\CX_Gates_Low
 
-python3 -m Generator --config configs\data_spoqc_photonic_one.yaml
+python3 -m Generator --config configs/T_gates/0_none.yaml
+python3 -m Generator --config configs/T_gates_3k/0_none.yaml
+python3 -m Generator --config configs/T_gates_6k/0_none.yaml
+python3 -m Generator --config configs/T_gates_10k/0_none.yaml
+
+
+python3 -m Generator --config configs/T_gates/1_one.yaml
+python3 -m Generator --config configs/T_gates_3k/1_one.yaml
+python3 -m Generator --config configs/T_gates_6k/1_one.yaml
+python3 -m Generator --config configs/T_gates_10k/1_one.yaml
+
+
+python3 -m Generator --config configs/T_gates/2_two.yaml
+python3 -m Generator --config configs/T_gates_3k/2_two.yaml
+python3 -m Generator --config configs/T_gates_6k/2_two.yaml
+python3 -m Generator --config configs/T_gates_10k/2_two.yaml
+
+
+python3 -m Generator --config configs/T_gates/3_three.yaml
+python3 -m Generator --config configs/T_gates_3k/3_three.yaml
+python3 -m Generator --config configs/T_gates_6k/3_three.yaml
+python3 -m Generator --config configs/T_gates_10k/3_three.yaml
 
 python3 -m Generator --config configs\data_spoqc_photonic_two.yaml
 
@@ -29,6 +50,6 @@ python -m learn.grid --configs-dir configs\CX_Gates --reg 1e-3
 
 python -m learn.grid --configs-dir configs\Layers --reg 1e-3
 
-python -m learn.capacity --configs-dir configs\datasets
+python -m learn.capacity_cv --configs-dir configs\datasets
 
 python3 render_dataset.py --config configs\data_spoqc_photonic.yaml  

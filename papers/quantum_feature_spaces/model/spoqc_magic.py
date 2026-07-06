@@ -17,7 +17,8 @@ from .spoqc_utils import _sandwich_concrete, parallel_row_map
 if TYPE_CHECKING:
     from Generator.config import ExperimentConfig
 
-OBSERVABLES = ("parity", "majority", "bunching", "n_first")
+OBSERVABLES = ("parity", "majority", "bunching", "n_first",
+               "max_prob", "max_state_sum", "max_prob_state_sum")
 
 
 def _apply_gap_gate(p, gate_kind, gate_params, j) -> None:
@@ -109,8 +110,19 @@ def _score_distribution(keys, probs, readout_modes, *, m, k, observable) -> floa
     if den <= 1e-12:
         return 0.0
     ksel, psel = keys[keep], probs[keep]
+    if observable in ("max_prob", "max_state_sum", "max_prob_state_sum"):
+        # Modal-outcome observables: pick the single most-likely post-selected state.
+        j = int(psel.argmax())
+        max_prob = float(psel[j] / den)          # its probability, conditional on mu=0
+        state_sum = float(np.arange(m) @ ksel[j][:m])   # index-weighted sum sum_i i*n_i over data modes
+        if observable == "max_prob":
+            return max_prob
+        if observable == "max_state_sum":
+            return state_sum
+        return max_prob * state_sum              # max_prob_state_sum: product of the two
+    
     if observable == "parity":
-        modes = tuple(range((m + 1) // 2))
+        modes = tuple([i*2 for i in range((m + 1) // 2)])
         sc = np.fromiter((_parity_score(row, modes) for row in ksel), float, len(ksel))
     elif observable == "majority":
         sc = np.fromiter((_majority_score(row, m, k) for row in ksel), float, len(ksel))
@@ -118,6 +130,7 @@ def _score_distribution(keys, probs, readout_modes, *, m, k, observable) -> floa
         sc = np.fromiter((_first_mode_score(row) for row in ksel), float, len(ksel))
     else:  # bunching
         sc = np.fromiter((_bunching_score(row) for row in ksel), float, len(ksel))
+    # print(float((psel * sc).sum()), den)
     return float((psel * sc).sum() / den)
 
 

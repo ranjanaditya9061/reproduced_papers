@@ -71,7 +71,7 @@ def _bunching_score(key) -> int:
 
 def _first_mode_score(key) -> int:
     """Photon count in the first mode; dotted with probs gives ``E[n_0]`` (in [0, k])."""
-    return int(key[0])
+    return int(key[0]%2)
 
 
 def _single_output_score(key, input_state) -> int:

@@ -120,10 +120,10 @@ def main(argv=None) -> None:
         prog="learn.capacity_cv",
         description="Validated Fourier-kernel capacity (best C,gamma per order), one line per dataset.")
     ap.add_argument("--configs-dir", default="configs/datasets")
-    ap.add_argument("--orders", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6])
+    ap.add_argument("--orders", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     ap.add_argument("--axis-label", default=None)
-    ap.add_argument("--n-train", type=int, default=2000)
-    ap.add_argument("--n-test", type=int, default=1000)
+    ap.add_argument("--n-train", type=int, default=8000)
+    ap.add_argument("--n-test", type=int, default=2000)
     ap.add_argument("--C-values", type=float, nargs="+", default=C_VALUES)
     ap.add_argument("--gamma-values", nargs="+", default=list(GAMMA_VALUES),
                     help="'scale', 'auto', or floats")
