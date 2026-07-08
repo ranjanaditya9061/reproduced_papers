@@ -112,10 +112,16 @@ def alignf(Ks, y):
     from scipy.optimize import nnls
 
     Kc = [_center(K) for K in Ks]
-    a = np.array([float(y @ Kc_i @ y) for Kc_i in Kc])
-    M = np.array([[float((Ki * Kj).sum()) for Kj in Kc] for Ki in Kc])
-    L = np.linalg.cholesky(M + 1e-9 * np.trace(M) / len(M) * np.eye(len(M)))  # M = L L^T
-    mu, _ = nnls(L.T, np.linalg.solve(L, a))               # argmin_{mu>=0} ||L^T mu - L^{-1}a||^2
+    # a = np.array([float(y @ Kc_i @ y) for Kc_i in Kc])
+    # M = np.array([[float((Ki * Kj).sum()) for Kj in Kc] for Ki in Kc])
+    # L = np.linalg.cholesky(M + 1e-8 * np.trace(M) / len(M) * np.eye(len(M)))  # M = L L^T
+    # mu, _ = nnls(L.T, np.linalg.solve(L, a))               # argmin_{mu>=0} ||L^T mu - L^{-1}a||^2
+    # 
+    n = Kc[0].shape[0]
+    A = np.stack([Ki.flatten() for Ki in Kc], axis = 1)
+    c = np.outer(y,y).flatten()
+    mu, _ = nnls(A,c)
+
     s = mu.sum()
     return mu / s if s > 0 else mu
 
@@ -285,8 +291,8 @@ def main(argv=None) -> None:
                     help="Fourier band [sin(jx),cos(jx)]_{j<=order} for --dict-kind fourier")
     ap.add_argument("--metric", default="r2", choices=["r2", "rkhs_norm2", "d_eff", "lam"],
                     help="which closed-form quantity to plot")
-    ap.add_argument("--n-fit", type=int, default=2000, help="train subsample (O(N^2) Grams)")
-    ap.add_argument("--n-test", type=int, default=1000)
+    ap.add_argument("--n-fit", type=int, default=8000, help="train subsample (O(N^2) Grams)")
+    ap.add_argument("--n-test", type=int, default=2000)
     ap.add_argument("--lam", type=float, default=1e-2, help="KRR ridge (fixed; ignored under --gcv)")
     ap.add_argument("--gcv", action="store_true",
                     help="choose the ridge per degree by closed-form GCV (fair across capacities)")

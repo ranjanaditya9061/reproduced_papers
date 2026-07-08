@@ -28,6 +28,7 @@ from .spoqc_prime import SpoqcPrimePhotonicTeacher
 from .spoqc_magic import SpoqcMagicPhotonicTeacher
 from .spoqc_magic_prime import SpoqcMagicPrimePhotonicTeacher
 from .spoqc_magic_rand import SpoqcMagicRandPhotonicTeacher
+from .spoqc_magic_rand_x import SpoqcMagicRandXPhotonicTeacher
 
 __all__ = [
     "Teacher",
@@ -44,4 +45,5 @@ __all__ = [
     "SpoqcMagicPhotonicTeacher",
     "SpoqcMagicPrimePhotonicTeacher",
     "SpoqcMagicRandPhotonicTeacher",
+    "SpoqcMagicRandXPhotonicTeacher",
 ]

@@ -29,8 +29,10 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
-    out = args.out or f"{cfg.generation.generator}.png"
     teacher = build_teacher(cfg)
+    out_path = teacher.hash_spec(cfg)["prep"]
+
+    out = f"render/{out_path}.png"
 
     try:
         path = teacher.render(out)

@@ -25,15 +25,17 @@ if TYPE_CHECKING:
     from Generator.config import ExperimentConfig
 
 
-class SpoqcMagicRandPhotonicTeacher(SpoqcMagicPhotonicTeacher):
+class SpoqcMagicRandXPhotonicTeacher(SpoqcMagicPhotonicTeacher):
     """spoqc_magic with a Haar-random ``SU(2)`` as the cluster-gap gate (fixed per seed)."""
 
-    name = "spoqc_magic_rand_photonic"
-    Gate_kind = "u3"
+    name = "spoqc_magic_rand_x_photonic"
+    # Gate_kind = "u3_x"
+    # gate_kinds = ["u3_x","u3_x_m","u3_x_s"]
 
     def __init__(self, m: int, k: int, n_features: int,
-                 observable: str = "parity", seed: int = 1234, t_var: int | None = None,gate_kind: str | None = None,
+                 observable: str = "parity", seed: int = 1234, t_var: int | None = None, gate_kind: str | None = None,
                  n_jobs: int = 1):
+        print(gate_kind,"G")
         super().__init__(m, k, n_features, observable=observable, seed=seed,
                          t_var=t_var, gate_kind=gate_kind, n_jobs=n_jobs)
         # Haar SU(2) via ZYZ Euler angles: phi, lam ~ U(0, 2pi); theta with sin(theta)
@@ -41,5 +43,5 @@ class SpoqcMagicRandPhotonicTeacher(SpoqcMagicPhotonicTeacher):
         rng = np.random.default_rng(self.seed)
         phi = rng.uniform(0.0, 2 * np.pi, size=k)
         lam = rng.uniform(0.0, 2 * np.pi, size=k)
-        theta = np.arccos(1.0 - 2.0 * rng.uniform(0.0, 1.0, size=k))
+        theta = rng.uniform(-np.pi/2, np.pi/2, size=k)
         self.gate_params = [(float(theta[j]), float(phi[j]), float(lam[j])) for j in range(k)]

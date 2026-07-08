@@ -41,6 +41,21 @@ def _apply_gap_gate(p, gate_kind, gate_params, j) -> None:
         p.gate.rz(0, float(lam))                        # ZYZ Euler: Rz(phi) Ry(theta) Rz(lam)
         p.gate.ry(0, float(theta))
         p.gate.rz(0, float(phi))
+    elif gate_kind == "u3_x":
+        theta, phi, lam = gate_params[j]
+        p.gate.rz(0, float(lam))                        # ZYZ Euler: Rz(phi) Ry(theta) Rz(lam)
+        p.gate.rx(0, float(theta))
+        p.gate.rz(0, float(phi))
+    elif gate_kind == "u3_x_m":
+        theta, phi, lam = gate_params[j]
+        p.gate.rz(0, float(lam/5))                        # ZYZ Euler: Rz(phi) Ry(theta) Rz(lam)
+        p.gate.rx(0, float(theta/5))
+        p.gate.rz(0, float(phi/5))
+    elif gate_kind == "u3_x_s":
+        theta, phi, lam = gate_params[j]
+        p.gate.rz(0, float(lam/20))                        # ZYZ Euler: Rz(phi) Ry(theta) Rz(lam)
+        p.gate.rx(0, float(theta/20))
+        p.gate.rz(0, float(phi/20))
     else:
         raise ValueError(f"unknown gap gate_kind {gate_kind!r}")
 
@@ -59,10 +74,11 @@ def _build_magic_processor(x, *, m, k, n_features, seed, t_var, gate_kind="t", g
     p.with_initial_source_state(np.outer(plus, plus.conj()))   # spin |+>
 
     for j in range(k):
-        p.emit(0, into=(2 * j, 2 * j + 1))             # data photon j+1
-        p.gate.h(0)                                     # cluster link (last one = readout rotation)
         if j < t_var:
             _apply_gap_gate(p, gate_kind, gate_params, j)   # magic: non-Clifford gate in this gap
+        p.emit(0, into=(2 * j, 2 * j + 1))             # data photon j+1
+        p.gate.h(0)                                     # cluster link (last one = readout rotation)
+        
     p.emit(0, into=(r0, r1))                            # readout photon
     p.add(r0, Detector(), record=r0)                   # measure readout in Z ...
     p.add(r1, Detector(), record=r1)                   # ... (r0,r1)=(1,0) -> mu=0
@@ -288,10 +304,10 @@ class SpoqcMagicPhotonicTeacher(Teacher):
 
     #: gap-gate spec (picklable): base injects the fixed ``T``.  Subclasses override
     #: in ``__init__`` (see spoqc_magic_prime / spoqc_magic_rand).
-    gate_kind = "t"
+    Gate_kind = "t"
 
     def __init__(self, m: int, k: int, n_features: int,
-                 observable: str = "parity", seed: int = 1234, t_var: int | None = None,
+                 observable: str = "parity", seed: int = 1234, t_var: int | None = None, gate_kind: str | None = None,
                  n_jobs: int = 1):
         super().__init__(n_features)
         if observable not in OBSERVABLES:
@@ -304,6 +320,9 @@ class SpoqcMagicPhotonicTeacher(Teacher):
             raise ValueError(f"need 2*k <= m for dual-rail emission (k={k}, m={m})")
         self.m, self.k, self.observable, self.seed = m, k, observable, int(seed)
         self.t_var = self.T_VAR if t_var is None else int(t_var)
+        print(gate_kind)
+        self.gate_kind = self.Gate_kind if gate_kind is None else str(gate_kind)
+        print(self.gate_kind)
         if not 0 <= self.t_var <= k:
             raise ValueError(f"t_var must be in [0, k]={0, k} (got {self.t_var})")
         self.n_jobs = int(n_jobs)         # 1=serial, -1=auto (CPUs-1), N=explicit workers
@@ -356,6 +375,8 @@ class SpoqcMagicPhotonicTeacher(Teacher):
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         Xn = X.detach().cpu().numpy()
         cap = self._capture
+        print(self.gate_kind)
+        print(self.t_var)
         tasks = [(row, self.m, self.k, self.t_var, self.n_features, self.seed,
                   self.observable, cap, self.gate_kind, self.gate_params) for row in Xn]
         # parallel_row_map preserves input order -> _record below stays row-aligned
@@ -376,7 +397,7 @@ class SpoqcMagicPhotonicTeacher(Teacher):
         p, _ = _build_magic_processor(xv, m=self.m, k=self.k, t_var=self.t_var,
                                       n_features=self.n_features, seed=self.seed,
                                       gate_kind=self.gate_kind, gate_params=self.gate_params)
-        p.pdisplay_hybrid()
+        p.pdisplay_hybrid(compact=False)
         plt.savefig(path)
         plt.close("all")
         return path
@@ -385,16 +406,17 @@ class SpoqcMagicPhotonicTeacher(Teacher):
     def from_config(cls, cfg: "ExperimentConfig") -> "SpoqcMagicPhotonicTeacher":
         return cls(m=cfg.problem.m, k=cfg.problem.k, n_features=cfg.resolved_n_features,
                    observable=cfg.problem.observable, seed=cfg.seeds.teacher_seed,
-                   t_var=cfg.problem.t_var, n_jobs=cfg.generation.n_jobs)
+                   t_var=cfg.problem.t_var, gate_kind = cfg.problem.gate_kind, n_jobs=cfg.generation.n_jobs)
 
     @classmethod
-    def _prep_tag(cls, cfg: "ExperimentConfig", t_var: int) -> str:
+    def _prep_tag(cls, cfg: "ExperimentConfig", t_var: int, gate_kind:str) -> str:
         """Prep string folded into the dataset hash; overridden by each gap-gate variant."""
-        return f"magic_T{t_var}_emitter_train_postselect_mu0"
+        return f"magic_{gate_kind}_{t_var}_emitter_train_postselect_mu0"
 
     @classmethod
     def hash_spec(cls, cfg: "ExperimentConfig") -> dict:
         # t_var (# of injected magic gates) is a spoqc_magic-only knob -> only this
         # teacher's hash sees it; it identifies the dataset alongside the prep tag.
         t_var = cls.T_VAR if cfg.problem.t_var is None else int(cfg.problem.t_var)
-        return {"observable": cfg.problem.observable, "prep": cls._prep_tag(cfg, t_var)}
+        gate_kind = cls.Gate_kind if cfg.problem.gate_kind is None else str(cfg.problem.gate_kind)
+        return {"observable": cfg.problem.observable, "prep": cls._prep_tag(cfg, t_var, gate_kind)}

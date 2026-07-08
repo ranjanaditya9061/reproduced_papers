@@ -26,15 +26,11 @@ class SpoqcMagicPrimePhotonicTeacher(SpoqcMagicPhotonicTeacher):
     """spoqc_magic with ``Rz(prime_j)`` (increasing primes) as the cluster-gap gate."""
 
     name = "spoqc_magic_prime_photonic"
-    gate_kind = "rz"
+    Gate_kind = "rz"
 
     def __init__(self, m: int, k: int, n_features: int,
-                 observable: str = "parity", seed: int = 1234, t_var: int | None = None,
+                 observable: str = "parity", seed: int = 1234, t_var: int | None = None,gate_kind: str | None = None,
                  n_jobs: int = 1):
         super().__init__(m, k, n_features, observable=observable, seed=seed,
-                         t_var=t_var, n_jobs=n_jobs)
+                         t_var=t_var, gate_kind=gate_kind, n_jobs=n_jobs)
         self.gate_params = [float(p) for p in _first_primes(k)]   # Rz(prime_j) per gap
-
-    @classmethod
-    def _prep_tag(cls, cfg: "ExperimentConfig", t_var: int) -> str:
-        return f"magic_rzprime_T{t_var}_emitter_train_postselect_mu0"

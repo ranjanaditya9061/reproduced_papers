@@ -53,3 +53,21 @@ python -m learn.grid --configs-dir configs\Layers --reg 1e-3
 python -m learn.capacity_cv --configs-dir configs\datasets
 
 python3 render_dataset.py --config configs\data_spoqc_photonic.yaml  
+
+
+python -m learn.mkl --configs-dir configs/magic_save_2 --dict-kind poly --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --observable max_prob --gcv
+python -m learn.mkl --configs-dir configs/magic_save_2 --dict-kind fourier --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --observable max_prob --gcv
+python -m learn.mkl --configs-dir configs/magic_save_2 --dict-kind rbf --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --observable max_prob --gcv
+
+
+python -m learn.mkl --configs-dir configs/magic_save_2 --dict-kind poly --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --gcv
+python -m learn.mkl --configs-dir configs/magic_save_2 --dict-kind fourier --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --gcv
+python -m learn.mkl --configs-dir configs/magic_save_2 --dict-kind rbf --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --gcv
+
+
+python -m learn.mkl --configs-dir configs/magic_save_1 --dict-kind fourier --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --observable max_prob --gcv
+python -m learn.mkl --configs-dir configs/magic_save_3 --dict-kind fourier --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --observable max_prob --gcv
+
+
+python -m learn.mkl --configs-dir configs/Qubits --dict-kind fourier --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --gcv
+python -m learn.mkl --configs-dir configs/datasets --dict-kind fourier --degrees 1 2 3 4 5 6 7 8 9 10 --metric r2 --gcv
