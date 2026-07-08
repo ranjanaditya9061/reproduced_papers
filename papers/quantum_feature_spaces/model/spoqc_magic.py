@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -19,6 +20,31 @@ if TYPE_CHECKING:
 
 OBSERVABLES = ("parity", "majority", "bunching", "n_first",
                "max_prob", "max_state_sum", "max_prob_state_sum")
+
+#: A ``match{N}_<base>`` observable first keeps only the post-selected states whose
+#: two data-mode halves agree in exactly ``N`` positions, then scores that subset
+#: with ``<base>`` (any plain :data:`OBSERVABLES` entry).  ``N`` ranges over
+#: ``[0, m//2]``: ``match0_*`` keeps rows whose halves differ everywhere (~empty for
+#: the sparse Fock supports here) and ``match{m//2}_*`` keeps only ``key1 == key2``.
+_MATCH_RE = re.compile(r"^match(\d+)_(.+)$")
+
+
+def _parse_observable(observable: str):
+    """Split an observable into ``(match_num, base)``.
+
+    Returns ``(None, observable)`` for a plain observable and ``(int, base)`` for a
+    ``match{N}_<base>`` observable (the half-agreement pre-selection knob, see
+    :data:`_MATCH_RE`).
+    """
+    mo = _MATCH_RE.match(observable)
+    if mo is None:
+        return None, observable
+    return int(mo.group(1)), mo.group(2)
+
+
+def _is_valid_observable(observable: str) -> bool:
+    """True if ``observable`` is a plain or ``match{N}_<base>`` observable we score."""
+    return _parse_observable(observable)[1] in OBSERVABLES
 
 
 def _apply_gap_gate(p, gate_kind, gate_params, j) -> None:
@@ -122,21 +148,43 @@ def _score_distribution(keys, probs, readout_modes, *, m, k, observable) -> floa
     if keys.size == 0:
         return 0.0
     keep = (keys[:, r0] == 1) & (keys[:, r1] == 0)     # readout photon in mode r0
-    den = float(probs[keep].sum())
+    ksel, psel = keys[keep], probs[keep]
+
+    match_num, base = _parse_observable(observable)
+    if match_num is not None:
+        # Split the m data modes in half (as in _majority_score) and keep only the
+        # states whose halves agree in exactly ``match_num`` positions, then take the
+        # expectation of ``base`` over that (renormalised) subset.
+        split = m // 2
+        agree = (ksel[:, :split] == ksel[:, split:2 * split]).sum(axis=1)
+        sub = agree == match_num
+        ksel, psel = ksel[sub], psel[sub]
+
+    return _score_selected(ksel, psel, m=m, k=k, observable=base)
+
+
+def _score_selected(ksel, psel, *, m, k, observable) -> float:
+    """Expectation of ``observable`` over already-selected states ``(ksel, psel)``.
+
+    ``psel`` is renormalised internally (divided by its own mass), so this is the
+    conditional expectation given whatever selection produced ``(ksel, psel)`` --
+    the ``mu=0`` post-selection and, for ``match{N}_*`` observables, the extra
+    half-agreement filter.
+    """
+    den = float(psel.sum())
     if den <= 1e-12:
         return 0.0
-    ksel, psel = keys[keep], probs[keep]
     if observable in ("max_prob", "max_state_sum", "max_prob_state_sum"):
-        # Modal-outcome observables: pick the single most-likely post-selected state.
+        # Modal-outcome observables: pick the single most-likely selected state.
         j = int(psel.argmax())
-        max_prob = float(psel[j] / den)          # its probability, conditional on mu=0
+        max_prob = float(psel[j] / den)          # its probability, conditional on the selection
         state_sum = float(np.arange(m) @ ksel[j][:m])   # index-weighted sum sum_i i*n_i over data modes
         if observable == "max_prob":
             return max_prob
         if observable == "max_state_sum":
             return state_sum
         return max_prob * state_sum              # max_prob_state_sum: product of the two
-    
+
     if observable == "parity":
         modes = tuple([i*2 for i in range((m + 1) // 2)])
         sc = np.fromiter((_parity_score(row, modes) for row in ksel), float, len(ksel))
@@ -146,7 +194,6 @@ def _score_distribution(keys, probs, readout_modes, *, m, k, observable) -> floa
         sc = np.fromiter((_first_mode_score(row) for row in ksel), float, len(ksel))
     else:  # bunching
         sc = np.fromiter((_bunching_score(row) for row in ksel), float, len(ksel))
-    # print(float((psel * sc).sum()), den)
     return float((psel * sc).sum() / den)
 
 
@@ -284,8 +331,9 @@ def score_from_distribution(dist, observable: str | None = None):
     whole point of persisting the full distribution.  Returns ``(n_rows,)`` scores.
     """
     obs = dist["observable"] if observable is None else observable
-    if obs not in OBSERVABLES:
-        raise ValueError(f"observable must be one of {OBSERVABLES}, got {obs!r}")
+    if not _is_valid_observable(obs):
+        raise ValueError(f"observable must be one of {OBSERVABLES} "
+                         f"(optionally match{{N}}_-prefixed), got {obs!r}")
     keys, probs, ro = dist["keys"], dist["probs"], dist["readout_modes"]
     m, k = dist["m"], dist["k"]
     return np.array(
@@ -310,8 +358,13 @@ class SpoqcMagicPhotonicTeacher(Teacher):
                  observable: str = "parity", seed: int = 1234, t_var: int | None = None, gate_kind: str | None = None,
                  n_jobs: int = 1):
         super().__init__(n_features)
-        if observable not in OBSERVABLES:
-            raise ValueError(f"observable must be one of {OBSERVABLES}, got {observable!r}")
+        if not _is_valid_observable(observable):
+            raise ValueError(f"observable must be one of {OBSERVABLES} "
+                             f"(optionally match{{N}}_-prefixed), got {observable!r}")
+        match_num, _ = _parse_observable(observable)
+        if match_num is not None and not 0 <= match_num <= m // 2:
+            raise ValueError(f"match observable N must be in [0, m//2]=[0, {m // 2}] "
+                             f"(got {match_num} in {observable!r})")
         if m % 2:
             raise ValueError("spoqc_photonic uses dual-rail photons -> requires even m")
         if k < 2:

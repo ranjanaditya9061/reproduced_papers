@@ -19,6 +19,7 @@ See ``configs/example_photonic.yaml`` for a complete example.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,7 +83,10 @@ class ExperimentConfig:
             raise ValueError(
                 f"unknown generator {g.generator!r}; choose from {sorted(TEACHERS)}"
             )
-        if p.observable not in OBSERVABLES:
+        # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
+        # validate the base observable and let the teacher check N against m.
+        base_observable = re.sub(r"^match\d+_", "", p.observable)
+        if base_observable not in OBSERVABLES:
             raise ValueError(
                 f"unknown observable {p.observable!r}; choose from {list(OBSERVABLES)}"
             )
