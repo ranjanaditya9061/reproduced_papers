@@ -464,6 +464,8 @@ class SpoqcMagicPhotonicTeacher(Teacher):
     @classmethod
     def _prep_tag(cls, cfg: "ExperimentConfig", t_var: int, gate_kind:str) -> str:
         """Prep string folded into the dataset hash; overridden by each gap-gate variant."""
+        if gate_kind == "t":
+            return f"magic_T{t_var}_emitter_train_postselect_mu0"
         return f"magic_{gate_kind}_{t_var}_emitter_train_postselect_mu0"
 
     @classmethod

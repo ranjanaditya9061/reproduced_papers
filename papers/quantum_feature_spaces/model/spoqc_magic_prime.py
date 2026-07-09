@@ -34,3 +34,8 @@ class SpoqcMagicPrimePhotonicTeacher(SpoqcMagicPhotonicTeacher):
         super().__init__(m, k, n_features, observable=observable, seed=seed,
                          t_var=t_var, gate_kind=gate_kind, n_jobs=n_jobs)
         self.gate_params = [float(p) for p in _first_primes(k)]   # Rz(prime_j) per gap
+
+    @classmethod
+    def _prep_tag(cls, cfg: "ExperimentConfig", t_var: int, gate_kind:str) -> str:
+        """Prep string folded into the dataset hash; overridden by each gap-gate variant."""
+        return f"magic_rzprime_T{t_var}_emitter_train_postselect_mu0"

@@ -43,3 +43,8 @@ class SpoqcMagicRandPhotonicTeacher(SpoqcMagicPhotonicTeacher):
         lam = rng.uniform(0.0, 2 * np.pi, size=k)
         theta = np.arccos(1.0 - 2.0 * rng.uniform(0.0, 1.0, size=k))
         self.gate_params = [(float(theta[j]), float(phi[j]), float(lam[j])) for j in range(k)]
+
+    @classmethod
+    def _prep_tag(cls, cfg: "ExperimentConfig", t_var: int, gate_kind:str) -> str:
+        """Prep string folded into the dataset hash; overridden by each gap-gate variant."""
+        return f"magic_u3rand_T{t_var}_emitter_train_postselect_mu0"
