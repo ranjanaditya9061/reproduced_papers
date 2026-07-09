@@ -13,8 +13,10 @@ amplitudes (for the fidelity kernel) and probabilities (for the projected kernel
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -24,6 +26,21 @@ if TYPE_CHECKING:
     from Generator.config import ExperimentConfig
 
 OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first")
+
+#: Base scorers usable under a ``loop_path_<base>`` graph observable (see
+#: :func:`_overlay_counts`).  ``loop``/``path`` return the mean loop/path count over
+#: the selected subset; the rest are the plain per-Fock-state scores above (minus
+#: ``single_output``), averaged over that same subset.
+GRAPH_BASES = ("parity", "majority", "bunching", "n_first", "loop", "path")
+
+#: A ``loop_path_<base>`` observable reinterprets each collision-free Fock outcome as
+#: an edge set of a fixed graph ``G`` (mode ``i`` <-> edge ``e_i``), keeps only the
+#: outcomes that are matchings, overlays them with a fixed reference perfect matching
+#: ``M_0`` (``H = E(x) | M_0``, a disjoint union of alternating loops/paths), then
+#: pre-selects on the loop/path counts (encoded in the observable string via ``__L`` /
+#: ``__P`` suffixes) before scoring ``<base>`` over the renormalised survivors.  See
+#: :class:`PhotonicTeacher`.
+_LOOP_PATH_RE = re.compile(r"^loop_path_(.+)$")
 
 
 def _default_input_state(m: int, k: int) -> list[int]:
@@ -83,6 +100,243 @@ def _single_output_score(key, input_state) -> int:
     return 0
 
 
+# --- loop_path_<base>: interpret Fock outcomes as edge sets of a fixed graph ---- #
+
+def _parse_var_segment(spec: str):
+    """Parse one ``L``/``P`` var spec body: dash-joined non-negative ints (empty = keep all)."""
+    spec = spec.strip()
+    if not spec:
+        return []                                       # e.g. ``__L`` -> [] -> keep all
+    try:
+        return [int(v) for v in spec.split("-")]
+    except ValueError as exc:
+        raise ValueError(f"bad loop_path var segment {spec!r}: expected dash-joined "
+                         "non-negative ints (empty = keep all)") from exc
+
+
+def parse_graph_observable(observable: str):
+    """Split a graph observable into ``(is_graph, base, loop_vars, path_vars)``.
+
+    Plain observables return ``(False, observable, None, None)``.  A ``loop_path_<base>``
+    string may carry filesystem-safe var suffixes ``__L<a>-<b>`` and/or ``__P<a>-<b>`` that
+    encode the loop / path selection directly (``__L`` with an empty body means keep-all);
+    a *missing* segment yields ``None`` (keep-all on that dimension).  So
+    ``loop_path_parity__L0-1__P2-3`` keeps overlays with 0-or-1 loops and 2-or-3 paths, while
+    ``loop_path_parity`` keeps every matching.
+    """
+    mo = _LOOP_PATH_RE.match(observable)
+    if mo is None:
+        return False, observable, None, None
+    parts = mo.group(1).split("__")
+    base = parts[0]
+    loop_vars = path_vars = None
+    for seg in parts[1:]:
+        if seg[:1] == "L":
+            loop_vars = _parse_var_segment(seg[1:])
+        elif seg[:1] == "P":
+            path_vars = _parse_var_segment(seg[1:])
+        else:
+            raise ValueError(f"bad loop_path segment {seg!r} in {observable!r} "
+                             "(expected L<ints> or P<ints>)")
+    return True, base, loop_vars, path_vars
+
+
+def is_graph_observable(observable: str) -> bool:
+    """True for a well-formed ``loop_path_<base>`` observable (``base`` in :data:`GRAPH_BASES`)."""
+    is_graph, base, _, _ = parse_graph_observable(observable)
+    return is_graph and base in GRAPH_BASES
+
+
+def resolve_graph_spec(observable: str, loop_vars, path_vars):
+    """``(base, eff_loop_vars, eff_path_vars)`` for a graph observable.
+
+    Vars encoded in the ``observable`` string are authoritative; a dimension left
+    unspecified in the string falls back to the passed ``loop_vars`` / ``path_vars`` (a
+    programmatic override, normally ``None`` -> keep-all, since the config carries the
+    selection only in the observable string).  Single source of truth for the teacher,
+    :meth:`PhotonicTeacher.hash_spec` and :func:`score_from_distribution`.
+    """
+    is_graph, base, s_loop, s_path = parse_graph_observable(observable)
+    if not is_graph:
+        raise ValueError(f"{observable!r} is not a loop_path_<base> observable")
+    eff_loop = s_loop if s_loop is not None else loop_vars
+    eff_path = s_path if s_path is not None else path_vars
+    return base, eff_loop, eff_path
+
+
+def _is_connected(edges, n_vertices: int) -> bool:
+    """True iff the undirected graph on ``n_vertices`` given by ``edges`` is connected."""
+    adj: dict[int, list[int]] = {v: [] for v in range(n_vertices)}
+    for u, w in edges:
+        adj[u].append(w)
+        adj[w].append(u)
+    seen = {0}
+    stack = [0]
+    while stack:
+        x = stack.pop()
+        for y in adj[x]:
+            if y not in seen:
+                seen.add(y)
+                stack.append(y)
+    return len(seen) == n_vertices
+
+
+def build_matching_graph(m: int, n_vertices: int, seed: int):
+    """A fixed, connected, seeded graph on ``n_vertices`` with ``m`` edges + a matching.
+
+    ``mode i <-> edges[i]``.  ``M_0`` (a *perfect* matching, ``n_vertices // 2`` edges,
+    marked by ``m0_mask``) is drawn first, then filled with distinct random edges up to
+    ``m`` total; the draw is repeated with a bumped sub-seed until the graph is connected
+    (so loop counts are genuinely global, per the expander requirement).  Deterministic
+    in ``seed`` -> reproducible and hashable.
+
+    Returns ``(edges, m0_mask)``: ``edges`` a list of ``m`` sorted ``(u, v)`` tuples and
+    ``m0_mask`` a ``(m,)`` bool array, ``True`` where the mode's edge belongs to ``M_0``.
+    """
+    V = int(n_vertices)
+    if V < 2 or V % 2:
+        raise ValueError(f"n_vertices must be a positive even int (got {V})")
+    half = V // 2
+    if m < half:
+        raise ValueError(f"need m >= V/2={half} to fit the reference matching (m={m})")
+    max_edges = V * (V - 1) // 2
+    if m > max_edges:
+        raise ValueError(f"m={m} exceeds C(V, 2)={max_edges} for V={V}")
+
+    all_edges = [(i, j) for i in range(V) for j in range(i + 1, V)]
+    for attempt in range(1024):
+        rng = np.random.default_rng(int(seed) + attempt)
+        perm = rng.permutation(V)                       # random perfect matching M_0
+        m0 = [tuple(sorted((int(perm[2 * t]), int(perm[2 * t + 1])))) for t in range(half)]
+        m0_set = set(m0)
+        rest = [e for e in all_edges if e not in m0_set]
+        rng.shuffle(rest)
+        edges = m0 + rest[: m - half]                   # M_0 first, then filler edges
+        if not _is_connected(edges, V):
+            continue
+        order = rng.permutation(m)                      # scatter M_0 across the mode indices
+        edges_p = [edges[o] for o in order]
+        m0_mask = np.array([edges[o] in m0_set for o in order], dtype=bool)
+        return edges_p, m0_mask
+    raise RuntimeError(f"could not draw a connected graph (V={V}, m={m}, seed={seed})")
+
+
+def _overlay_counts(key, edges, m0_edges: set, n_vertices: int):
+    """``(valid, n_loops, n_paths)`` for one Fock outcome ``key`` (per-mode counts).
+
+    ``valid`` is ``False`` for a bunched outcome (some mode > 1) or one whose clicked
+    edges share a vertex (not a matching).  Otherwise overlays the clicked edges with
+    ``M_0`` (set union, so an edge present in *both* becomes a length-1 path) and counts
+    cycle components (loops) and path components -- every vertex has degree <= 2 because
+    both are matchings, so each component is a simple loop or path.
+    """
+    counts = [int(c) for c in key]
+    if any(c > 1 for c in counts):
+        return False, 0, 0                              # bunched -> not collision-free
+    used: set[int] = set()
+    clicked = []
+    for i, c in enumerate(counts):
+        if not c:
+            continue
+        u, w = edges[i]
+        if u in used or w in used:
+            return False, 0, 0                          # shared vertex -> not a matching
+        used.add(u)
+        used.add(w)
+        clicked.append(edges[i])
+
+    union = m0_edges | set(clicked)                     # set union: shared edges collapse
+    adj: dict[int, list[int]] = {v: [] for v in range(n_vertices)}
+    for u, w in union:
+        adj[u].append(w)
+        adj[w].append(u)
+
+    seen = [False] * n_vertices
+    n_loops = n_paths = 0
+    for s in range(n_vertices):
+        if seen[s] or not adj[s]:
+            continue                                    # M_0 perfect -> no isolated vertex
+        stack = [s]
+        seen[s] = True
+        is_cycle = True
+        while stack:
+            x = stack.pop()
+            if len(adj[x]) != 2:
+                is_cycle = False                        # a degree-1 endpoint -> path
+            for y in adj[x]:
+                if not seen[y]:
+                    seen[y] = True
+                    stack.append(y)
+        n_loops += is_cycle
+        n_paths += not is_cycle
+    return True, n_loops, n_paths
+
+
+def _graph_tables(keys, edges, m0_mask, n_vertices: int):
+    """Per-Fock-state ``(valid, n_loops, n_paths)`` arrays over the fixed basis ``keys``."""
+    m0_edges = {edges[i] for i in range(len(edges)) if m0_mask[i]}
+    valid = np.zeros(len(keys), dtype=bool)
+    loops = np.zeros(len(keys), dtype=np.int64)
+    paths = np.zeros(len(keys), dtype=np.int64)
+    for i, key in enumerate(keys):
+        v, nl, npth = _overlay_counts(key, edges, m0_edges, n_vertices)
+        valid[i], loops[i], paths[i] = v, nl, npth
+    return valid, loops, paths
+
+
+def _graph_base_scores(keys, base: str, loops, paths, *, m: int, k: int):
+    """Per-Fock-state ``<base>`` score vector for a ``loop_path_<base>`` observable."""
+    if base == "loop":
+        return loops.astype(np.float64)
+    if base == "path":
+        return paths.astype(np.float64)
+    if base == "parity":
+        pm = tuple(range((m + 1) // 2))
+        return np.array([_parity_score(key, pm) for key in keys], dtype=np.float64)
+    if base == "majority":
+        return np.array([_majority_score(key, m, k) for key in keys], dtype=np.float64)
+    if base == "bunching":
+        return np.array([_bunching_score(key) for key in keys], dtype=np.float64)
+    if base == "n_first":
+        return np.array([_first_mode_score(key) for key in keys], dtype=np.float64)
+    raise ValueError(f"unknown graph base {base!r}; choose from {GRAPH_BASES}")
+
+
+def _var_mask(count_arr, vars_) -> np.ndarray:
+    """Keep-mask over ``count_arr``: keep where the count is in ``vars_``.
+
+    An empty/``None`` ``vars_`` -- or one containing a negative sentinel -- means "no
+    filter on this dimension" (keep every count), so ``loop_path_majority`` with both
+    lists empty selects all matchings.
+    """
+    if not vars_ or any(int(v) < 0 for v in vars_):
+        return np.ones_like(count_arr, dtype=bool)
+    allowed = {int(v) for v in vars_}
+    return np.array([int(c) in allowed for c in count_arr], dtype=bool)
+
+
+def _graph_selection(keys, *, m, k, base, edges, m0_mask, n_vertices, loop_vars, path_vars):
+    """``(keep_mask, base_scores)`` float vectors for a graph observable over ``keys``.
+
+    ``keep_mask`` = matching AND (loop count in ``loop_vars``) AND (path count in
+    ``path_vars``); ``base_scores`` is the per-state ``<base>`` value.  Both align to the
+    fixed Fock basis, so scoring a distribution is a masked, renormalised dot product.
+    """
+    valid, loops, paths = _graph_tables(keys, edges, m0_mask, n_vertices)
+    keep = valid & _var_mask(loops, loop_vars) & _var_mask(paths, path_vars)
+    scores = _graph_base_scores(keys, base, loops, paths, m=m, k=k)
+    return keep.astype(np.float64), scores
+
+
+def _conditional_expectation(probs: torch.Tensor, keep_mask: torch.Tensor,
+                             score_vec: torch.Tensor) -> torch.Tensor:
+    """``E[score | selected]`` per row of ``probs`` ``(N, n_fock)`` (0 where no mass survives)."""
+    sel = probs * keep_mask                             # broadcast (n_fock,)
+    den = sel.sum(dim=1)
+    num = sel @ score_vec
+    return torch.where(den > 1e-12, num / den.clamp(min=1e-12), torch.zeros_like(den))
+
+
 class PhotonicFeatureMap(nn.Module):
     """``|psi(x)> = W2 P(x) W1 |in>`` embedding (the W1->P(x)->W2 sandwich).
 
@@ -128,13 +382,22 @@ class PhotonicTeacher(Teacher):
     name = "photonic_quantum"
 
     def __init__(self, m: int, k: int, n_features: int,
-                 observable: str = "parity", seed: int = 1234, nsample: int = 0):
+                 observable: str = "parity", seed: int = 1234, nsample: int = 0,
+                 n_vertices: int | None = None, graph_seed: int | None = None):
         super().__init__(n_features)
-        if observable not in OBSERVABLES:
-            raise ValueError(f"observable must be one of {OBSERVABLES}, got {observable!r}")
+        self.is_graph = is_graph_observable(observable)
+        if not self.is_graph and observable not in OBSERVABLES:
+            raise ValueError(f"observable must be one of {OBSERVABLES} "
+                             f"(or loop_path_<base>, base in {GRAPH_BASES}), got {observable!r}")
         if observable == "majority" and m % 2:
             raise ValueError("observable 'majority' requires even m")
         self.m, self.k, self.observable, self.nsample = m, k, observable, int(nsample)
+        self.seed = int(seed)
+        self.n_vertices = None if n_vertices is None else int(n_vertices)
+        self.loop_vars = self.path_vars = None   # parsed from the observable string (graph obs)
+        self.graph_seed = self.seed if graph_seed is None else int(graph_seed)
+        self._capture = False
+        self._dist_probs: list = []       # per-forward (N, n_fock) prob matrices (capture)
 
         import merlin as ML
         import perceval as pcvl
@@ -151,7 +414,21 @@ class PhotonicTeacher(Teacher):
         )
 
         keys = list(self.layer.output_keys)
-        if observable == "parity":
+        self._fock_keys = keys
+        if self.is_graph:
+            if self.n_vertices is None:
+                raise ValueError("loop_path_<base> observables require n_vertices")
+            half = self.n_vertices // 2
+            if not k <= half <= m:
+                raise ValueError(f"loop_path_ needs k <= n_vertices//2 <= m "
+                                 f"(k={k}, n_vertices//2={half}, m={m})")
+            base, self.loop_vars, self.path_vars = resolve_graph_spec(observable, None, None)
+            self.edges, self.m0_mask = build_matching_graph(m, self.n_vertices, self.graph_seed)
+            keep, vec = _graph_selection(
+                keys, m=m, k=k, base=base, edges=self.edges, m0_mask=self.m0_mask,
+                n_vertices=self.n_vertices, loop_vars=self.loop_vars, path_vars=self.path_vars)
+            self.register_buffer("keep_mask", torch.tensor(keep, dtype=torch.float32))
+        elif observable == "parity":
             pm = tuple(range((m + 1) // 2))
             vec = [_parity_score(key, pm) for key in keys]
         elif observable == "majority":
@@ -167,17 +444,116 @@ class PhotonicTeacher(Teacher):
     @torch.no_grad()
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         probs = self.layer.forward(X, shots=self.nsample if self.nsample > 0 else None)
-        score = probs @ self.score_vec
-        if self.observable == "single_output":
-            score = score / probs.max(dim=1).values.clamp(min=1e-10)
+        if self._capture:
+            self._dist_probs.append(probs.detach().cpu().numpy())
+        if self.is_graph:
+            # E[base | matching & loop/path pre-selection]: renormalised masked mean.
+            score = _conditional_expectation(probs, self.keep_mask, self.score_vec)
+        else:
+            score = probs @ self.score_vec
+            if self.observable == "single_output":
+                score = score / probs.max(dim=1).values.clamp(min=1e-10)
         return score.unsqueeze(-1)  # (N, 1)
+
+    # --- optional full-distribution capture (parity with spoqc_magic) ---------- #
+
+    def enable_distribution_capture(self, enable: bool = True) -> None:
+        """Record every forward's full Fock distribution so it can be persisted.
+
+        Off by default; the generator turns it on when ``generation.save_dist`` is set,
+        letting the saved ``distributions.npz`` be re-scored offline under a different
+        observable / ``loop_vars`` / ``path_vars`` (:func:`score_from_distribution`)
+        without re-running the boson sampler.
+        """
+        self._capture = bool(enable)
+        self._dist_probs = []
+
+    def captured_distributions(self) -> dict:
+        """Recorded distributions as a dict (same shape as :func:`spoqc_magic.load_distributions`)."""
+        if not self._dist_probs:
+            raise RuntimeError("no distributions captured; call "
+                               "enable_distribution_capture() before forward()")
+        keys = np.array([[int(key[i]) for i in range(self.m)] for key in self._fock_keys],
+                        dtype=np.int16)
+        probs = np.vstack(self._dist_probs)
+        return {"keys": keys, "probs": probs, "readout_modes": (),
+                "m": self.m, "k": self.k, "observable": self.observable,
+                "t_var": None, "seed": self.seed}
+
+    def save_distributions(self, path):
+        """Write the captured distributions to ``path`` (a ``.npz``); returns the path."""
+        from .spoqc_magic import write_distributions
+        return write_distributions(path, self.captured_distributions())
 
     @classmethod
     def from_config(cls, cfg: "ExperimentConfig") -> "PhotonicTeacher":
-        return cls(m=cfg.problem.m, k=cfg.problem.k, n_features=cfg.resolved_n_features,
-                   observable=cfg.problem.observable, seed=cfg.seeds.teacher_seed,
-                   nsample=cfg.generation.nsample)
+        p = cfg.problem
+        return cls(m=p.m, k=p.k, n_features=cfg.resolved_n_features,
+                   observable=p.observable, seed=cfg.seeds.teacher_seed,
+                   nsample=cfg.generation.nsample, n_vertices=p.n_vertices,
+                   graph_seed=p.graph_seed)
 
     @classmethod
     def hash_spec(cls, cfg: "ExperimentConfig") -> dict:
-        return {"observable": cfg.problem.observable, "nsample": cfg.generation.nsample}
+        spec = {"observable": cfg.problem.observable, "nsample": cfg.generation.nsample}
+        if is_graph_observable(cfg.problem.observable):
+            p = cfg.problem
+            base, eff_loop, eff_path = resolve_graph_spec(p.observable, None, None)
+            # Canonicalise: the selection is folded into loop_vars/path_vars below, so
+            # ``__L0-1__P2`` and ``__P2__L0-1`` (same selection, different spelling) map to
+            # one dataset (identical teacher output -> identical hash).
+            spec.update(
+                observable=f"loop_path_{base}",
+                n_vertices=p.n_vertices,
+                loop_vars=None if eff_loop is None else sorted(int(v) for v in eff_loop),
+                path_vars=None if eff_path is None else sorted(int(v) for v in eff_path),
+                graph_seed=cfg.seeds.teacher_seed if p.graph_seed is None else int(p.graph_seed),
+            )
+        return spec
+
+
+def score_from_distribution(dist, observable: str | None = None, *,
+                            n_vertices: int | None = None, loop_vars=None,
+                            path_vars=None, graph_seed: int | None = None):
+    """Re-score a saved photonic distribution (dict from :func:`spoqc_magic.load_distributions`).
+
+    ``observable`` defaults to the stored one.  For a ``loop_path_<base>`` observable the
+    graph knobs (``n_vertices``, ``loop_vars``, ``path_vars``, ``graph_seed``) must be
+    supplied -- they are not persisted in the ``.npz`` -- and ``graph_seed`` defaults to the
+    stored teacher ``seed``.  ``__L``/``__P`` var suffixes encoded in ``observable`` override
+    the passed ``loop_vars`` / ``path_vars``, so a sweep can vary the selection purely
+    through the observable string.  Returns ``(n_rows,)`` scores.
+    """
+    obs = dist["observable"] if observable is None else observable
+    m, k = int(dist["m"]), int(dist["k"])
+    keys = [tuple(int(v) for v in row) for row in dist["keys"]]
+    probs = torch.as_tensor(np.atleast_2d(np.asarray(dist["probs"])), dtype=torch.float32)
+
+    if is_graph_observable(obs):
+        if n_vertices is None:
+            raise ValueError("re-scoring a loop_path_<base> observable needs n_vertices "
+                             "(+ loop_vars / path_vars / graph_seed)")
+        gseed = int(dist["seed"]) if graph_seed is None else int(graph_seed)
+        base, eff_loop, eff_path = resolve_graph_spec(obs, loop_vars, path_vars)
+        edges, m0_mask = build_matching_graph(m, int(n_vertices), gseed)
+        keep, vec = _graph_selection(keys, m=m, k=k, base=base, edges=edges, m0_mask=m0_mask,
+                                     n_vertices=int(n_vertices), loop_vars=eff_loop,
+                                     path_vars=eff_path)
+        score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),
+                                         torch.tensor(vec, dtype=torch.float32))
+        return score.numpy()
+
+    if obs not in OBSERVABLES:
+        raise ValueError(f"observable must be one of {OBSERVABLES} "
+                         f"(or loop_path_<base>), got {obs!r}")
+    if obs == "parity":
+        vec = [_parity_score(key, tuple(range((m + 1) // 2))) for key in keys]
+    elif obs == "majority":
+        vec = [_majority_score(key, m, k) for key in keys]
+    elif obs == "bunching":
+        vec = [_bunching_score(key) for key in keys]
+    elif obs == "n_first":
+        vec = [_first_mode_score(key) for key in keys]
+    else:  # single_output has no persisted input_state -> unsupported offline
+        raise ValueError(f"observable {obs!r} cannot be re-scored offline")
+    return (probs @ torch.tensor(vec, dtype=torch.float32)).numpy()

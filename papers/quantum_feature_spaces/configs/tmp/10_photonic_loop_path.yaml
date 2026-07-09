@@ -1,0 +1,38 @@
+name: "Photonic loop-path"
+# Grid dataset: teacher = photonic_quantum with a graph (loop_path_<base>) observable.
+# Each collision-free Fock outcome is read as an edge set of a fixed seeded graph G
+# (mode i <-> edge e_i); non-matchings are discarded, the matching is overlaid with a
+# fixed reference perfect matching M_0 (H = E(x) | M_0, a union of alternating loops and
+# paths), and the loop/path counts pre-select which states are scored.
+#
+# The loop/path selection is encoded IN the observable string:
+#   loop_path_<base>__L<a>-<b>__P<x>-<y>
+#     base (loop|path|parity|majority|bunching|n_first): score of the kept subset
+#       (loop/path -> mean loop/path count over that subset).
+#     __L<...> / __P<...> : keep states whose loop / path count is one of the listed
+#       (dash-joined) values; an omitted segment -- or no suffix -- keeps all on that
+#       dimension (so a bare loop_path_majority scores ALL matchings).
+# Here __L0-1__P2-3 keeps overlays with 0-or-1 loops and 2-or-3 paths.
+#
+# n_vertices > 2*k makes E(x) leave M_0-only vertices, so path counts genuinely vary
+# (here V=8 > 2k=6 -> path counts range over ~1..4).  save_dist -> distributions.npz so
+# the same pool can be re-scored under a different __L/__P selection or base offline.
+#   python -m Generator --config configs/Datasets/10_photonic_loop_path.yaml
+problem:
+  m: 10                       # 10 modes <-> 10 graph edges
+  k: 3                        # 3 photons -> a 3-edge matching E(x)
+  observable: loop_path_parity__L0-1__P2-3-4
+  n_features: null            # -> m-1 = 9
+  n_vertices: 8               # even; M_0 is a perfect matching (V/2 = 4 edges)
+  graph_seed: 7               # seeds G + M_0 (defaults to teacher_seed); part of the hash
+generation:
+  generator: photonic_quantum
+  size: 10000
+  nsample: 0
+  save_dist: true             # dump full per-input Fock distribution (offline re-scoring)
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

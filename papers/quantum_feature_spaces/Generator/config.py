@@ -27,6 +27,10 @@ import yaml
 
 OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first")
 
+#: Base scorers allowed under a photonic ``loop_path_<base>`` graph observable
+#: (mirrors :data:`model.photonic.GRAPH_BASES`).
+GRAPH_BASES = ("parity", "majority", "bunching", "n_first", "loop", "path")
+
 
 @dataclass
 class ProblemConfig:
@@ -38,6 +42,12 @@ class ProblemConfig:
     angle_levels: int | None = None  # spoqc_low-only: rx/ry drawn from +-0.1 .. +-0.1*angle_levels
     t_var: int | None = None       # spoqc_magic-only: # of gates (magic); 0=none .. k=one per emit
     gate_kind: str | None = None    #spoqc-magic only: Type of gate
+    # photonic loop_path_<base>-only: graph interpretation of the Fock outcomes.  The loop /
+    # path selection is encoded IN the observable string via ``__L``/``__P`` suffixes, e.g.
+    # ``loop_path_parity__L0-1__P2-3`` (dash-joined counts to keep); an omitted segment -- or
+    # no suffix at all -- keeps every count on that dimension.
+    n_vertices: int | None = None  # even; vertices of the fixed graph G (M_0 has V/2 edges)
+    graph_seed: int | None = None  # seeds G + M_0 (defaults to teacher_seed); folded into the hash
 
 @dataclass
 class GenerationConfig:
@@ -83,13 +93,38 @@ class ExperimentConfig:
             raise ValueError(
                 f"unknown generator {g.generator!r}; choose from {sorted(TEACHERS)}"
             )
-        # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
-        # validate the base observable and let the teacher check N against m.
-        base_observable = re.sub(r"^match\d+_", "", p.observable)
-        if base_observable not in OBSERVABLES:
-            raise ValueError(
-                f"unknown observable {p.observable!r}; choose from {list(OBSERVABLES)}"
-            )
+        # photonic loop_path_<base>: reinterpret Fock outcomes as graph edge sets
+        # (matching -> overlay with M_0 -> loop/path pre-selection -> score <base>).
+        if p.observable.startswith("loop_path_"):
+            # Parse via the model helper so encoded ``__L``/``__P`` var suffixes are
+            # stripped before the base is validated (see model.photonic).
+            from model.photonic import parse_graph_observable
+
+            _, base, _, _ = parse_graph_observable(p.observable)
+            if base not in GRAPH_BASES:
+                raise ValueError(
+                    f"unknown loop_path base {p.observable!r}; choose base from {list(GRAPH_BASES)}"
+                )
+            if g.generator != "photonic_quantum":
+                raise ValueError("loop_path_<base> observables are photonic_quantum only")
+            if p.n_vertices is None:
+                raise ValueError("loop_path_<base> observables require problem.n_vertices")
+            if p.n_vertices < 2 or p.n_vertices % 2:
+                raise ValueError(f"n_vertices must be a positive even int (got {p.n_vertices})")
+            half = p.n_vertices // 2
+            if not p.k <= half <= p.m:
+                raise ValueError(
+                    f"loop_path_ needs k <= n_vertices//2 <= m "
+                    f"(k={p.k}, n_vertices//2={half}, m={p.m})"
+                )
+        else:
+            # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
+            # validate the base observable and let the teacher check N against m.
+            base_observable = re.sub(r"^match\d+_", "", p.observable)
+            if base_observable not in OBSERVABLES:
+                raise ValueError(
+                    f"unknown observable {p.observable!r}; choose from {list(OBSERVABLES)}"
+                )
         if p.m < 2:
             raise ValueError(f"m must be >= 2 (got {p.m})")
         if p.n_features is not None and p.n_features > p.m - 1:

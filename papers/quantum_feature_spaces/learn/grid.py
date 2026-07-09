@@ -253,7 +253,9 @@ def main(argv=None) -> None:
                     help="ridge for geometric difference; raise if g(rbf||rbf) drifts above 1")
     ap.add_argument("--observable", default=None,
                     help="re-score the saved distribution under this observable instead of "
-                         "the stored soft (spoqc_magic + generation.save_dist only)")
+                         "the stored soft (needs generation.save_dist). Photonic graph "
+                         "observables may encode the selection, e.g. "
+                         "loop_path_parity__L0-1__P2-3")
     ap.add_argument("--save-dir", default="img", help="directory for the heatmap PNGs")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--force", action="store_true")

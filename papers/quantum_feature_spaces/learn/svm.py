@@ -39,24 +39,47 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
 
     Default (``observable=None``): the stored teacher output ``soft[:, 0]``.  When an
     ``observable`` is given, re-score the saved full distribution (``distributions.npz``,
-    written by the ``spoqc_magic`` teacher with ``generation.save_dist``) under that
+    written by a distribution-capturing teacher with ``generation.save_dist``) under that
     observable instead -- so a single generated dataset can be swept across *different*
     measurements without regenerating.  Raises if no distribution file is present.
+
+    The ``.npz`` format is shared, but the re-scorer is teacher-specific: ``photonic_quantum``
+    uses :func:`model.photonic.score_from_distribution` (for a ``loop_path_<base>`` override
+    the graph comes from ``dcfg.problem``'s ``n_vertices`` / ``graph_seed`` while the base
+    scorer *and* the loop/path selection ride in the observable string itself, e.g.
+    ``loop_path_parity__L0-1__P2-3``); every other teacher uses
+    :func:`model.spoqc_magic.score_from_distribution`.
     """
     if observable is None:
         return load_raw(artifact_path(dcfg, dataset_root))[1][:, 0]
 
-    from model.spoqc_magic import load_distributions, score_from_distribution
+    from model.spoqc_magic import load_distributions
 
     dpath = artifact_path(dcfg, dataset_root) / DIST_FILENAME
     if not dpath.exists():
         raise FileNotFoundError(
             f"observable override {observable!r} needs a saved distribution, but "
-            f"{dpath} is missing -- regenerate the dataset with generation.save_dist: true "
-            "(spoqc_magic only)"
+            f"{dpath} is missing -- regenerate the dataset with generation.save_dist: true"
         )
     dist = load_distributions(dpath)
-    return torch.tensor(score_from_distribution(dist, observable), dtype=torch.float32)
+
+    if dcfg.generation.generator == "photonic_quantum":
+        from model.photonic import is_graph_observable
+        from model.photonic import score_from_distribution as photonic_score
+
+        if is_graph_observable(observable):
+            # The loop/path selection rides in the observable string (__L/__P); the graph
+            # itself comes from the dataset config's n_vertices / graph_seed.
+            p = dcfg.problem
+            scores = photonic_score(dist, observable, n_vertices=p.n_vertices,
+                                    graph_seed=p.graph_seed)
+        else:
+            scores = photonic_score(dist, observable)
+    else:
+        from model.spoqc_magic import score_from_distribution as magic_score
+
+        scores = magic_score(dist, observable)
+    return torch.tensor(scores, dtype=torch.float32)
 
 
 def _split_indices(soft, *, test_fraction, split_seed):

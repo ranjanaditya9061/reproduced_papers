@@ -298,7 +298,9 @@ def main(argv=None) -> None:
                     help="choose the ridge per degree by closed-form GCV (fair across capacities)")
     ap.add_argument("--axis-label", default=None)
     ap.add_argument("--observable", default=None,
-                    help="re-score the saved distribution under this observable (spoqc_magic only)")
+                    help="re-score the saved distribution under this observable (needs "
+                         "generation.save_dist). Photonic graph observables may encode the "
+                         "selection, e.g. loop_path_parity__L0-1__P2-3")
     ap.add_argument("--save-dir", default="img")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--force", action="store_true", help="recompute datasets (skip cache)")
