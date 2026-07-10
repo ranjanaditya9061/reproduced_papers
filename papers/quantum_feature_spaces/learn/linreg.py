@@ -46,7 +46,7 @@ from .grid import discover_configs
 from .svm import _split_indices, load_target
 
 #: ridge grid searched per degree by leave-one-out GCV.
-LAMBDAS = np.geomspace(1e-6, 1e3, 25)
+LAMBDAS = np.geomspace(1e2, 1e5, 25)
 
 
 # --- feature bases (extensible registry) ------------------------------------ #
@@ -73,26 +73,33 @@ def _cos_features(X, order):
     return np.concatenate([np.cos(j * X) for j in range(1, order + 1)], axis=1)
 
 
-def _sincos_features(X, order):
-    """``[sin(j x_i), cos(j x_i)]_{j=1..order}`` -> ``(N, 2 * order * d)`` (full Fourier)."""
-    parts = []
-    for j in range(1, order + 1):
-        parts.append(np.sin(j * X))
-        parts.append(np.cos(j * X))
-    return np.concatenate(parts, axis=1)
-
-
 def _fourier_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
-    """Full Fourier modes ``[sin(j x_i), cos(j x_i)]_{j<=order}`` on the *raw* angles.
+    """Fourier modes ``[sin(j x_i), cos(j x_i)]_{j<=order}`` on the *raw* angles.
 
-    Both sin and cos, so it spans arbitrary periodic (even *and* odd) structure per component
-    -- the general matched basis for angle-encoded quantum targets (e.g. IQP, whose quadratic
-    phase produces odd/``sin`` and cross-frequency content that a cos-only basis cannot reach).
-    Products across coordinates (degree >= 2) supply the interactions.  Periodicity lives in
-    the raw angle, so these use unstandardised inputs; expanded columns are standardised
-    downstream.  See :func:`_cos_base` for the cheaper, even-only variant.
+    Periodicity lives in the raw angle ``x`` (inputs are in ``[0, 2pi]``), so these are built
+    from unstandardised inputs; the expanded columns are standardised downstream.
     """
-    return _sincos_features(Xtr_raw, fourier_order), _sincos_features(Xte_raw, fourier_order)
+    import torch
+    # Xtr_raw, Xte_raw = _standardize(Xtr_raw, Xte_raw)
+
+    from model.mlp import fourier_features
+    Btr = fourier_features(torch.as_tensor(Xtr_raw, dtype=torch.float32), fourier_order).numpy()
+    Bte = fourier_features(torch.as_tensor(Xte_raw, dtype=torch.float32), fourier_order).numpy()
+    return Btr, Bte
+
+def _combined_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
+
+    import torch
+
+    from model.mlp import fourier_features
+    Btr = fourier_features(torch.as_tensor(Xtr_raw, dtype=torch.float32), fourier_order).numpy()
+    Bte = fourier_features(torch.as_tensor(Xte_raw, dtype=torch.float32), fourier_order).numpy()
+    
+    Xtr, Xte = _standardize(Xtr_raw, Xte_raw)
+    Btr = np.concatenate((Btr, Xtr), axis=1) 
+    Bte = np.concatenate((Bte, Xte), axis=1) 
+
+    return Btr, Bte
 
 
 def _cos_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
@@ -111,6 +118,7 @@ FEATURE_BASES = {
     "monomial": _monomial_base,
     "fourier": _fourier_base,           # sin + cos (full)
     "cos": _cos_base,                   # cos-only (even, param-matched to monomial at order 1)
+    "combined": _combined_base
 }
 
 
@@ -141,7 +149,7 @@ def _fit_ridge_gcv(Ftr, ytr, Fte, yte, *, lambdas):
 # --- driver ----------------------------------------------------------------- #
 
 def sweep_config(dcfg, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5),
-                 fourier_order=3, n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
+                 max_fourier_order=3, n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
                  stop_r2=None, dataset_root="datasets", use_cache=True, observable=None,
                  label=""):
     """Explicit-feature degree sweep for ONE dataset config; returns ``{basis: [rows]}``.
@@ -174,27 +182,34 @@ def sweep_config(dcfg, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5)
     tag = f"{label} " if label else ""
     per_basis = {}
     for basis in bases:
-        Btr, Bte = FEATURE_BASES[basis](xtr, xte, n_features=nfeat, fourier_order=fourier_order)
-        n_in = Btr.shape[1]
-        rows = []
-        for di, d in enumerate(degrees):
-            dim = _expanded_dim(n_in, d)
-            if dim > max_feat:                                   # guard: never OOM silently
-                # dim is monotone in d, so every higher degree is too wide too: fill the
-                # remaining degrees with nan (kept for x-axis alignment) and stop.
-                print(f"[linreg] {tag}[{basis}]: degree {d} needs {dim} features "
-                      f"> max_feat={max_feat}; skipping degrees >= {d}")
-                rows.extend({"degree": dd, "train_r2": float("nan"), "test_r2": float("nan"),
-                             "lam": float("nan"), "n_feat": _expanded_dim(n_in, dd)}
-                            for dd in degrees[di:])
+        print(basis)
+        for fourier_order in max_fourier_order:
+            print("Fourier Order", fourier_order)
+            Btr, Bte = FEATURE_BASES[basis](xtr, xte, n_features=nfeat, fourier_order=fourier_order)
+            n_in = Btr.shape[1]
+            rows = []
+            for di, d in enumerate(degrees):
+                dim = _expanded_dim(n_in, d)
+                if dim > max_feat:                                   # guard: never OOM silently
+                    # dim is monotone in d, so every higher degree is too wide too: fill the
+                    # remaining degrees with nan (kept for x-axis alignment) and stop.
+                    print(f"[linreg] {tag}[{basis}]: degree {d} needs {dim} features "
+                        f"> max_feat={max_feat}; skipping degrees >= {d}")
+                    rows.extend({"degree": dd, "train_r2": float("nan"), "test_r2": float("nan"),
+                                "lam": float("nan"), "n_feat": _expanded_dim(n_in, dd)}
+                                for dd in degrees[di:])
+                    break
+                Ftr, Fte = _poly_expand(Btr, Bte, d)
+                Ftr, Fte = _standardize(Ftr, Fte)
+                tr_r2, te_r2, lam, nf = _fit_ridge_gcv(Ftr, ytr, Fte, yte, lambdas=lambdas)
+                rows.append({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
+                            "lam": lam, "n_feat": nf})
+                print({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
+                            "lam": lam, "n_feat": nf})
+                if stop_r2 is not None and te_r2 >= stop_r2:
+                    break                                            # min degree hit -> stop basis
+            if basis!="fourier":
                 break
-            Ftr, Fte = _poly_expand(Btr, Bte, d)
-            Ftr, Fte = _standardize(Ftr, Fte)
-            tr_r2, te_r2, lam, nf = _fit_ridge_gcv(Ftr, ytr, Fte, yte, lambdas=lambdas)
-            rows.append({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
-                         "lam": lam, "n_feat": nf})
-            if stop_r2 is not None and te_r2 >= stop_r2:
-                break                                            # min degree hit -> stop basis
         per_basis[basis] = rows
     return per_basis
 
@@ -266,7 +281,7 @@ def main(argv=None) -> None:
                     help="explicit feature bases to expand and fit (one line each)")
     ap.add_argument("--degrees", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6],
                     help="polynomial interaction degrees on the x-axis")
-    ap.add_argument("--fourier-order", type=int, default=1,
+    ap.add_argument("--fourier-order", type=int, default=2,
                     help="Fourier band [sin(jx),cos(jx)]_{j<=order} for the 'fourier' basis")
     ap.add_argument("--n-fit", type=int, default=8000, help="train subsample")
     ap.add_argument("--n-test", type=int, default=2000)

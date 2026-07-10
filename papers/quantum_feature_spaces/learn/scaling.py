@@ -125,8 +125,8 @@ def _curve(rows):
 
 
 def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monomial", "fourier"),
-                threshold=0.9, max_feat=20000, max_degree=10, n_fit=4000, n_test=2000,
-                fourier_order=3, lambdas=None, dataset_root="datasets", observable=None):
+                threshold=0.5, max_feat=100000, max_degree=20, n_fit=4000, n_test=2000,
+                max_fourier_order=3, lambdas=None, dataset_root="datasets", observable=None):
     """Sweep points x average points; return the JSON-serialisable results payload.
 
     ``sweep`` and ``average`` are lists of override dicts ``{dotted_field: value}`` (as produced
@@ -157,7 +157,7 @@ def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monom
                 print(f"[scaling] skip {_label(overrides)}: {exc}")
                 continue
             per_rows = sweep_config(
-                dcfg, bases=bases, degrees=degrees, fourier_order=fourier_order, n_fit=n_fit,
+                dcfg, bases=bases, degrees=degrees, max_fourier_order=max_fourier_order, n_fit=n_fit,
                 n_test=n_test, lambdas=lambdas, max_feat=max_feat, stop_r2=threshold,
                 dataset_root=dataset_root, observable=observable, label=_label(overrides))
             per_basis = {b: {**_summarize_basis(per_rows[b], threshold), "curve": _curve(per_rows[b])}
@@ -171,7 +171,7 @@ def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monom
     return {
         "meta": {"base_config": str(base_config), "bases": list(bases), "threshold": threshold,
                  "max_feat": max_feat, "max_degree": max_degree, "n_fit": n_fit, "n_test": n_test,
-                 "fourier_order": fourier_order, "observable": observable, "sweep": list(sweep),
+                 "max_fourier_order": max_fourier_order, "observable": observable, "sweep": list(sweep),
                  "average": list(average), "x_field": x_field, "x_label": x_field.split(".")[-1]},
         "runs": runs,
     }
@@ -303,14 +303,14 @@ def main(argv=None) -> None:
                     help="averaging group: FIELD=v1,v2,... e.g. problem.graph_seed=1,2,3")
     ap.add_argument("--x-field", default=None,
                     help="which swept field is the x-axis (default: first --sweep field)")
-    ap.add_argument("--bases", nargs="+", default=["monomial", "fourier"],
+    ap.add_argument("--bases", nargs="+", default=["fourier"],
                     choices=sorted(FEATURE_BASES))
-    ap.add_argument("--threshold", type=float, default=0.9, help="target test R^2")
+    ap.add_argument("--threshold", type=float, default=0.5, help="target test R^2")
     ap.add_argument("--max-feat", type=int, default=20000, help="stop a basis once wider than this")
-    ap.add_argument("--max-degree", type=int, default=10, help="largest degree to try")
-    ap.add_argument("--n-fit", type=int, default=4000)
+    ap.add_argument("--max-degree", type=int, default=5, help="largest degree to try")
+    ap.add_argument("--n-fit", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
-    ap.add_argument("--fourier-order", type=int, default=3,
+    ap.add_argument("--max-fourier-order", type=int, default=100,
                     help="harmonics per component for the fourier/cos bases")
     ap.add_argument("--lambdas", type=float, nargs="+", default=None)
     ap.add_argument("--observable", default=None,
@@ -318,7 +318,7 @@ def main(argv=None) -> None:
                          "photonic graph observables may encode the selection, e.g. "
                          "loop_path_parity__L0-1__P2-3")
     ap.add_argument("--dataset-root", default="datasets")
-    ap.add_argument("--save-data", default=None, help="write the raw results JSON here")
+    ap.add_argument("--save-data", default="scaling", help="write the raw results JSON here")
     ap.add_argument("--save-dir", default="img")
     ap.add_argument("--from-file", default=None,
                     help="skip compute; load a saved results JSON and just (re)plot")
@@ -335,7 +335,7 @@ def main(argv=None) -> None:
         payload = run_scaling(
             args.config, sweep, average, x_field=args.x_field or sweep_fields[0], bases=args.bases,
             threshold=args.threshold, max_feat=args.max_feat, max_degree=args.max_degree,
-            n_fit=args.n_fit, n_test=args.n_test, fourier_order=args.fourier_order,
+            n_fit=args.n_fit, n_test=args.n_test, max_fourier_order=args.max_fourier_order,
             lambdas=args.lambdas, dataset_root=args.dataset_root, observable=args.observable)
         if args.save_data:
             save_results(payload, args.save_data)
