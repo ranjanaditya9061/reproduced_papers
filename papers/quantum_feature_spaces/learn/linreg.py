@@ -148,25 +148,8 @@ def _fit_ridge_gcv(Ftr, ytr, Fte, yte, *, lambdas):
 
 # --- driver ----------------------------------------------------------------- #
 
-def sweep_config(dcfg, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5),
-                 max_fourier_order=3, n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
-                 stop_r2=None, dataset_root="datasets", use_cache=True, observable=None,
-                 label=""):
-    """Explicit-feature degree sweep for ONE dataset config; returns ``{basis: [rows]}``.
-
-    Each ``row`` is ``{degree, train_r2, test_r2, lam, n_feat}``.  ``degrees`` is processed
-    ascending; per basis the sweep stops early when the expansion would exceed ``max_feat``
-    (remaining degrees filled with ``nan`` for x-axis alignment) or -- when ``stop_r2`` is set
-    -- once test R^2 reaches ``stop_r2`` (higher degrees are then not computed, so the last row
-    is the minimum degree that hit the threshold).  Ridge lambda is chosen per degree by
-    LOO-GCV, so the across-degree comparison is fair.
-    """
-    unknown = [b for b in bases if b not in FEATURE_BASES]
-    if unknown:
-        raise ValueError(f"unknown basis {unknown}; choose from {sorted(FEATURE_BASES)}")
-    lambdas = LAMBDAS if lambdas is None else np.asarray(lambdas, dtype=float)
-    degrees = sorted(degrees)                                    # ascending -> dim monotone in d
-
+def _load_xy(dcfg, *, n_fit, n_test, dataset_root, observable):
+    """Generate/load the dataset and return ``(xtr, xte, ytr, yte, n_features)`` numpy arrays."""
     from Generator import artifact_path, load_raw
 
     generate(dcfg, out_root=dataset_root)                        # ensure the artifact exists
@@ -176,40 +159,102 @@ def sweep_config(dcfg, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5)
                             split_seed=dcfg.split.split_seed)
     tr, te = tr[:n_fit], te[:n_test]
     X = load_raw(artifact_path(dcfg, dataset_root))[0].numpy()
-    xtr, xte = X[tr.numpy()], X[te.numpy()]
-    ytr, yte = t[tr].numpy(), t[te].numpy()
+    return X[tr.numpy()], X[te.numpy()], t[tr].numpy(), t[te].numpy(), nfeat
+
+
+def sweep_config(dcfg, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5),
+                 fourier_order=3, n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
+                 stop_r2=None, dataset_root="datasets", use_cache=True, observable=None,
+                 label=""):
+    """Explicit-feature degree sweep at ONE fixed Fourier order; returns ``{basis: [rows]}``.
+
+    Each ``row`` is ``{degree, train_r2, test_r2, lam, n_feat}``.  ``degrees`` is processed
+    ascending; per basis the sweep stops early when the expansion would exceed ``max_feat``
+    (remaining degrees filled with ``nan`` for x-axis alignment) or -- when ``stop_r2`` is set
+    -- once test R^2 reaches ``stop_r2`` (higher degrees not computed, so the last row is the
+    minimum degree that hit the threshold).  Ridge lambda is picked per degree by LOO-GCV.  For
+    the R^2-vs-num-features view that also sweeps the Fourier order, see :func:`feature_grid`.
+    """
+    unknown = [b for b in bases if b not in FEATURE_BASES]
+    if unknown:
+        raise ValueError(f"unknown basis {unknown}; choose from {sorted(FEATURE_BASES)}")
+    lambdas = LAMBDAS if lambdas is None else np.asarray(lambdas, dtype=float)
+    degrees = sorted(degrees)                                    # ascending -> dim monotone in d
+    xtr, xte, ytr, yte, nfeat = _load_xy(dcfg, n_fit=n_fit, n_test=n_test,
+                                         dataset_root=dataset_root, observable=observable)
 
     tag = f"{label} " if label else ""
     per_basis = {}
     for basis in bases:
-        print(basis)
-        for fourier_order in max_fourier_order:
-            print("Fourier Order", fourier_order)
-            Btr, Bte = FEATURE_BASES[basis](xtr, xte, n_features=nfeat, fourier_order=fourier_order)
+        Btr, Bte = FEATURE_BASES[basis](xtr, xte, n_features=nfeat, fourier_order=fourier_order)
+        n_in = Btr.shape[1]
+        rows = []
+        for di, d in enumerate(degrees):
+            dim = _expanded_dim(n_in, d)
+            if dim > max_feat:                                   # guard: never OOM silently
+                # dim is monotone in d, so every higher degree is too wide too: fill the
+                # remaining degrees with nan (kept for x-axis alignment) and stop.
+                print(f"[linreg] {tag}[{basis}]: degree {d} needs {dim} features "
+                      f"> max_feat={max_feat}; skipping degrees >= {d}")
+                rows.extend({"degree": dd, "train_r2": float("nan"), "test_r2": float("nan"),
+                             "lam": float("nan"), "n_feat": _expanded_dim(n_in, dd)}
+                            for dd in degrees[di:])
+                break
+            Ftr, Fte = _poly_expand(Btr, Bte, d)
+            Ftr, Fte = _standardize(Ftr, Fte)
+            tr_r2, te_r2, lam, nf = _fit_ridge_gcv(Ftr, ytr, Fte, yte, lambdas=lambdas)
+            rows.append({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
+                         "lam": lam, "n_feat": nf})
+            if stop_r2 is not None and te_r2 >= stop_r2:
+                break                                            # min degree hit -> stop basis
+        per_basis[basis] = rows
+    return per_basis
+
+
+def feature_grid(dcfg, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5),
+                 fourier_orders=(1, 2, 3), n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
+                 dataset_root="datasets", use_cache=True, observable=None, label=""):
+    """Sweep the ``(fourier_order x degree)`` grid for ONE config; the R^2-vs-num-features view.
+
+    Returns ``{basis: [ {fourier_order, degree, n_feat, train_r2, test_r2, lam} ]}``.  Both knobs
+    inflate ``n_feat``, so plotting test R^2 against ``n_feat`` shows how learnability scales with
+    explicit model size regardless of *which* knob bought the capacity.  A basis whose base width
+    ignores the order (``monomial``) is built once -- duplicate-width orders are skipped -- and any
+    grid point wider than ``max_feat`` is omitted (logged), the degree loop stopping there (width
+    is monotone in degree).
+    """
+    unknown = [b for b in bases if b not in FEATURE_BASES]
+    if unknown:
+        raise ValueError(f"unknown basis {unknown}; choose from {sorted(FEATURE_BASES)}")
+    lambdas = LAMBDAS if lambdas is None else np.asarray(lambdas, dtype=float)
+    if isinstance(fourier_orders, int):
+        fourier_orders = (fourier_orders,)
+    fourier_orders = sorted({int(o) for o in fourier_orders})
+    degrees = sorted(degrees)
+    xtr, xte, ytr, yte, nfeat = _load_xy(dcfg, n_fit=n_fit, n_test=n_test,
+                                         dataset_root=dataset_root, observable=observable)
+
+    tag = f"{label} " if label else ""
+    per_basis = {}
+    for basis in bases:
+        rows, seen_widths = [], set()
+        for order in fourier_orders:
+            Btr, Bte = FEATURE_BASES[basis](xtr, xte, n_features=nfeat, fourier_order=order)
             n_in = Btr.shape[1]
-            rows = []
-            for di, d in enumerate(degrees):
+            if n_in in seen_widths:
+                continue                                         # order-independent basis: dedup
+            seen_widths.add(n_in)
+            for d in degrees:
                 dim = _expanded_dim(n_in, d)
-                if dim > max_feat:                                   # guard: never OOM silently
-                    # dim is monotone in d, so every higher degree is too wide too: fill the
-                    # remaining degrees with nan (kept for x-axis alignment) and stop.
-                    print(f"[linreg] {tag}[{basis}]: degree {d} needs {dim} features "
-                        f"> max_feat={max_feat}; skipping degrees >= {d}")
-                    rows.extend({"degree": dd, "train_r2": float("nan"), "test_r2": float("nan"),
-                                "lam": float("nan"), "n_feat": _expanded_dim(n_in, dd)}
-                                for dd in degrees[di:])
+                if dim > max_feat:                               # monotone in d -> stop this order
+                    print(f"[linreg] {tag}[{basis}] order {order}: degree {d} needs {dim} "
+                          f"features > max_feat={max_feat}; stopping this order")
                     break
                 Ftr, Fte = _poly_expand(Btr, Bte, d)
                 Ftr, Fte = _standardize(Ftr, Fte)
                 tr_r2, te_r2, lam, nf = _fit_ridge_gcv(Ftr, ytr, Fte, yte, lambdas=lambdas)
-                rows.append({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
-                            "lam": lam, "n_feat": nf})
-                print({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
-                            "lam": lam, "n_feat": nf})
-                if stop_r2 is not None and te_r2 >= stop_r2:
-                    break                                            # min degree hit -> stop basis
-            if basis!="fourier":
-                break
+                rows.append({"fourier_order": order, "degree": d, "n_feat": nf,
+                             "train_r2": tr_r2, "test_r2": te_r2, "lam": lam})
         per_basis[basis] = rows
     return per_basis
 

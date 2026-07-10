@@ -36,16 +36,19 @@ def test_parse_group_zips_covarying_fields():
         pass
 
 
-def test_summarize_basis_min_degree_and_capped():
-    reached = [{"degree": 1, "test_r2": 0.4}, {"degree": 2, "test_r2": 0.95}]
-    assert _summarize_basis(reached, 0.9) == {"min_degree": 2, "r2_at_min": 0.95, "capped": False}
+def test_summarize_basis_min_feature_over_grid():
+    # smallest n_feat clearing the threshold wins, even if it came from a higher order/degree
+    rows = [{"fourier_order": 1, "degree": 3, "n_feat": 80, "test_r2": 0.95},
+            {"fourier_order": 3, "degree": 1, "n_feat": 30, "test_r2": 0.92},
+            {"fourier_order": 2, "degree": 2, "n_feat": 50, "test_r2": 0.40}]
+    out = _summarize_basis(rows, 0.9)
+    assert out["min_n_feat"] == 30 and out["fourier_order"] == 3 and out["degree"] == 1
+    assert out["reached"] is True
 
-    capped = [{"degree": 1, "test_r2": 0.2}, {"degree": 2, "test_r2": float("nan")}]
-    out = _summarize_basis(capped, 0.9)
-    assert out["min_degree"] is None and out["capped"] is True
-
-    short = [{"degree": 1, "test_r2": 0.1}, {"degree": 2, "test_r2": 0.3}]
-    assert _summarize_basis(short, 0.9) == {"min_degree": None, "r2_at_min": None, "capped": False}
+    none = [{"fourier_order": 1, "degree": 1, "n_feat": 6, "test_r2": 0.2},
+            {"fourier_order": 2, "degree": 2, "n_feat": 40, "test_r2": 0.3}]
+    assert _summarize_basis(none, 0.9) == {"min_n_feat": None, "fourier_order": None,
+                                           "degree": None, "r2_at_min": None, "reached": False}
 
 
 def test_run_scaling_generic_fields_and_roundtrip(tmp_path):
@@ -78,4 +81,4 @@ def test_run_scaling_fixed_m_vary_other_field(tmp_path):
         for i in agg[b]:
             a = agg[b][i]
             assert a["n_total"] == 1
-            assert a["mean"] != a["mean"] or a["mean"] >= 1.0  # nan (none) or a real degree
+            assert a["mean"] != a["mean"] or a["mean"] >= 1.0  # nan (none) or a feature count

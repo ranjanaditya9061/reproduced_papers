@@ -10,11 +10,11 @@ config and two groups of **arbitrary** dotted config fields (nothing is hardcode
   ``problem.graph_seed=1,2,3`` or ``seeds.teacher_seed=1,2,3``.
 
 For every (sweep point x average point) the fields are written into a copy of the base config,
-and the explicit-feature degree sweep runs for each basis, recording the **minimum degree** at
-which test R^2 first reaches ``--threshold`` (or ``None``; ``capped`` distinguishes a
-``max_feat`` stop from merely running out of degrees).  Everything (incl. the full per-degree
-curve) is saved to JSON.  The plot then shows, per basis, the **mean min-degree over the
-average group vs the swept x-field** -- the classical-learnability scaling.
+and for each basis the ``(fourier_order x degree)`` grid is searched, recording the **minimum
+number of explicit features** ``n_feat`` at which test R^2 reaches ``--threshold`` (both knobs
+inflate ``n_feat``, so this is the smallest feature budget that learns).  Everything (incl. the
+full grid curve) is saved to JSON.  The plot then shows, per basis, the **mean min-``n_feat``
+over the average group vs the swept x-field** (log y) -- the classical feature-budget scaling.
 
     # sweep m,k together; average over the teacher seed
     python -m learn.scaling --config configs/Qubits/1_qubit.yaml \\
@@ -46,7 +46,7 @@ import numpy as np
 
 from Generator import load_config
 
-from .linreg import FEATURE_BASES, sweep_config
+from .linreg import FEATURE_BASES, feature_grid
 
 
 # --- config-field overriding + group parsing -------------------------------- #
@@ -110,28 +110,42 @@ def _clean(x):
 
 
 def _summarize_basis(rows, threshold):
-    """Min degree whose test R^2 >= ``threshold``; ``capped`` if max_feat stopped it first."""
+    """Smallest ``n_feat`` over the (order x degree) grid whose test R^2 >= ``threshold``.
+
+    ``rows`` are :func:`learn.linreg.feature_grid` points.  Returns the minimum feature count
+    that reaches the threshold and the ``(fourier_order, degree)`` that achieved it, or
+    ``reached=False`` if no computed grid point (within ``max_feat``) cleared it.
+    """
+    best = None
     for r in rows:
-        if not math.isnan(r["test_r2"]) and r["test_r2"] >= threshold:
-            return {"min_degree": int(r["degree"]), "r2_at_min": _clean(r["test_r2"]),
-                    "capped": False}
-    capped = any(math.isnan(r["test_r2"]) for r in rows)     # hit max_feat before threshold
-    return {"min_degree": None, "r2_at_min": None, "capped": capped}
+        te = r["test_r2"]
+        if te is None or math.isnan(te) or te < threshold:
+            continue
+        if best is None or r["n_feat"] < best["n_feat"]:
+            best = r
+    if best is None:
+        return {"min_n_feat": None, "fourier_order": None, "degree": None,
+                "r2_at_min": None, "reached": False}
+    return {"min_n_feat": int(best["n_feat"]), "fourier_order": int(best["fourier_order"]),
+            "degree": int(best["degree"]), "r2_at_min": _clean(best["test_r2"]), "reached": True}
 
 
 def _curve(rows):
-    return [{"degree": int(r["degree"]), "test_r2": _clean(r["test_r2"]),
-             "train_r2": _clean(r["train_r2"]), "n_feat": int(r["n_feat"])} for r in rows]
+    return [{"fourier_order": int(r["fourier_order"]), "degree": int(r["degree"]),
+             "n_feat": int(r["n_feat"]), "test_r2": _clean(r["test_r2"]),
+             "train_r2": _clean(r["train_r2"])} for r in rows]
 
 
 def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monomial", "fourier"),
-                threshold=0.5, max_feat=100000, max_degree=20, n_fit=4000, n_test=2000,
-                max_fourier_order=3, lambdas=None, dataset_root="datasets", observable=None):
+                threshold=0.5, max_feat=100000, max_degree=20, max_fourier_order=3,
+                n_fit=4000, n_test=2000, lambdas=None, dataset_root="datasets", observable=None):
     """Sweep points x average points; return the JSON-serialisable results payload.
 
     ``sweep`` and ``average`` are lists of override dicts ``{dotted_field: value}`` (as produced
     by :func:`parse_group`; ``average`` defaults to a single no-override repeat).  ``x_field``
-    (default: first field of the first sweep point) is the field plotted on the x-axis.
+    (default: first field of the first sweep point) is the field plotted on the x-axis.  At each
+    (sweep x average) point the ``(fourier_order x degree)`` grid is searched and the **minimum
+    feature count** reaching ``threshold`` is recorded.
     """
     if not sweep:
         raise ValueError("sweep must contain at least one point")
@@ -142,6 +156,7 @@ def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monom
 
     base = load_config(base_config)
     degrees = list(range(1, int(max_degree) + 1))
+    fourier_orders = list(range(1, int(max_fourier_order) + 1))
     runs = []
     for si, sp in enumerate(sweep):
         for ap in average:
@@ -156,22 +171,22 @@ def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monom
             except ValueError as exc:
                 print(f"[scaling] skip {_label(overrides)}: {exc}")
                 continue
-            per_rows = sweep_config(
-                dcfg, bases=bases, degrees=degrees, max_fourier_order=max_fourier_order, n_fit=n_fit,
-                n_test=n_test, lambdas=lambdas, max_feat=max_feat, stop_r2=threshold,
-                dataset_root=dataset_root, observable=observable, label=_label(overrides))
+            per_rows = feature_grid(
+                dcfg, bases=bases, degrees=degrees, fourier_orders=fourier_orders, n_fit=n_fit,
+                n_test=n_test, lambdas=lambdas, max_feat=max_feat, dataset_root=dataset_root,
+                observable=observable, label=_label(overrides))
             per_basis = {b: {**_summarize_basis(per_rows[b], threshold), "curve": _curve(per_rows[b])}
                          for b in bases}
             runs.append({"sweep_idx": si, "x": sp.get(x_field), "sweep": sp, "average": ap,
                          "per_basis": per_basis})
             for b in bases:
                 s = per_basis[b]
-                print(f"[scaling] {_label(overrides)} [{b}]: min_degree={s['min_degree']} "
-                      f"(r2={s['r2_at_min']}, capped={s['capped']})")
+                print(f"[scaling] {_label(overrides)} [{b}]: min_n_feat={s['min_n_feat']} "
+                      f"(order={s['fourier_order']}, degree={s['degree']}, r2={s['r2_at_min']})")
     return {
         "meta": {"base_config": str(base_config), "bases": list(bases), "threshold": threshold,
-                 "max_feat": max_feat, "max_degree": max_degree, "n_fit": n_fit, "n_test": n_test,
-                 "max_fourier_order": max_fourier_order, "observable": observable, "sweep": list(sweep),
+                 "max_feat": max_feat, "max_degree": max_degree, "max_fourier_order": max_fourier_order,
+                 "n_fit": n_fit, "n_test": n_test, "observable": observable, "sweep": list(sweep),
                  "average": list(average), "x_field": x_field, "x_label": x_field.split(".")[-1]},
         "runs": runs,
     }
@@ -198,20 +213,20 @@ def load_results(path):
 
 
 def aggregate(payload):
-    """``{basis: {sweep_idx: {x, mean, std, n_reached, n_total}}}`` of min-degree over the
+    """``{basis: {sweep_idx: {x, mean, std, n_reached, n_total}}}`` of min-``n_feat`` over the
     average group (nan-safe)."""
     from collections import defaultdict
 
     bases = payload["meta"]["bases"]
     sweep = payload["meta"]["sweep"]
     xf = payload["meta"]["x_field"]
-    vals = defaultdict(list)                                  # (basis, sweep_idx) -> [min_degree]
+    vals = defaultdict(list)                                  # (basis, sweep_idx) -> [min_n_feat]
     totals = defaultdict(int)                                 # (basis, sweep_idx) -> repeats run
     for run in payload["runs"]:
         si = run["sweep_idx"]
         for b in bases:
             totals[(b, si)] += 1
-            md = run["per_basis"][b]["min_degree"]
+            md = run["per_basis"][b]["min_n_feat"]
             if md is not None:
                 vals[(b, si)].append(md)
     agg = {}
@@ -246,7 +261,10 @@ def _plot(payload, save_path, *, show=False):
     for b in payload["meta"]["bases"]:
         means = [agg[b][i]["mean"] for i in idxs]
         stds = [agg[b][i]["std"] for i in idxs]
-        ax.errorbar(xpos, means, yerr=stds, marker="o", capsize=3, label=b)
+        line, = ax.plot(xpos, means, marker="o", label=b)
+        lo = [max(m - s, 1) for m, s in zip(means, stds)]    # clamp for the log axis
+        ax.fill_between(xpos, lo, [m + s for m, s in zip(means, stds)],
+                        color=line.get_color(), alpha=0.15)
         for i in idxs:                                       # flag partial-coverage points
             a = agg[b][i]
             if 0 < a["n_reached"] < a["n_total"]:
@@ -255,10 +273,11 @@ def _plot(payload, save_path, *, show=False):
     if not numeric:
         ax.set_xticks(xpos)
         ax.set_xticklabels([str(x) for x in xvals])
+    ax.set_yscale("log")
     ax.set_xlabel(xl)
-    ax.set_ylabel(f"min degree to reach test R² ≥ {thr}  (mean ± std over averages)")
-    ax.set_title(f"Interaction degree needed to learn vs {xl}")
-    ax.grid(True, alpha=0.3)
+    ax.set_ylabel(f"min # features to reach test R² ≥ {thr}  (mean ± std over averages)")
+    ax.set_title(f"Feature budget needed to learn vs {xl}")
+    ax.grid(True, alpha=0.3, which="both")
     ax.legend(title="basis")
     fig.tight_layout()
     if save_path:
@@ -274,7 +293,7 @@ def _print_table(payload):
     agg = aggregate(payload)
     sweep = payload["meta"]["sweep"]
     xl = payload["meta"]["x_label"]
-    print(f"\n  min degree to reach R^2 >= {payload['meta']['threshold']:.2f} "
+    print(f"\n  min # features to reach R^2 >= {payload['meta']['threshold']:.2f} "
           f"(mean over averages; * = partial, - = none reached):")
     for b in payload["meta"]["bases"]:
         cells = []
@@ -284,7 +303,7 @@ def _print_table(payload):
                 cells.append(f"{xl}={a['x']}: -")
             else:
                 mark = "" if a["n_reached"] == a["n_total"] else "*"
-                cells.append(f"{xl}={a['x']}: {a['mean']:.2f}{mark}")
+                cells.append(f"{xl}={a['x']}: {a['mean']:.0f}{mark}")
         print(f"    {b:<10} " + "   ".join(cells))
 
 
@@ -293,7 +312,8 @@ def main(argv=None) -> None:
 
     ap = argparse.ArgumentParser(
         prog="learn.scaling",
-        description="Min interaction degree to learn (test R^2 >= threshold) vs a swept config field.")
+        description="Min # features to learn (test R^2 >= threshold, searching order x degree) "
+                    "vs a swept config field.")
     ap.add_argument("--config", required=True,
                     help="base experiment config; swept/averaged fields are overridden on a copy")
     ap.add_argument("--sweep", nargs="+",
@@ -307,11 +327,11 @@ def main(argv=None) -> None:
                     choices=sorted(FEATURE_BASES))
     ap.add_argument("--threshold", type=float, default=0.5, help="target test R^2")
     ap.add_argument("--max-feat", type=int, default=20000, help="stop a basis once wider than this")
-    ap.add_argument("--max-degree", type=int, default=5, help="largest degree to try")
+    ap.add_argument("--max-degree", type=int, default=5, help="largest interaction degree to try")
     ap.add_argument("--n-fit", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
-    ap.add_argument("--max-fourier-order", type=int, default=100,
-                    help="harmonics per component for the fourier/cos bases")
+    ap.add_argument("--max-fourier-order", type=int, default=3,
+                    help="search Fourier orders 1..this alongside degree (both inflate n_feat)")
     ap.add_argument("--lambdas", type=float, nargs="+", default=None)
     ap.add_argument("--observable", default=None,
                     help="re-score the saved distribution under this observable (needs save_dist); "
@@ -335,7 +355,7 @@ def main(argv=None) -> None:
         payload = run_scaling(
             args.config, sweep, average, x_field=args.x_field or sweep_fields[0], bases=args.bases,
             threshold=args.threshold, max_feat=args.max_feat, max_degree=args.max_degree,
-            n_fit=args.n_fit, n_test=args.n_test, max_fourier_order=args.max_fourier_order,
+            max_fourier_order=args.max_fourier_order, n_fit=args.n_fit, n_test=args.n_test,
             lambdas=args.lambdas, dataset_root=args.dataset_root, observable=args.observable)
         if args.save_data:
             save_results(payload, args.save_data)
