@@ -230,7 +230,7 @@ def _overlay_counts(key, edges, m0_edges: set, n_vertices: int):
     cycle components (loops) and path components -- every vertex has degree <= 2 because
     both are matchings, so each component is a simple loop or path.
     """
-    counts = [int(c) for c in key]
+    counts = [int(c-1) if c>1 else int(c) for c in key]
     if any(c > 1 for c in counts):
         return False, 0, 0                              # bunched -> not collision-free
     used: set[int] = set()
@@ -269,6 +269,10 @@ def _overlay_counts(key, edges, m0_edges: set, n_vertices: int):
                     stack.append(y)
         n_loops += is_cycle
         n_paths += not is_cycle
+    print(m0_edges, key)
+    print(edges)
+    print(n_loops, n_paths)
+    
     return True, n_loops, n_paths
 
 
@@ -281,6 +285,7 @@ def _graph_tables(keys, edges, m0_mask, n_vertices: int):
     for i, key in enumerate(keys):
         v, nl, npth = _overlay_counts(key, edges, m0_edges, n_vertices)
         valid[i], loops[i], paths[i] = v, nl, npth
+    print(np.sum(valid), len(valid), np.array2string(np.array(list(set(loops))), separator=', '), np.array2string(np.array(list(set(paths))), separator=', '))
     return valid, loops, paths
 
 

@@ -245,7 +245,7 @@ def main(argv=None) -> None:
                     help="x-axis title for the sweep (default: the folder name)")
     ap.add_argument("--n-train", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
-    ap.add_argument("--n-gram", type=int, default=1000, help="rows for the O(N^3) geometric difference")
+    ap.add_argument("--n-gram", type=int, default=10, help="rows for the O(N^3) geometric difference")
     ap.add_argument("--C", type=float, default=1.0, help="SVR regularisation (smaller = more regularized)")
     ap.add_argument("--gamma", default="scale")
     ap.add_argument("--epsilon", type=float, default=0.01, help="SVR epsilon-insensitive tube")
