@@ -7,13 +7,13 @@ import math
 import numpy as np
 
 from learn.linreg import (
-    FEATURE_BASES, _expanded_dim, _fit_ridge_gcv, _fourier_base, _monomial_base,
+    FEATURE_BASES, _cos_base, _expanded_dim, _fit_ridge_gcv, _fourier_base, _monomial_base,
     _poly_expand, run_linreg,
 )
 
 
 def test_feature_bases_registry():
-    assert set(FEATURE_BASES) >= {"monomial", "fourier"}
+    assert set(FEATURE_BASES) >= {"monomial", "fourier", "cos"}
 
 
 def test_expanded_dim_matches_polynomialfeatures():
@@ -34,7 +34,14 @@ def test_base_builders_shapes():
     assert mtr.shape == (20, 3) and mte.shape == (8, 3)          # degree-1 = the components
 
     ftr, fte = _fourier_base(Xtr, Xte, n_features=3, fourier_order=3)
-    assert ftr.shape == (20, 2 * 3 * 3) and fte.shape == (8, 2 * 3 * 3)  # [sin,cos]_{j<=3}
+    assert ftr.shape == (20, 2 * 3 * 3) and fte.shape == (8, 2 * 3 * 3)  # sin+cos [sin,cos]_{j<=3}
+
+    ctr, cte = _cos_base(Xtr, Xte, n_features=3, fourier_order=3)
+    assert ctr.shape == (20, 3 * 3) and cte.shape == (8, 3 * 3)   # cos-only [cos(j x)]_{j<=3}
+
+    # cos-only order 1 is param-matched to the monomial base (one feature per component)
+    c1, _ = _cos_base(Xtr, Xte, n_features=3, fourier_order=1)
+    assert c1.shape == mtr.shape
 
     ptr, pte = _poly_expand(mtr, mte, 2)                        # cross terms appear at degree 2
     assert ptr.shape[1] == _expanded_dim(3, 2) == 9

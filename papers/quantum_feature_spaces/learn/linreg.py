@@ -68,24 +68,49 @@ def _monomial_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
     return _standardize(Xtr_raw, Xte_raw)
 
 
+def _cos_features(X, order):
+    """``[cos(j x_i)]_{j=1..order}`` -> ``(N, order * d)`` (cos-only)."""
+    return np.concatenate([np.cos(j * X) for j in range(1, order + 1)], axis=1)
+
+
+def _sincos_features(X, order):
+    """``[sin(j x_i), cos(j x_i)]_{j=1..order}`` -> ``(N, 2 * order * d)`` (full Fourier)."""
+    parts = []
+    for j in range(1, order + 1):
+        parts.append(np.sin(j * X))
+        parts.append(np.cos(j * X))
+    return np.concatenate(parts, axis=1)
+
+
 def _fourier_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
-    """Fourier modes ``[sin(j x_i), cos(j x_i)]_{j<=order}`` on the *raw* angles.
+    """Full Fourier modes ``[sin(j x_i), cos(j x_i)]_{j<=order}`` on the *raw* angles.
 
-    Periodicity lives in the raw angle ``x`` (inputs are in ``[0, 2pi]``), so these are built
-    from unstandardised inputs; the expanded columns are standardised downstream.
+    Both sin and cos, so it spans arbitrary periodic (even *and* odd) structure per component
+    -- the general matched basis for angle-encoded quantum targets (e.g. IQP, whose quadratic
+    phase produces odd/``sin`` and cross-frequency content that a cos-only basis cannot reach).
+    Products across coordinates (degree >= 2) supply the interactions.  Periodicity lives in
+    the raw angle, so these use unstandardised inputs; expanded columns are standardised
+    downstream.  See :func:`_cos_base` for the cheaper, even-only variant.
     """
-    import torch
+    return _sincos_features(Xtr_raw, fourier_order), _sincos_features(Xte_raw, fourier_order)
 
-    from model.mlp import fourier_features
-    Btr = fourier_features(torch.as_tensor(Xtr_raw, dtype=torch.float32), fourier_order).numpy()
-    Bte = fourier_features(torch.as_tensor(Xte_raw, dtype=torch.float32), fourier_order).numpy()
-    return Btr, Bte
+
+def _cos_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
+    """Cosine-only harmonics ``[cos(j x_i)]_{j<=order}`` (even basis).
+
+    Half the width of :func:`_fourier_base`; at ``order=1`` it has exactly ``n_features``
+    columns -- the same width as the monomial base's degree-1 block, a fair parameter-matched
+    comparison.  It is the matched basis only for *even* targets (e.g. a bare RY-parity
+    ``prod_i cos x_i``); it cannot represent odd/``sin`` content.
+    """
+    return _cos_features(Xtr_raw, fourier_order), _cos_features(Xte_raw, fourier_order)
 
 
 #: name -> base builder ``(Xtr_raw, Xte_raw, *, n_features, fourier_order) -> (Btr, Bte)``.
 FEATURE_BASES = {
     "monomial": _monomial_base,
-    "fourier": _fourier_base,
+    "fourier": _fourier_base,           # sin + cos (full)
+    "cos": _cos_base,                   # cos-only (even, param-matched to monomial at order 1)
 }
 
 
@@ -115,57 +140,82 @@ def _fit_ridge_gcv(Ftr, ytr, Fte, yte, *, lambdas):
 
 # --- driver ----------------------------------------------------------------- #
 
-def run_linreg(configs_dir, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5),
-               fourier_order=3, n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
-               dataset_root="datasets", use_cache=True, observable=None):
-    """Return ``(results, degrees)`` with ``results[label][basis] = [{degree, train_r2,
-    test_r2, lam, n_feat}]`` (a skipped/too-wide degree has ``test_r2 = nan``).
+def sweep_config(dcfg, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5),
+                 fourier_order=3, n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
+                 stop_r2=None, dataset_root="datasets", use_cache=True, observable=None,
+                 label=""):
+    """Explicit-feature degree sweep for ONE dataset config; returns ``{basis: [rows]}``.
 
-    For each dataset, each basis' degree-1 block is built once and re-expanded per degree;
-    ridge lambda is chosen per degree by LOO-GCV so the comparison across degrees is fair.
+    Each ``row`` is ``{degree, train_r2, test_r2, lam, n_feat}``.  ``degrees`` is processed
+    ascending; per basis the sweep stops early when the expansion would exceed ``max_feat``
+    (remaining degrees filled with ``nan`` for x-axis alignment) or -- when ``stop_r2`` is set
+    -- once test R^2 reaches ``stop_r2`` (higher degrees are then not computed, so the last row
+    is the minimum degree that hit the threshold).  Ridge lambda is chosen per degree by
+    LOO-GCV, so the across-degree comparison is fair.
     """
     unknown = [b for b in bases if b not in FEATURE_BASES]
     if unknown:
         raise ValueError(f"unknown basis {unknown}; choose from {sorted(FEATURE_BASES)}")
     lambdas = LAMBDAS if lambdas is None else np.asarray(lambdas, dtype=float)
+    degrees = sorted(degrees)                                    # ascending -> dim monotone in d
 
     from Generator import artifact_path, load_raw
 
+    generate(dcfg, out_root=dataset_root)                        # ensure the artifact exists
+    nfeat = dcfg.resolved_n_features
+    t = load_target(dcfg, dataset_root, observable=observable)
+    tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
+                            split_seed=dcfg.split.split_seed)
+    tr, te = tr[:n_fit], te[:n_test]
+    X = load_raw(artifact_path(dcfg, dataset_root))[0].numpy()
+    xtr, xte = X[tr.numpy()], X[te.numpy()]
+    ytr, yte = t[tr].numpy(), t[te].numpy()
+
+    tag = f"{label} " if label else ""
+    per_basis = {}
+    for basis in bases:
+        Btr, Bte = FEATURE_BASES[basis](xtr, xte, n_features=nfeat, fourier_order=fourier_order)
+        n_in = Btr.shape[1]
+        rows = []
+        for di, d in enumerate(degrees):
+            dim = _expanded_dim(n_in, d)
+            if dim > max_feat:                                   # guard: never OOM silently
+                # dim is monotone in d, so every higher degree is too wide too: fill the
+                # remaining degrees with nan (kept for x-axis alignment) and stop.
+                print(f"[linreg] {tag}[{basis}]: degree {d} needs {dim} features "
+                      f"> max_feat={max_feat}; skipping degrees >= {d}")
+                rows.extend({"degree": dd, "train_r2": float("nan"), "test_r2": float("nan"),
+                             "lam": float("nan"), "n_feat": _expanded_dim(n_in, dd)}
+                            for dd in degrees[di:])
+                break
+            Ftr, Fte = _poly_expand(Btr, Bte, d)
+            Ftr, Fte = _standardize(Ftr, Fte)
+            tr_r2, te_r2, lam, nf = _fit_ridge_gcv(Ftr, ytr, Fte, yte, lambdas=lambdas)
+            rows.append({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
+                         "lam": lam, "n_feat": nf})
+            if stop_r2 is not None and te_r2 >= stop_r2:
+                break                                            # min degree hit -> stop basis
+        per_basis[basis] = rows
+    return per_basis
+
+
+def run_linreg(configs_dir, *, bases=("monomial", "fourier"), degrees=(1, 2, 3, 4, 5),
+               fourier_order=3, n_fit=4000, n_test=2000, lambdas=None, max_feat=20000,
+               dataset_root="datasets", use_cache=True, observable=None):
+    """Return ``(results, degrees)`` with ``results[label][basis] = [rows]`` (see
+    :func:`sweep_config` for a ``row``); a too-wide degree has ``test_r2 = nan``.
+
+    Sweeps every ``*.yaml`` in ``configs_dir`` at the full fixed ``degrees`` (no threshold
+    early stop), for the R^2-vs-degree curve.
+    """
     dataset_map = discover_configs(configs_dir)
-    degrees = list(degrees)
+    degrees = sorted(degrees)
     results = {}
     for label, path in dataset_map.items():
-        dcfg = load_config(path)
-        generate(dcfg, out_root=dataset_root)                    # ensure the artifact exists
-        nfeat = dcfg.resolved_n_features
-        t = load_target(dcfg, dataset_root, observable=observable)
-        tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
-                                split_seed=dcfg.split.split_seed)
-        tr, te = tr[:n_fit], te[:n_test]
-        X = load_raw(artifact_path(dcfg, dataset_root))[0].numpy()
-        xtr, xte = X[tr.numpy()], X[te.numpy()]
-        ytr, yte = t[tr].numpy(), t[te].numpy()
-
-        per_basis = {}
-        for basis in bases:
-            Btr, Bte = FEATURE_BASES[basis](xtr, xte, n_features=nfeat, fourier_order=fourier_order)
-            n_in = Btr.shape[1]
-            rows = []
-            for d in degrees:
-                dim = _expanded_dim(n_in, d)
-                if dim > max_feat:                               # guard: never OOM silently
-                    print(f"[linreg] skip {label} [{basis}] degree {d}: "
-                          f"{dim} features > max_feat={max_feat}")
-                    rows.append({"degree": d, "train_r2": float("nan"),
-                                 "test_r2": float("nan"), "lam": float("nan"), "n_feat": dim})
-                    continue
-                Ftr, Fte = _poly_expand(Btr, Bte, d)
-                Ftr, Fte = _standardize(Ftr, Fte)
-                tr_r2, te_r2, lam, nf = _fit_ridge_gcv(Ftr, ytr, Fte, yte, lambdas=lambdas)
-                rows.append({"degree": d, "train_r2": tr_r2, "test_r2": te_r2,
-                             "lam": lam, "n_feat": nf})
-            per_basis[basis] = rows
-        results[label] = per_basis
+        results[label] = sweep_config(
+            load_config(path), bases=bases, degrees=degrees, fourier_order=fourier_order,
+            n_fit=n_fit, n_test=n_test, lambdas=lambdas, max_feat=max_feat,
+            dataset_root=dataset_root, use_cache=use_cache, observable=observable, label=label)
     return results, degrees
 
 
