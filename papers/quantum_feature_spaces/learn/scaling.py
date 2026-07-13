@@ -212,9 +212,10 @@ def load_results(path):
         return json.load(f)
 
 
-def aggregate(payload):
+def aggregate_at(payload, threshold):
     """``{basis: {sweep_idx: {x, mean, std, n_reached, n_total}}}`` of min-``n_feat`` over the
-    average group (nan-safe)."""
+    average group (nan-safe), recomputed at an **arbitrary** ``threshold`` from each run's saved
+    grid curve.  Lets a saved payload be replotted at any threshold without recomputing."""
     from collections import defaultdict
 
     bases = payload["meta"]["bases"]
@@ -226,7 +227,7 @@ def aggregate(payload):
         si = run["sweep_idx"]
         for b in bases:
             totals[(b, si)] += 1
-            md = run["per_basis"][b]["min_n_feat"]
+            md = _summarize_basis(run["per_basis"][b]["curve"], threshold)["min_n_feat"]
             if md is not None:
                 vals[(b, si)].append(md)
     agg = {}
@@ -239,6 +240,11 @@ def aggregate(payload):
                           "std": float(np.std(v)) if v else float("nan"),
                           "n_reached": len(v), "n_total": totals[(b, si)]}
     return agg
+
+
+def aggregate(payload):
+    """Aggregate at the threshold the payload was computed with (see :func:`aggregate_at`)."""
+    return aggregate_at(payload, payload["meta"]["threshold"])
 
 
 # --- plot ------------------------------------------------------------------- #
