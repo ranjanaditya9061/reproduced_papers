@@ -1,0 +1,1314 @@
+{
+  "meta": {
+    "base_config": "configs/tmp7/10_photonic_loop_path.yaml",
+    "bases": [
+      "fourier"
+    ],
+    "threshold": 0.5,
+    "max_feat": 100000,
+    "max_degree": 10,
+    "max_fourier_order": 10,
+    "n_fit": 8000,
+    "n_test": 2000,
+    "observable": null,
+    "sweep": [
+      {
+        "problem.m": 4,
+        "problem.k": 2,
+        "problem.n_vertices": 4
+      },
+      {
+        "problem.m": 6,
+        "problem.k": 3,
+        "problem.n_vertices": 6
+      },
+      {
+        "problem.m": 8,
+        "problem.k": 4,
+        "problem.n_vertices": 8
+      },
+      {
+        "problem.m": 10,
+        "problem.k": 5,
+        "problem.n_vertices": 10
+      },
+      {
+        "problem.m": 12,
+        "problem.k": 6,
+        "problem.n_vertices": 12
+      }
+    ],
+    "average": [
+      {
+        "seeds.teacher_seed": 1
+      }
+    ],
+    "x_field": "problem.m",
+    "x_label": "m"
+  },
+  "runs": [
+    {
+      "sweep_idx": 0,
+      "x": 4,
+      "sweep": {
+        "problem.m": 4,
+        "problem.k": 2,
+        "problem.n_vertices": 4
+      },
+      "average": {
+        "seeds.teacher_seed": 1
+      },
+      "per_basis": {
+        "fourier": {
+          "min_n_feat": 27,
+          "fourier_order": 1,
+          "degree": 2,
+          "r2_at_min": 0.7146,
+          "reached": true,
+          "curve": [
+            {
+              "fourier_order": 1,
+              "degree": 1,
+              "n_feat": 6,
+              "test_r2": 0.3285,
+              "train_r2": 0.3269
+            },
+            {
+              "fourier_order": 1,
+              "degree": 2,
+              "n_feat": 27,
+              "test_r2": 0.7146,
+              "train_r2": 0.7077
+            },
+            {
+              "fourier_order": 1,
+              "degree": 3,
+              "n_feat": 83,
+              "test_r2": 0.9249,
+              "train_r2": 0.9203
+            },
+            {
+              "fourier_order": 1,
+              "degree": 4,
+              "n_feat": 209,
+              "test_r2": 0.9832,
+              "train_r2": 0.982
+            },
+            {
+              "fourier_order": 1,
+              "degree": 5,
+              "n_feat": 461,
+              "test_r2": 0.9909,
+              "train_r2": 0.9904
+            },
+            {
+              "fourier_order": 1,
+              "degree": 6,
+              "n_feat": 923,
+              "test_r2": 0.9965,
+              "train_r2": 0.9964
+            },
+            {
+              "fourier_order": 1,
+              "degree": 7,
+              "n_feat": 1715,
+              "test_r2": 0.999,
+              "train_r2": 0.999
+            },
+            {
+              "fourier_order": 1,
+              "degree": 8,
+              "n_feat": 3002,
+              "test_r2": 0.9995,
+              "train_r2": 0.9995
+            },
+            {
+              "fourier_order": 1,
+              "degree": 9,
+              "n_feat": 5004,
+              "test_r2": 0.9998,
+              "train_r2": 0.9998
+            },
+            {
+              "fourier_order": 1,
+              "degree": 10,
+              "n_feat": 8007,
+              "test_r2": 0.9999,
+              "train_r2": 0.9999
+            },
+            {
+              "fourier_order": 2,
+              "degree": 1,
+              "n_feat": 12,
+              "test_r2": 0.3367,
+              "train_r2": 0.3331
+            },
+            {
+              "fourier_order": 2,
+              "degree": 2,
+              "n_feat": 90,
+              "test_r2": 0.8471,
+              "train_r2": 0.846
+            },
+            {
+              "fourier_order": 2,
+              "degree": 3,
+              "n_feat": 454,
+              "test_r2": 0.9895,
+              "train_r2": 0.989
+            },
+            {
+              "fourier_order": 2,
+              "degree": 4,
+              "n_feat": 1819,
+              "test_r2": 0.9981,
+              "train_r2": 0.9982
+            },
+            {
+              "fourier_order": 2,
+              "degree": 5,
+              "n_feat": 6187,
+              "test_r2": 0.9998,
+              "train_r2": 0.9998
+            },
+            {
+              "fourier_order": 2,
+              "degree": 6,
+              "n_feat": 18563,
+              "test_r2": 0.9999,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 2,
+              "degree": 7,
+              "n_feat": 50387,
+              "test_r2": 1.0,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 3,
+              "degree": 1,
+              "n_feat": 18,
+              "test_r2": 0.3369,
+              "train_r2": 0.3333
+            },
+            {
+              "fourier_order": 3,
+              "degree": 2,
+              "n_feat": 189,
+              "test_r2": 0.8503,
+              "train_r2": 0.8501
+            },
+            {
+              "fourier_order": 3,
+              "degree": 3,
+              "n_feat": 1329,
+              "test_r2": 0.9984,
+              "train_r2": 0.9985
+            },
+            {
+              "fourier_order": 3,
+              "degree": 4,
+              "n_feat": 7314,
+              "test_r2": 0.9998,
+              "train_r2": 0.9998
+            },
+            {
+              "fourier_order": 3,
+              "degree": 5,
+              "n_feat": 33648,
+              "test_r2": 1.0,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 4,
+              "degree": 1,
+              "n_feat": 24,
+              "test_r2": 0.3366,
+              "train_r2": 0.3335
+            },
+            {
+              "fourier_order": 4,
+              "degree": 2,
+              "n_feat": 324,
+              "test_r2": 0.8488,
+              "train_r2": 0.853
+            },
+            {
+              "fourier_order": 4,
+              "degree": 3,
+              "n_feat": 2924,
+              "test_r2": 0.9996,
+              "train_r2": 0.9997
+            },
+            {
+              "fourier_order": 4,
+              "degree": 4,
+              "n_feat": 20474,
+              "test_r2": 0.9999,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 5,
+              "degree": 1,
+              "n_feat": 30,
+              "test_r2": 0.3346,
+              "train_r2": 0.3341
+            },
+            {
+              "fourier_order": 5,
+              "degree": 2,
+              "n_feat": 495,
+              "test_r2": 0.8476,
+              "train_r2": 0.8556
+            },
+            {
+              "fourier_order": 5,
+              "degree": 3,
+              "n_feat": 5455,
+              "test_r2": 0.9999,
+              "train_r2": 0.9999
+            },
+            {
+              "fourier_order": 5,
+              "degree": 4,
+              "n_feat": 46375,
+              "test_r2": 0.9999,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 6,
+              "degree": 1,
+              "n_feat": 36,
+              "test_r2": 0.3348,
+              "train_r2": 0.3346
+            },
+            {
+              "fourier_order": 6,
+              "degree": 2,
+              "n_feat": 702,
+              "test_r2": 0.8436,
+              "train_r2": 0.858
+            },
+            {
+              "fourier_order": 6,
+              "degree": 3,
+              "n_feat": 9138,
+              "test_r2": 0.9998,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 6,
+              "degree": 4,
+              "n_feat": 91389,
+              "test_r2": 0.9971,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 7,
+              "degree": 1,
+              "n_feat": 42,
+              "test_r2": 0.335,
+              "train_r2": 0.335
+            },
+            {
+              "fourier_order": 7,
+              "degree": 2,
+              "n_feat": 945,
+              "test_r2": 0.8411,
+              "train_r2": 0.8612
+            },
+            {
+              "fourier_order": 7,
+              "degree": 3,
+              "n_feat": 14189,
+              "test_r2": 0.9994,
+              "train_r2": 0.9999
+            },
+            {
+              "fourier_order": 8,
+              "degree": 1,
+              "n_feat": 48,
+              "test_r2": 0.3346,
+              "train_r2": 0.3352
+            },
+            {
+              "fourier_order": 8,
+              "degree": 2,
+              "n_feat": 1224,
+              "test_r2": 0.8392,
+              "train_r2": 0.864
+            },
+            {
+              "fourier_order": 8,
+              "degree": 3,
+              "n_feat": 20824,
+              "test_r2": 0.9943,
+              "train_r2": 0.9999
+            },
+            {
+              "fourier_order": 9,
+              "degree": 1,
+              "n_feat": 54,
+              "test_r2": 0.3325,
+              "train_r2": 0.3358
+            },
+            {
+              "fourier_order": 9,
+              "degree": 2,
+              "n_feat": 1539,
+              "test_r2": 0.834,
+              "train_r2": 0.8678
+            },
+            {
+              "fourier_order": 9,
+              "degree": 3,
+              "n_feat": 29259,
+              "test_r2": 0.9579,
+              "train_r2": 0.9999
+            },
+            {
+              "fourier_order": 10,
+              "degree": 1,
+              "n_feat": 60,
+              "test_r2": 0.332,
+              "train_r2": 0.3362
+            },
+            {
+              "fourier_order": 10,
+              "degree": 2,
+              "n_feat": 1890,
+              "test_r2": 0.8282,
+              "train_r2": 0.872
+            },
+            {
+              "fourier_order": 10,
+              "degree": 3,
+              "n_feat": 39710,
+              "test_r2": 0.9106,
+              "train_r2": 1.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "sweep_idx": 1,
+      "x": 6,
+      "sweep": {
+        "problem.m": 6,
+        "problem.k": 3,
+        "problem.n_vertices": 6
+      },
+      "average": {
+        "seeds.teacher_seed": 1
+      },
+      "per_basis": {
+        "fourier": {
+          "min_n_feat": 65,
+          "fourier_order": 1,
+          "degree": 2,
+          "r2_at_min": 0.7061,
+          "reached": true,
+          "curve": [
+            {
+              "fourier_order": 1,
+              "degree": 1,
+              "n_feat": 10,
+              "test_r2": 0.1228,
+              "train_r2": 0.1217
+            },
+            {
+              "fourier_order": 1,
+              "degree": 2,
+              "n_feat": 65,
+              "test_r2": 0.7061,
+              "train_r2": 0.7261
+            },
+            {
+              "fourier_order": 1,
+              "degree": 3,
+              "n_feat": 285,
+              "test_r2": 0.795,
+              "train_r2": 0.8127
+            },
+            {
+              "fourier_order": 1,
+              "degree": 4,
+              "n_feat": 1000,
+              "test_r2": 0.9351,
+              "train_r2": 0.9444
+            },
+            {
+              "fourier_order": 1,
+              "degree": 5,
+              "n_feat": 3002,
+              "test_r2": 0.962,
+              "train_r2": 0.9764
+            },
+            {
+              "fourier_order": 1,
+              "degree": 6,
+              "n_feat": 8007,
+              "test_r2": 0.9881,
+              "train_r2": 0.9964
+            },
+            {
+              "fourier_order": 1,
+              "degree": 7,
+              "n_feat": 19447,
+              "test_r2": 0.9871,
+              "train_r2": 0.9992
+            },
+            {
+              "fourier_order": 1,
+              "degree": 8,
+              "n_feat": 43757,
+              "test_r2": 0.9909,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 1,
+              "degree": 9,
+              "n_feat": 92377,
+              "test_r2": 0.9867,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 2,
+              "degree": 1,
+              "n_feat": 20,
+              "test_r2": 0.1486,
+              "train_r2": 0.1485
+            },
+            {
+              "fourier_order": 2,
+              "degree": 2,
+              "n_feat": 230,
+              "test_r2": 0.7642,
+              "train_r2": 0.7802
+            },
+            {
+              "fourier_order": 2,
+              "degree": 3,
+              "n_feat": 1770,
+              "test_r2": 0.911,
+              "train_r2": 0.9338
+            },
+            {
+              "fourier_order": 2,
+              "degree": 4,
+              "n_feat": 10625,
+              "test_r2": 0.9705,
+              "train_r2": 0.9935
+            },
+            {
+              "fourier_order": 2,
+              "degree": 5,
+              "n_feat": 53129,
+              "test_r2": 0.9737,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 3,
+              "degree": 1,
+              "n_feat": 30,
+              "test_r2": 0.1502,
+              "train_r2": 0.1496
+            },
+            {
+              "fourier_order": 3,
+              "degree": 2,
+              "n_feat": 495,
+              "test_r2": 0.7599,
+              "train_r2": 0.7892
+            },
+            {
+              "fourier_order": 3,
+              "degree": 3,
+              "n_feat": 5455,
+              "test_r2": 0.8985,
+              "train_r2": 0.957
+            },
+            {
+              "fourier_order": 3,
+              "degree": 4,
+              "n_feat": 46375,
+              "test_r2": 0.9128,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 4,
+              "degree": 1,
+              "n_feat": 40,
+              "test_r2": 0.1478,
+              "train_r2": 0.1505
+            },
+            {
+              "fourier_order": 4,
+              "degree": 2,
+              "n_feat": 860,
+              "test_r2": 0.7523,
+              "train_r2": 0.7973
+            },
+            {
+              "fourier_order": 4,
+              "degree": 3,
+              "n_feat": 12340,
+              "test_r2": 0.8438,
+              "train_r2": 0.9715
+            },
+            {
+              "fourier_order": 5,
+              "degree": 1,
+              "n_feat": 50,
+              "test_r2": 0.1452,
+              "train_r2": 0.1511
+            },
+            {
+              "fourier_order": 5,
+              "degree": 2,
+              "n_feat": 1325,
+              "test_r2": 0.7402,
+              "train_r2": 0.8072
+            },
+            {
+              "fourier_order": 5,
+              "degree": 3,
+              "n_feat": 23425,
+              "test_r2": 0.7867,
+              "train_r2": 0.9856
+            },
+            {
+              "fourier_order": 6,
+              "degree": 1,
+              "n_feat": 60,
+              "test_r2": 0.1449,
+              "train_r2": 0.1523
+            },
+            {
+              "fourier_order": 6,
+              "degree": 2,
+              "n_feat": 1890,
+              "test_r2": 0.7196,
+              "train_r2": 0.8204
+            },
+            {
+              "fourier_order": 6,
+              "degree": 3,
+              "n_feat": 39710,
+              "test_r2": 0.7394,
+              "train_r2": 0.9919
+            },
+            {
+              "fourier_order": 7,
+              "degree": 1,
+              "n_feat": 70,
+              "test_r2": 0.1434,
+              "train_r2": 0.153
+            },
+            {
+              "fourier_order": 7,
+              "degree": 2,
+              "n_feat": 2555,
+              "test_r2": 0.7032,
+              "train_r2": 0.8315
+            },
+            {
+              "fourier_order": 7,
+              "degree": 3,
+              "n_feat": 62195,
+              "test_r2": 0.6956,
+              "train_r2": 0.9996
+            },
+            {
+              "fourier_order": 8,
+              "degree": 1,
+              "n_feat": 80,
+              "test_r2": 0.1418,
+              "train_r2": 0.154
+            },
+            {
+              "fourier_order": 8,
+              "degree": 2,
+              "n_feat": 3320,
+              "test_r2": 0.6846,
+              "train_r2": 0.8434
+            },
+            {
+              "fourier_order": 8,
+              "degree": 3,
+              "n_feat": 91880,
+              "test_r2": 0.6592,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 9,
+              "degree": 1,
+              "n_feat": 90,
+              "test_r2": 0.1415,
+              "train_r2": 0.1546
+            },
+            {
+              "fourier_order": 9,
+              "degree": 2,
+              "n_feat": 4185,
+              "test_r2": 0.6579,
+              "train_r2": 0.8627
+            },
+            {
+              "fourier_order": 10,
+              "degree": 1,
+              "n_feat": 100,
+              "test_r2": 0.1408,
+              "train_r2": 0.1553
+            },
+            {
+              "fourier_order": 10,
+              "degree": 2,
+              "n_feat": 5150,
+              "test_r2": 0.6316,
+              "train_r2": 0.8735
+            }
+          ]
+        }
+      }
+    },
+    {
+      "sweep_idx": 2,
+      "x": 8,
+      "sweep": {
+        "problem.m": 8,
+        "problem.k": 4,
+        "problem.n_vertices": 8
+      },
+      "average": {
+        "seeds.teacher_seed": 1
+      },
+      "per_basis": {
+        "fourier": {
+          "min_n_feat": 119,
+          "fourier_order": 1,
+          "degree": 2,
+          "r2_at_min": 0.6826,
+          "reached": true,
+          "curve": [
+            {
+              "fourier_order": 1,
+              "degree": 1,
+              "n_feat": 14,
+              "test_r2": 0.1726,
+              "train_r2": 0.1997
+            },
+            {
+              "fourier_order": 1,
+              "degree": 2,
+              "n_feat": 119,
+              "test_r2": 0.6826,
+              "train_r2": 0.7008
+            },
+            {
+              "fourier_order": 1,
+              "degree": 3,
+              "n_feat": 679,
+              "test_r2": 0.7531,
+              "train_r2": 0.783
+            },
+            {
+              "fourier_order": 1,
+              "degree": 4,
+              "n_feat": 3059,
+              "test_r2": 0.8467,
+              "train_r2": 0.9136
+            },
+            {
+              "fourier_order": 1,
+              "degree": 5,
+              "n_feat": 11627,
+              "test_r2": 0.8458,
+              "train_r2": 0.9649
+            },
+            {
+              "fourier_order": 1,
+              "degree": 6,
+              "n_feat": 38759,
+              "test_r2": 0.8752,
+              "train_r2": 0.9949
+            },
+            {
+              "fourier_order": 2,
+              "degree": 1,
+              "n_feat": 28,
+              "test_r2": 0.1762,
+              "train_r2": 0.2031
+            },
+            {
+              "fourier_order": 2,
+              "degree": 2,
+              "n_feat": 434,
+              "test_r2": 0.7347,
+              "train_r2": 0.7503
+            },
+            {
+              "fourier_order": 2,
+              "degree": 3,
+              "n_feat": 4494,
+              "test_r2": 0.7968,
+              "train_r2": 0.903
+            },
+            {
+              "fourier_order": 2,
+              "degree": 4,
+              "n_feat": 35959,
+              "test_r2": 0.8223,
+              "train_r2": 0.9953
+            },
+            {
+              "fourier_order": 3,
+              "degree": 1,
+              "n_feat": 42,
+              "test_r2": 0.1731,
+              "train_r2": 0.2044
+            },
+            {
+              "fourier_order": 3,
+              "degree": 2,
+              "n_feat": 945,
+              "test_r2": 0.7246,
+              "train_r2": 0.768
+            },
+            {
+              "fourier_order": 3,
+              "degree": 3,
+              "n_feat": 14189,
+              "test_r2": 0.7334,
+              "train_r2": 0.9541
+            },
+            {
+              "fourier_order": 4,
+              "degree": 1,
+              "n_feat": 56,
+              "test_r2": 0.1742,
+              "train_r2": 0.2064
+            },
+            {
+              "fourier_order": 4,
+              "degree": 2,
+              "n_feat": 1652,
+              "test_r2": 0.7008,
+              "train_r2": 0.7852
+            },
+            {
+              "fourier_order": 4,
+              "degree": 3,
+              "n_feat": 32508,
+              "test_r2": 0.6629,
+              "train_r2": 0.9884
+            },
+            {
+              "fourier_order": 5,
+              "degree": 1,
+              "n_feat": 70,
+              "test_r2": 0.1753,
+              "train_r2": 0.208
+            },
+            {
+              "fourier_order": 5,
+              "degree": 2,
+              "n_feat": 2555,
+              "test_r2": 0.6661,
+              "train_r2": 0.8051
+            },
+            {
+              "fourier_order": 5,
+              "degree": 3,
+              "n_feat": 62195,
+              "test_r2": 0.6078,
+              "train_r2": 0.9993
+            },
+            {
+              "fourier_order": 6,
+              "degree": 1,
+              "n_feat": 84,
+              "test_r2": 0.1734,
+              "train_r2": 0.2097
+            },
+            {
+              "fourier_order": 6,
+              "degree": 2,
+              "n_feat": 3654,
+              "test_r2": 0.6309,
+              "train_r2": 0.8259
+            },
+            {
+              "fourier_order": 7,
+              "degree": 1,
+              "n_feat": 98,
+              "test_r2": 0.1703,
+              "train_r2": 0.2122
+            },
+            {
+              "fourier_order": 7,
+              "degree": 2,
+              "n_feat": 4949,
+              "test_r2": 0.578,
+              "train_r2": 0.8314
+            },
+            {
+              "fourier_order": 8,
+              "degree": 1,
+              "n_feat": 112,
+              "test_r2": 0.1702,
+              "train_r2": 0.2129
+            },
+            {
+              "fourier_order": 8,
+              "degree": 2,
+              "n_feat": 6440,
+              "test_r2": 0.5364,
+              "train_r2": 0.8618
+            },
+            {
+              "fourier_order": 9,
+              "degree": 1,
+              "n_feat": 126,
+              "test_r2": 0.1679,
+              "train_r2": 0.2139
+            },
+            {
+              "fourier_order": 9,
+              "degree": 2,
+              "n_feat": 8127,
+              "test_r2": 0.4881,
+              "train_r2": 0.8705
+            },
+            {
+              "fourier_order": 10,
+              "degree": 1,
+              "n_feat": 140,
+              "test_r2": 0.1665,
+              "train_r2": 0.2145
+            },
+            {
+              "fourier_order": 10,
+              "degree": 2,
+              "n_feat": 10010,
+              "test_r2": 0.4379,
+              "train_r2": 0.8737
+            }
+          ]
+        }
+      }
+    },
+    {
+      "sweep_idx": 3,
+      "x": 10,
+      "sweep": {
+        "problem.m": 10,
+        "problem.k": 5,
+        "problem.n_vertices": 10
+      },
+      "average": {
+        "seeds.teacher_seed": 1
+      },
+      "per_basis": {
+        "fourier": {
+          "min_n_feat": 189,
+          "fourier_order": 1,
+          "degree": 2,
+          "r2_at_min": 0.6097,
+          "reached": true,
+          "curve": [
+            {
+              "fourier_order": 1,
+              "degree": 1,
+              "n_feat": 18,
+              "test_r2": 0.1457,
+              "train_r2": 0.1447
+            },
+            {
+              "fourier_order": 1,
+              "degree": 2,
+              "n_feat": 189,
+              "test_r2": 0.6097,
+              "train_r2": 0.6286
+            },
+            {
+              "fourier_order": 1,
+              "degree": 3,
+              "n_feat": 1329,
+              "test_r2": 0.6679,
+              "train_r2": 0.7533
+            },
+            {
+              "fourier_order": 1,
+              "degree": 4,
+              "n_feat": 7314,
+              "test_r2": 0.7582,
+              "train_r2": 0.9145
+            },
+            {
+              "fourier_order": 1,
+              "degree": 5,
+              "n_feat": 33648,
+              "test_r2": 0.7132,
+              "train_r2": 0.9866
+            },
+            {
+              "fourier_order": 2,
+              "degree": 1,
+              "n_feat": 36,
+              "test_r2": 0.1474,
+              "train_r2": 0.1502
+            },
+            {
+              "fourier_order": 2,
+              "degree": 2,
+              "n_feat": 702,
+              "test_r2": 0.6277,
+              "train_r2": 0.677
+            },
+            {
+              "fourier_order": 2,
+              "degree": 3,
+              "n_feat": 9138,
+              "test_r2": 0.6295,
+              "train_r2": 0.8914
+            },
+            {
+              "fourier_order": 2,
+              "degree": 4,
+              "n_feat": 91389,
+              "test_r2": 0.6561,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 3,
+              "degree": 1,
+              "n_feat": 54,
+              "test_r2": 0.1469,
+              "train_r2": 0.1521
+            },
+            {
+              "fourier_order": 3,
+              "degree": 2,
+              "n_feat": 1539,
+              "test_r2": 0.5923,
+              "train_r2": 0.7047
+            },
+            {
+              "fourier_order": 3,
+              "degree": 3,
+              "n_feat": 29259,
+              "test_r2": 0.5377,
+              "train_r2": 0.9614
+            },
+            {
+              "fourier_order": 4,
+              "degree": 1,
+              "n_feat": 72,
+              "test_r2": 0.147,
+              "train_r2": 0.1539
+            },
+            {
+              "fourier_order": 4,
+              "degree": 2,
+              "n_feat": 2700,
+              "test_r2": 0.5368,
+              "train_r2": 0.7346
+            },
+            {
+              "fourier_order": 4,
+              "degree": 3,
+              "n_feat": 67524,
+              "test_r2": 0.4714,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 5,
+              "degree": 1,
+              "n_feat": 90,
+              "test_r2": 0.1453,
+              "train_r2": 0.1556
+            },
+            {
+              "fourier_order": 5,
+              "degree": 2,
+              "n_feat": 4185,
+              "test_r2": 0.4734,
+              "train_r2": 0.7693
+            },
+            {
+              "fourier_order": 6,
+              "degree": 1,
+              "n_feat": 108,
+              "test_r2": 0.1429,
+              "train_r2": 0.1563
+            },
+            {
+              "fourier_order": 6,
+              "degree": 2,
+              "n_feat": 5994,
+              "test_r2": 0.4248,
+              "train_r2": 0.7978
+            },
+            {
+              "fourier_order": 7,
+              "degree": 1,
+              "n_feat": 126,
+              "test_r2": 0.1408,
+              "train_r2": 0.1576
+            },
+            {
+              "fourier_order": 7,
+              "degree": 2,
+              "n_feat": 8127,
+              "test_r2": 0.3734,
+              "train_r2": 0.7889
+            },
+            {
+              "fourier_order": 8,
+              "degree": 1,
+              "n_feat": 144,
+              "test_r2": 0.1392,
+              "train_r2": 0.1594
+            },
+            {
+              "fourier_order": 8,
+              "degree": 2,
+              "n_feat": 10584,
+              "test_r2": 0.324,
+              "train_r2": 0.8337
+            },
+            {
+              "fourier_order": 9,
+              "degree": 1,
+              "n_feat": 162,
+              "test_r2": 0.1365,
+              "train_r2": 0.1612
+            },
+            {
+              "fourier_order": 9,
+              "degree": 2,
+              "n_feat": 13365,
+              "test_r2": 0.2923,
+              "train_r2": 0.8379
+            },
+            {
+              "fourier_order": 10,
+              "degree": 1,
+              "n_feat": 180,
+              "test_r2": 0.1381,
+              "train_r2": 0.1625
+            },
+            {
+              "fourier_order": 10,
+              "degree": 2,
+              "n_feat": 16470,
+              "test_r2": 0.2704,
+              "train_r2": 0.8343
+            }
+          ]
+        }
+      }
+    },
+    {
+      "sweep_idx": 4,
+      "x": 12,
+      "sweep": {
+        "problem.m": 12,
+        "problem.k": 6,
+        "problem.n_vertices": 12
+      },
+      "average": {
+        "seeds.teacher_seed": 1
+      },
+      "per_basis": {
+        "fourier": {
+          "min_n_feat": 275,
+          "fourier_order": 1,
+          "degree": 2,
+          "r2_at_min": 0.6965,
+          "reached": true,
+          "curve": [
+            {
+              "fourier_order": 1,
+              "degree": 1,
+              "n_feat": 22,
+              "test_r2": 0.0533,
+              "train_r2": 0.0646
+            },
+            {
+              "fourier_order": 1,
+              "degree": 2,
+              "n_feat": 275,
+              "test_r2": 0.6965,
+              "train_r2": 0.701
+            },
+            {
+              "fourier_order": 1,
+              "degree": 3,
+              "n_feat": 2299,
+              "test_r2": 0.6591,
+              "train_r2": 0.7888
+            },
+            {
+              "fourier_order": 1,
+              "degree": 4,
+              "n_feat": 14949,
+              "test_r2": 0.762,
+              "train_r2": 0.9517
+            },
+            {
+              "fourier_order": 1,
+              "degree": 5,
+              "n_feat": 80729,
+              "test_r2": 0.6453,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 2,
+              "degree": 1,
+              "n_feat": 44,
+              "test_r2": 0.0538,
+              "train_r2": 0.0674
+            },
+            {
+              "fourier_order": 2,
+              "degree": 2,
+              "n_feat": 1034,
+              "test_r2": 0.6877,
+              "train_r2": 0.733
+            },
+            {
+              "fourier_order": 2,
+              "degree": 3,
+              "n_feat": 16214,
+              "test_r2": 0.5822,
+              "train_r2": 0.9324
+            },
+            {
+              "fourier_order": 3,
+              "degree": 1,
+              "n_feat": 66,
+              "test_r2": 0.0496,
+              "train_r2": 0.0699
+            },
+            {
+              "fourier_order": 3,
+              "degree": 2,
+              "n_feat": 2277,
+              "test_r2": 0.6296,
+              "train_r2": 0.7702
+            },
+            {
+              "fourier_order": 3,
+              "degree": 3,
+              "n_feat": 52393,
+              "test_r2": 0.4836,
+              "train_r2": 1.0
+            },
+            {
+              "fourier_order": 4,
+              "degree": 1,
+              "n_feat": 88,
+              "test_r2": 0.0491,
+              "train_r2": 0.0724
+            },
+            {
+              "fourier_order": 4,
+              "degree": 2,
+              "n_feat": 4004,
+              "test_r2": 0.5558,
+              "train_r2": 0.8028
+            },
+            {
+              "fourier_order": 5,
+              "degree": 1,
+              "n_feat": 110,
+              "test_r2": 0.0477,
+              "train_r2": 0.0734
+            },
+            {
+              "fourier_order": 5,
+              "degree": 2,
+              "n_feat": 6215,
+              "test_r2": 0.4641,
+              "train_r2": 0.8415
+            },
+            {
+              "fourier_order": 6,
+              "degree": 1,
+              "n_feat": 132,
+              "test_r2": 0.0456,
+              "train_r2": 0.0754
+            },
+            {
+              "fourier_order": 6,
+              "degree": 2,
+              "n_feat": 8910,
+              "test_r2": 0.3786,
+              "train_r2": 0.8451
+            },
+            {
+              "fourier_order": 7,
+              "degree": 1,
+              "n_feat": 154,
+              "test_r2": 0.0413,
+              "train_r2": 0.077
+            },
+            {
+              "fourier_order": 7,
+              "degree": 2,
+              "n_feat": 12089,
+              "test_r2": 0.2935,
+              "train_r2": 0.8934
+            },
+            {
+              "fourier_order": 8,
+              "degree": 1,
+              "n_feat": 176,
+              "test_r2": 0.0402,
+              "train_r2": 0.0802
+            },
+            {
+              "fourier_order": 8,
+              "degree": 2,
+              "n_feat": 15752,
+              "test_r2": 0.2521,
+              "train_r2": 0.9002
+            },
+            {
+              "fourier_order": 9,
+              "degree": 1,
+              "n_feat": 198,
+              "test_r2": 0.038,
+              "train_r2": 0.0796
+            },
+            {
+              "fourier_order": 9,
+              "degree": 2,
+              "n_feat": 19899,
+              "test_r2": 0.2129,
+              "train_r2": 0.9009
+            },
+            {
+              "fourier_order": 10,
+              "degree": 1,
+              "n_feat": 220,
+              "test_r2": 0.0361,
+              "train_r2": 0.0809
+            },
+            {
+              "fourier_order": 10,
+              "degree": 2,
+              "n_feat": 24530,
+              "test_r2": 0.1877,
+              "train_r2": 0.8966
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -326,11 +326,11 @@ def main(argv=None) -> None:
     ap.add_argument("--bases", nargs="+", default=["fourier"],
                     choices=sorted(FEATURE_BASES))
     ap.add_argument("--threshold", type=float, default=0.5, help="target test R^2")
-    ap.add_argument("--max-feat", type=int, default=20000, help="stop a basis once wider than this")
-    ap.add_argument("--max-degree", type=int, default=5, help="largest interaction degree to try")
+    ap.add_argument("--max-feat", type=int, default=100000, help="stop a basis once wider than this")
+    ap.add_argument("--max-degree", type=int, default=10, help="largest interaction degree to try")
     ap.add_argument("--n-fit", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
-    ap.add_argument("--max-fourier-order", type=int, default=3,
+    ap.add_argument("--max-fourier-order", type=int, default=10,
                     help="search Fourier orders 1..this alongside degree (both inflate n_feat)")
     ap.add_argument("--lambdas", type=float, nargs="+", default=None)
     ap.add_argument("--observable", default=None,
@@ -338,8 +338,8 @@ def main(argv=None) -> None:
                          "photonic graph observables may encode the selection, e.g. "
                          "loop_path_parity__L0-1__P2-3")
     ap.add_argument("--dataset-root", default="datasets")
-    ap.add_argument("--save-data", default="scaling", help="write the raw results JSON here")
-    ap.add_argument("--save-dir", default="img")
+    ap.add_argument("--save-data", default="scaling/", help="write the raw results JSON here")
+    ap.add_argument("--save-dir", default="scalinf")
     ap.add_argument("--from-file", default=None,
                     help="skip compute; load a saved results JSON and just (re)plot")
     ap.add_argument("--show", action="store_true")
@@ -347,6 +347,9 @@ def main(argv=None) -> None:
 
     if args.from_file:
         payload = load_results(args.from_file)
+        base = Path(args.config).stem
+        xl = payload["meta"]["x_label"]
+        obs_tag = f"_{args.observable}" if args.observable else ""
     else:
         if not args.sweep:
             ap.error("--sweep is required unless --from-file is given")
@@ -357,13 +360,15 @@ def main(argv=None) -> None:
             threshold=args.threshold, max_feat=args.max_feat, max_degree=args.max_degree,
             max_fourier_order=args.max_fourier_order, n_fit=args.n_fit, n_test=args.n_test,
             lambdas=args.lambdas, dataset_root=args.dataset_root, observable=args.observable)
+        
+        base = Path(args.config).stem
+        xl = payload["meta"]["x_label"]
+        obs_tag = f"_{args.observable}" if args.observable else ""
+
         if args.save_data:
-            save_results(payload, args.save_data)
+            save_results(payload, Path(args.save_data) / f"scaling_{base}_{xl}{obs_tag}.json")
 
     _print_table(payload)
-    base = Path(args.config).stem
-    xl = payload["meta"]["x_label"]
-    obs_tag = f"_{args.observable}" if args.observable else ""
     _plot(payload, Path(args.save_dir) / f"scaling_{base}_{xl}{obs_tag}.png", show=args.show)
 
 
