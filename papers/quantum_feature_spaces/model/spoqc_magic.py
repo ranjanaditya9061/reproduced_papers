@@ -86,6 +86,28 @@ def _apply_gap_gate(p, gate_kind, gate_params, j) -> None:
         raise ValueError(f"unknown gap gate_kind {gate_kind!r}")
 
 
+def _parse_gate_kind(gate_kind: str):
+    """Split ``gate_kind`` into ``(magic_kind, encode_qubit, encode_iface)``.
+
+    The ``magic_kind`` prefix selects the injected gap gate (see
+    :func:`_apply_gap_gate`); a trailing suffix controls *where* the input ``x``
+    is encoded:
+
+    - no suffix        -> interferometer only (``PS(x)``); the spin carries no data (legacy).
+    - ``"_rxry"``      -> data via ``rx``/``ry`` on the spin, Haar interferometer w/o ``PS(x)``.
+    - ``"_rxry_iface"`` -> data via ``rx``/``ry`` on the spin *and* ``PS(x)`` in the interferometer.
+
+    In each ``_rxry*`` gap two features drive the spin: ``rx(x[2j])`` and
+    ``ry(x[2j+1])`` (indices taken mod ``n_features``, so they cycle when the k
+    gaps need more than ``n_features`` angles).
+    """
+    if gate_kind.endswith("_rxry_iface"):
+        return gate_kind[: -len("_rxry_iface")], True, True
+    if gate_kind.endswith("_rxry"):
+        return gate_kind[: -len("_rxry")], True, False
+    return gate_kind, False, True
+
+
 def _build_magic_processor(x, *, m, k, n_features, seed, t_var, gate_kind="t", gate_params=None):
 
     from perceval import Detector
@@ -93,23 +115,34 @@ def _build_magic_processor(x, *, m, k, n_features, seed, t_var, gate_kind="t", g
 
     if 2 * k > m:
         raise ValueError(f"need 2*k <= m for dual-rail emission (k={k}, m={m})")
+    magic_kind, encode_qubit, encode_iface = _parse_gate_kind(gate_kind)
     r0, r1 = m, m + 1                                   # readout photon modes
     p = HybridProcessor(num_sources=1, num_modes=m + 2, num_records=m + 2,
                         allow_carry_over=True)
-    plus = np.array([1.0, 1.0], dtype=complex) / np.sqrt(2)
-    p.with_initial_source_state(np.outer(plus, plus.conj()))   # spin |+>
+    # plus = np.array([1.0, 1.0], dtype=complex) / np.sqrt(2)
+    # p.with_initial_source_state(np.outer(plus, plus.conj()))   # spin |+>
+
+    zero = np.array([1.0, 0.0], dtype=complex)
+    p.with_initial_source_state(np.outer(zero, zero.conj()))   # spin |+>
 
     for j in range(k):
+        p.gate.h(0)
+        if encode_qubit:                               # data on the spin: two features per gap
+            p.gate.rx(0, float(x[(2 * j) % n_features]))
+            p.gate.ry(0, float(x[(2 * j + 1) % n_features]))
         if j < t_var:
-            _apply_gap_gate(p, gate_kind, gate_params, j)   # magic: non-Clifford gate in this gap
+            _apply_gap_gate(p, magic_kind, gate_params, j)   # magic: non-Clifford gate in this gap
         p.emit(0, into=(2 * j, 2 * j + 1))             # data photon j+1
-        p.gate.h(0)                                     # cluster link (last one = readout rotation)
-        
+                                             # cluster link (last one = readout rotation)
+    p.gate.h(0)
     p.emit(0, into=(r0, r1))                            # readout photon
     p.add(r0, Detector(), record=r0)                   # measure readout in Z ...
     p.add(r1, Detector(), record=r1)                   # ... (r0,r1)=(1,0) -> mu=0
 
-    p.add(0, _sandwich_concrete(m, n_features, seed, x))   # interferometer on data modes
+    # PS(0) is the identity, so a zeroed x keeps the Haar W1.W2 scrambler but puts
+    # no data in the interferometer (the *_rxry qubit-only case).
+    iface_x = x if encode_iface else np.zeros_like(np.asarray(x, dtype=float))
+    p.add(0, _sandwich_concrete(m, n_features, seed, iface_x))   # interferometer on data modes
     for md in range(m):
         p.add(md, Detector(), record=md)
     return p, (r0, r1)
