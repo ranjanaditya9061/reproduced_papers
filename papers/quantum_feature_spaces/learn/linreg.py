@@ -324,7 +324,7 @@ def main(argv=None) -> None:
     ap.add_argument("--bases", nargs="+", default=["monomial", "fourier"],
                     choices=sorted(FEATURE_BASES),
                     help="explicit feature bases to expand and fit (one line each)")
-    ap.add_argument("--degrees", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6],
+    ap.add_argument("--degrees", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                     help="polynomial interaction degrees on the x-axis")
     ap.add_argument("--fourier-order", type=int, default=2,
                     help="Fourier band [sin(jx),cos(jx)]_{j<=order} for the 'fourier' basis")

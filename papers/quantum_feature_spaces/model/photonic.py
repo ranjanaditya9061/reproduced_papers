@@ -25,7 +25,7 @@ from .base import Teacher
 if TYPE_CHECKING:
     from Generator.config import ExperimentConfig
 
-OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first")
+OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first", "max_prob")
 
 #: Base scorers usable under a ``loop_path_<base>`` graph observable (see
 #: :func:`_overlay_counts`).  ``loop``/``path`` return the mean loop/path count over
@@ -304,6 +304,8 @@ def _graph_base_scores(keys, base: str, loops, paths, *, m: int, k: int):
         return np.array([_bunching_score(key) for key in keys], dtype=np.float64)
     if base == "n_first":
         return np.array([_first_mode_score(key) for key in keys], dtype=np.float64)
+    if base == "max_prob":
+        return np.array([0.0] * len(keys))
     raise ValueError(f"unknown graph base {base!r}; choose from {GRAPH_BASES}")
 
 
@@ -334,9 +336,11 @@ def _graph_selection(keys, *, m, k, base, edges, m0_mask, n_vertices, loop_vars,
 
 
 def _conditional_expectation(probs: torch.Tensor, keep_mask: torch.Tensor,
-                             score_vec: torch.Tensor) -> torch.Tensor:
+                             score_vec: torch.Tensor, observable: str) -> torch.Tensor:
     """``E[score | selected]`` per row of ``probs`` ``(N, n_fock)`` (0 where no mass survives)."""
     sel = probs * keep_mask                             # broadcast (n_fock,)
+    if observable == "max_prob":
+        return sel.max(dim=1).values.clamp(min=1e-10)
     den = sel.sum(dim=1)
     num = sel @ score_vec
     return torch.where(den > 1e-12, num / den.clamp(min=1e-12), torch.zeros_like(den))
@@ -442,6 +446,8 @@ class PhotonicTeacher(Teacher):
             vec = [_bunching_score(key) for key in keys]
         elif observable == "n_first":
             vec = [_first_mode_score(key) for key in keys]   # soft = E[n_0]
+        elif observable == "max_prob":
+            vec = [0.0] * len(keys)
         else:  # single_output
             vec = [_single_output_score(key, input_state) for key in keys]
         self.register_buffer("score_vec", torch.tensor(vec, dtype=torch.float32))
@@ -453,10 +459,12 @@ class PhotonicTeacher(Teacher):
             self._dist_probs.append(probs.detach().cpu().numpy())
         if self.is_graph:
             # E[base | matching & loop/path pre-selection]: renormalised masked mean.
-            score = _conditional_expectation(probs, self.keep_mask, self.score_vec)
+            score = _conditional_expectation(probs, self.keep_mask, self.score_vec, self.observable)
         else:
             score = probs @ self.score_vec
-            if self.observable == "single_output":
+            if self.observable == "max_prob":
+                score = probs.max(dim=1).values.clamp(min=1e-10)
+            elif self.observable == "single_output":
                 score = score / probs.max(dim=1).values.clamp(min=1e-10)
         return score.unsqueeze(-1)  # (N, 1)
 
@@ -545,7 +553,7 @@ def score_from_distribution(dist, observable: str | None = None, *,
                                      n_vertices=int(n_vertices), loop_vars=eff_loop,
                                      path_vars=eff_path)
         score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),
-                                         torch.tensor(vec, dtype=torch.float32))
+                                         torch.tensor(vec, dtype=torch.float32), obs)
         return score.numpy()
 
     if obs not in OBSERVABLES:
@@ -559,6 +567,8 @@ def score_from_distribution(dist, observable: str | None = None, *,
         vec = [_bunching_score(key) for key in keys]
     elif obs == "n_first":
         vec = [_first_mode_score(key) for key in keys]
+    elif obs == "max_prob":
+        return probs.max(dim=1).values.clamp(min=1e-10).numpy()
     else:  # single_output has no persisted input_state -> unsupported offline
         raise ValueError(f"observable {obs!r} cannot be re-scored offline")
     return (probs @ torch.tensor(vec, dtype=torch.float32)).numpy()
