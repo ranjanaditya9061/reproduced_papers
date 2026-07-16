@@ -25,7 +25,7 @@ from pathlib import Path
 
 import yaml
 
-OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first")
+OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first", "max_prob")
 
 #: Base scorers allowed under a photonic ``loop_path_<base>`` graph observable
 #: (mirrors :data:`model.photonic.GRAPH_BASES`).

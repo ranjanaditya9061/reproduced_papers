@@ -285,7 +285,7 @@ def main(argv=None) -> None:
     ap.add_argument("--dict-kind", default="poly", choices=["poly", "rbf", "fourier"],
                     help="'poly' (interactions on raw x), 'rbf' (bandwidth grid), or "
                          "'fourier' (interactions on Fourier features -- matched basis for angle inputs)")
-    ap.add_argument("--degrees", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6],
+    ap.add_argument("--degrees", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20],
                     help="dictionary sizes / max degrees on the x-axis")
     ap.add_argument("--fourier-order", type=int, default=3,
                     help="Fourier band [sin(jx),cos(jx)]_{j<=order} for --dict-kind fourier")
