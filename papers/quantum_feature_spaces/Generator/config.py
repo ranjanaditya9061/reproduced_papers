@@ -117,6 +117,19 @@ class ExperimentConfig:
                     f"loop_path_ needs k <= n_vertices//2 <= m "
                     f"(k={p.k}, n_vertices//2={half}, m={p.m})"
                 )
+        elif p.observable.startswith("prod_parity"):
+            # (-1)^P(n) with P a sum of square-free monomials in the photon counts;
+            # the monomial set is encoded in the observable string (see model.photonic).
+            from model.photonic import is_prod_parity_observable, parse_prod_parity
+
+            if not is_prod_parity_observable(p.observable):
+                raise ValueError(
+                    f"malformed prod_parity observable {p.observable!r} "
+                    "(expected prod_parity[__<preset|M<i>-<j>-...>...])"
+                )
+            if g.generator != "photonic_quantum":
+                raise ValueError("prod_parity observables are photonic_quantum only")
+            parse_prod_parity(p.observable, p.m)   # validate segments + mode indices vs m
         else:
             # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
             # validate the base observable and let the teacher check N against m.

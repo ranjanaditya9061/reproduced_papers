@@ -136,6 +136,30 @@ def _curve(rows):
              "train_r2": _clean(r["train_r2"])} for r in rows]
 
 
+#: Fixed bins for the "data prod distribution" panel.  The teacher's continuous target
+#: E[(-1)^P(n)] lives in [-1, 1] (as do parity / majority), so a fixed [-1, 1] grid makes
+#: the stored histograms comparable across sweep points and cheap to persist (replot-safe).
+PROD_HIST_EDGES = np.linspace(-1.0, 1.0, 41)
+
+
+def _prod_target_hist(dcfg, dataset_root, observable, edges=PROD_HIST_EDGES):
+    """Histogram of the teacher's continuous target over the full pool (the "prod distribution").
+
+    Loads the same target that the feature grid regresses (re-scored under ``observable`` when
+    one is given), so the panel shows exactly the signal being learnt.  Values are clipped into
+    the ``edges`` range so nothing is silently dropped.  Returns a compact, JSON-serialisable
+    dict (bin counts + mean/std/n) that :func:`_plot_prod_dist` aggregates over the average group.
+    """
+    from Generator import generate
+    from .svm import load_target
+
+    generate(dcfg, out_root=dataset_root)                        # ensure the artifact (cached no-op)
+    t = load_target(dcfg, dataset_root, observable=observable).numpy()
+    counts, _ = np.histogram(np.clip(t, edges[0], edges[-1]), bins=edges)
+    return {"counts": counts.astype(int).tolist(),
+            "mean": float(np.mean(t)), "std": float(np.std(t)), "n": int(t.size)}
+
+
 def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monomial", "fourier"),
                 threshold=0.5, max_feat=100000, max_degree=20, max_fourier_order=3,
                 n_fit=4000, n_test=2000, lambdas=None, dataset_root="datasets", observable=None):
@@ -177,8 +201,13 @@ def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monom
                 observable=observable, label=_label(overrides))
             per_basis = {b: {**_summarize_basis(per_rows[b], threshold), "curve": _curve(per_rows[b])}
                          for b in bases}
+            try:
+                prod_hist = _prod_target_hist(dcfg, dataset_root, observable)
+            except Exception as exc:                             # never let the panel abort a sweep
+                print(f"[scaling] prod-distribution unavailable for {_label(overrides)}: {exc}")
+                prod_hist = None
             runs.append({"sweep_idx": si, "x": sp.get(x_field), "sweep": sp, "average": ap,
-                         "per_basis": per_basis})
+                         "per_basis": per_basis, "prod_hist": prod_hist})
             for b in bases:
                 s = per_basis[b]
                 print(f"[scaling] {_label(overrides)} [{b}]: min_n_feat={s['min_n_feat']} "
@@ -187,7 +216,8 @@ def run_scaling(base_config, sweep, average=None, *, x_field=None, bases=("monom
         "meta": {"base_config": str(base_config), "bases": list(bases), "threshold": threshold,
                  "max_feat": max_feat, "max_degree": max_degree, "max_fourier_order": max_fourier_order,
                  "n_fit": n_fit, "n_test": n_test, "observable": observable, "sweep": list(sweep),
-                 "average": list(average), "x_field": x_field, "x_label": x_field.split(".")[-1]},
+                 "average": list(average), "x_field": x_field, "x_label": x_field.split(".")[-1],
+                 "prod_hist_edges": PROD_HIST_EDGES.tolist()},
         "runs": runs,
     }
 
@@ -249,6 +279,55 @@ def aggregate(payload):
 
 # --- plot ------------------------------------------------------------------- #
 
+def _plot_prod_dist(ax, payload):
+    """Bottom panel: the teacher's continuous target ("prod") distribution per sweep point.
+
+    Aggregates each sweep point's stored histogram over the average group and draws it as a
+    normalised step curve, so you can see how the ``(-1)^P(n)`` target's spread shifts as the
+    swept field changes (e.g. how it concentrates toward +1 as monomial order / k grows).
+    """
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+
+    edges = payload["meta"].get("prod_hist_edges")
+    if not edges:                                                # payload predates the panel
+        ax.text(0.5, 0.5, "no prod-distribution data\n(recompute to populate)",
+                ha="center", va="center", transform=ax.transAxes, fontsize=9)
+        ax.set_axis_off()
+        return
+    edges = np.asarray(edges, dtype=float)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    sweep = payload["meta"]["sweep"]
+    xf, xl = payload["meta"]["x_field"], payload["meta"]["x_label"]
+
+    agg = defaultdict(lambda: np.zeros(len(centers)))            # sweep_idx -> summed counts
+    for run in payload["runs"]:
+        h = run.get("prod_hist")
+        if h:
+            agg[run["sweep_idx"]] += np.asarray(h["counts"], dtype=float)
+
+    cmap = plt.get_cmap("viridis")
+    denom = max(len(sweep) - 1, 1)
+    plotted = False
+    for si, sp in enumerate(sweep):
+        c = agg.get(si)
+        if c is None or c.sum() == 0:
+            continue
+        ax.step(centers, c / c.sum(), where="mid", color=cmap(si / denom),
+                label=f"{xl}={sp.get(xf)}")
+        plotted = True
+    if not plotted:
+        ax.text(0.5, 0.5, "no prod-distribution data", ha="center", va="center",
+                transform=ax.transAxes, fontsize=9)
+        ax.set_axis_off()
+        return
+    ax.set_xlabel("teacher target  E[(−1)^P(n)]")
+    ax.set_ylabel("density")
+    ax.set_title("Data prod distribution (per sweep point)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(title=xl, fontsize=8)
+
+
 def _plot(payload, save_path, *, show=False):
     import matplotlib
     if not show:
@@ -263,7 +342,8 @@ def _plot(payload, save_path, *, show=False):
     xpos = xvals if numeric else idxs
     thr, xl = payload["meta"]["threshold"], payload["meta"]["x_label"]
 
-    fig, ax = plt.subplots(figsize=(7, 5))
+    # Two stacked panels: (top) feature-budget scaling curve, (bottom) prod distribution.
+    fig, (ax, ax_dist) = plt.subplots(2, 1, figsize=(7, 9))
     for b in payload["meta"]["bases"]:
         means = [agg[b][i]["mean"] for i in idxs]
         stds = [agg[b][i]["std"] for i in idxs]
@@ -279,12 +359,17 @@ def _plot(payload, save_path, *, show=False):
     if not numeric:
         ax.set_xticks(xpos)
         ax.set_xticklabels([str(x) for x in xvals])
-    ax.set_yscale("log")
+    # Log y only when at least one sweep point reached the threshold; otherwise every mean
+    # is NaN and a log axis raises ("all values <= 0"), which would also sink the panel below.
+    if any(np.isfinite(agg[b][i]["mean"]) for b in payload["meta"]["bases"] for i in idxs):
+        ax.set_yscale("log")
     ax.set_xlabel(xl)
     ax.set_ylabel(f"min # features to reach test R² ≥ {thr}  (mean ± std over averages)")
     ax.set_title(f"Feature budget needed to learn vs {xl}")
     ax.grid(True, alpha=0.3, which="both")
     ax.legend(title="basis")
+
+    _plot_prod_dist(ax_dist, payload)
     fig.tight_layout()
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,39 @@
+name: "Photonic prod-parity"
+# Grid dataset: teacher = photonic_quantum with a prod_parity observable.
+#
+# The label is (-1)^P(n) where P(n) is a sum of SQUARE-FREE monomials in the per-mode
+# photon counts, P(n) = Σ_monomials Π_{i in monomial} n_i  (each mode at most once per
+# monomial -- no higher powers).  It generalises `parity` (which is just the sum of all
+# size-1 monomials, (-1)^{Σ n_i}).
+#
+# The monomial set rides in the observable string via `__`-suffixes, summed (set-union):
+#   prod_parity              highest monomial: n_0·n_1·…·n_{m-1}   (== prod_parity__full)
+#   prod_parity__lo<t>       "leave-t-out": all (m-t)-subset monomials (lo1 = one dropped)
+#   prod_parity__M0-1__M2-3  explicit custom monomials: n_0·n_1 + n_2·n_3
+#   prod_parity__full__lo1   preset + preset (a "custom = presetA + presetB")
+#
+# NOTE on the label: E[(-1)^P] = P(P even) - P(P odd) is biased POSITIVE, because most
+# Fock outcomes leave at least one mode in a monomial empty -> that product is 0 -> P=0 ->
+# +1.  So the *binary* label skews to one class; the informative signal is the *continuous*
+# soft target's spread (see the "data prod distribution" panel in learn.scaling).  Keep the
+# monomials low-order relative to k or the product is almost always 0 (near-constant +1):
+# here m=6, k=4 with three disjoint pairs n_0n_1 + n_2n_3 + n_4n_5 gives a well-spread
+# target (~[0.3, 0.7]).  save_dist -> distributions.npz so the same pool can be re-scored
+# under a different monomial set offline (learn.scaling / learn.mkl --observable prod_parity__...).
+#   python -m Generator --config configs/Datasets/13_photonic_prod_parity.yaml
+problem:
+  m: 6
+  k: 4
+  observable: prod_parity__M0-1__M2-3__M4-5   # n_0·n_1 + n_2·n_3 + n_4·n_5
+  n_features: null                            # -> m-1 = 5
+generation:
+  generator: photonic_quantum
+  size: 10000
+  nsample: 0
+  save_dist: true                # dump full per-input Fock distribution (offline re-scoring)
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

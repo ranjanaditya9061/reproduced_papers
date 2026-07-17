@@ -14,6 +14,7 @@ amplitudes (for the fidelity kernel) and probabilities (for the projected kernel
 from __future__ import annotations
 
 import re
+from itertools import combinations
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -98,6 +99,98 @@ def _single_output_score(key, input_state) -> int:
     if kl == list(reversed(input_state)):
         return -1
     return 0
+
+
+# --- prod_parity: (-1)^P(n), P(n) a sum of square-free monomials in the counts -- #
+#
+# ``P(n) = Σ_monomials Π_{i in monomial} n_i`` over the per-mode photon counts, and the
+# score is ``(-1)^P(n) ∈ {+1, -1}`` -- a product-generalisation of ``parity`` (which is
+# just ``(-1)^{Σ n_i}``, the sum of all size-1 monomials).  Each mode appears at most
+# once per monomial (square-free; "no higher powers"), but a count itself may exceed 1.
+#
+# The monomial set is chosen by ``__``-suffixes on the observable string.  A segment is
+# either a named preset or an explicit monomial, and several segments are summed (their
+# monomial sets are unioned -- this is how ``custom = presetA + presetB`` is expressed):
+#
+#   preset ``full`` / ``top`` : the single highest monomial, all m modes  (Π_i n_i)
+#   preset ``lo<t>``          : "leave-t-out" -- every monomial with t fewer modes than
+#                               the highest, i.e. all (m-t)-subsets.  ``lo1`` = every
+#                               monomial with exactly one mode dropped.
+#   explicit ``M<i>-<j>-...`` : the single monomial n_i·n_j·...  (dash-joined mode indices)
+#
+# Examples: ``prod_parity`` (== ``prod_parity__full``) = n_0·n_1·…·n_{m-1};
+# ``prod_parity__lo1`` = Σ_j Π_{i≠j} n_i; ``prod_parity__full__lo1`` = the sum of both;
+# ``prod_parity__M0-1__M2-3`` = n_0·n_1 + n_2·n_3.  A monomial repeated across segments
+# collapses (a duplicate doubles its term, which vanishes under the parity).
+
+#: Named presets for :func:`parse_prod_parity` (``lo<t>`` is a family, any t < m).
+PROD_PARITY_PRESETS = ("full", "top", "lo<t>")
+
+_PROD_PARITY_RE = re.compile(r"^prod_parity(?:__.+)?$")
+_LO_RE = re.compile(r"^lo(\d+)$")
+
+
+def is_prod_parity_observable(observable: str) -> bool:
+    """True for a ``prod_parity`` observable (bare, or with ``__`` monomial segments)."""
+    return bool(_PROD_PARITY_RE.match(observable))
+
+
+def _parse_prod_segment(seg: str, m: int):
+    """One ``__`` segment -> list of monomials (each a frozenset of mode indices)."""
+    if seg in ("full", "top"):
+        return [frozenset(range(m))]
+    mo = _LO_RE.match(seg)
+    if mo is not None:
+        size = m - int(mo.group(1))
+        if size < 1:
+            raise ValueError(f"prod_parity segment {seg!r}: leaves fewer than 1 mode (m={m})")
+        return [frozenset(c) for c in combinations(range(m), size)]
+    if seg[:1] == "M":
+        try:
+            idx = [int(v) for v in seg[1:].split("-") if v != ""]
+        except ValueError as exc:
+            raise ValueError(f"bad prod_parity monomial {seg!r}: expected "
+                             "M<i>-<j>-... (dash-joined mode indices)") from exc
+        if not idx:
+            raise ValueError(f"empty prod_parity monomial {seg!r}")
+        if any(i < 0 or i >= m for i in idx):
+            raise ValueError(f"prod_parity monomial {seg!r} has a mode index outside [0, {m})")
+        return [frozenset(idx)]
+    raise ValueError(f"bad prod_parity segment {seg!r}; expected a preset "
+                     f"({PROD_PARITY_PRESETS}) or an explicit monomial M<i>-<j>-...")
+
+
+def parse_prod_parity(observable: str, m: int):
+    """Canonical monomial list for a ``prod_parity`` observable (needs ``m`` to expand presets).
+
+    Returns a sorted list of sorted mode-index tuples -- the deduplicated union ("sum")
+    of every ``__`` segment.  Bare ``prod_parity`` defaults to ``full`` (the single
+    highest monomial).  Deterministic in ``(observable, m)`` so equal specs -- e.g.
+    ``prod_parity__M0-1__M2-3`` and ``prod_parity__M2-3__M0-1`` -- canonicalise (and
+    thus hash) identically.
+    """
+    if not is_prod_parity_observable(observable):
+        raise ValueError(f"{observable!r} is not a prod_parity observable")
+    segments = observable.split("__")[1:] or ["full"]
+    monos: set = set()
+    for seg in segments:
+        monos.update(_parse_prod_segment(seg, m))
+    if not monos:
+        raise ValueError(f"prod_parity observable {observable!r} has no monomials")
+    return sorted(tuple(sorted(mono)) for mono in monos)
+
+
+def _prod_parity_score(key, monomials) -> int:
+    """``(-1)^{P(n)}`` for one Fock outcome (``P`` = Σ over monomials of the count product)."""
+    total = 0
+    for mono in monomials:
+        prod = 1
+        for i in mono:
+            prod *= int(key[i])
+            if prod == 0:
+                break                                   # a zero count kills the monomial
+        total += prod
+    return 1 if total % 2 == 0 else -1
 
 
 # --- loop_path_<base>: interpret Fock outcomes as edge sets of a fixed graph ---- #
@@ -395,9 +488,11 @@ class PhotonicTeacher(Teacher):
                  n_vertices: int | None = None, graph_seed: int | None = None):
         super().__init__(n_features)
         self.is_graph = is_graph_observable(observable)
-        if not self.is_graph and observable not in OBSERVABLES:
+        self.is_prod = is_prod_parity_observable(observable)
+        if not self.is_graph and not self.is_prod and observable not in OBSERVABLES:
             raise ValueError(f"observable must be one of {OBSERVABLES} "
-                             f"(or loop_path_<base>, base in {GRAPH_BASES}), got {observable!r}")
+                             f"(or loop_path_<base>, base in {GRAPH_BASES}; or prod_parity"
+                             f"[__<preset|M...>...]), got {observable!r}")
         if observable == "majority" and m % 2:
             raise ValueError("observable 'majority' requires even m")
         self.m, self.k, self.observable, self.nsample = m, k, observable, int(nsample)
@@ -437,6 +532,9 @@ class PhotonicTeacher(Teacher):
                 keys, m=m, k=k, base=base, edges=self.edges, m0_mask=self.m0_mask,
                 n_vertices=self.n_vertices, loop_vars=self.loop_vars, path_vars=self.path_vars)
             self.register_buffer("keep_mask", torch.tensor(keep, dtype=torch.float32))
+        elif self.is_prod:
+            self.monomials = parse_prod_parity(observable, m)
+            vec = [_prod_parity_score(key, self.monomials) for key in keys]
         elif observable == "parity":
             pm = tuple(range((m + 1) // 2))
             vec = [_parity_score(key, pm) for key in keys]
@@ -509,7 +607,14 @@ class PhotonicTeacher(Teacher):
     @classmethod
     def hash_spec(cls, cfg: "ExperimentConfig") -> dict:
         spec = {"observable": cfg.problem.observable, "nsample": cfg.generation.nsample}
-        if is_graph_observable(cfg.problem.observable):
+        if is_prod_parity_observable(cfg.problem.observable):
+            # Canonicalise the monomial set so equivalent spellings (segment order,
+            # duplicates, preset/explicit mixes that expand to the same monomials)
+            # map to one dataset.
+            spec.update(observable="prod_parity",
+                        monomials=[list(mono) for mono in
+                                   parse_prod_parity(cfg.problem.observable, cfg.problem.m)])
+        elif is_graph_observable(cfg.problem.observable):
             p = cfg.problem
             base, eff_loop, eff_path = resolve_graph_spec(p.observable, None, None)
             # Canonicalise: the selection is folded into loop_vars/path_vars below, so
@@ -555,6 +660,13 @@ def score_from_distribution(dist, observable: str | None = None, *,
         score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),
                                          torch.tensor(vec, dtype=torch.float32), obs)
         return score.numpy()
+
+    if is_prod_parity_observable(obs):
+        # Fully offline: prod_parity needs only the per-mode counts (keys) + probs,
+        # both persisted in the .npz, so a save_dist dump re-scores with no extra knobs.
+        monomials = parse_prod_parity(obs, m)
+        vec = [_prod_parity_score(key, monomials) for key in keys]
+        return (probs @ torch.tensor(vec, dtype=torch.float32)).numpy()
 
     if obs not in OBSERVABLES:
         raise ValueError(f"observable must be one of {OBSERVABLES} "
