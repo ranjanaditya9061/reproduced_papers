@@ -13,9 +13,14 @@ Two stacked panels (poly_sweep style, x-axis = problem size):
 
 Keep the observable the same across the folder; ``prod_parity_consecutive`` is a natural fit --
 it derives its monomials from ``(m, k)``, so it stays "the same observable" while scaling with
-the problem.
+the problem.  ``--observable`` re-scores the saved distribution offline at every size (needs
+``generation.save_dist``), so one generated pool can be measured under any observable without
+regenerating.
 
+    # each config's own (stored) observable
     python -m learn.grid_size --configs-dir configs/size_sweep --save-dir img
+    # re-score every size under one observable, computed offline from the saved distributions
+    python -m learn.grid_size --configs-dir configs/size_sweep --observable prod_parity_consecutive
 """
 
 from __future__ import annotations
@@ -72,13 +77,17 @@ def discover_configs_by_size(configs_dir):
 
 
 def run_size_sweep(dataset_map, *, n_train=8000, n_test=2000, C=1.0, gamma="scale", epsilon=0.01,
-                   fourier_order=3, embeddings_root="embeddings", dataset_root=DATASET_ROOT,
-                   use_cache=True):
+                   fourier_order=3, observable=None, embeddings_root="embeddings",
+                   dataset_root=DATASET_ROOT, use_cache=True):
     """Fit the Fourier-RBF kernel on each size's dataset; return ``(per_size, targets)``.
 
     ``per_size`` maps each label to ``{test_r2, test_diff, var}`` (R², raw MSE difference, and the
     teacher target variance ``Var(y)``); ``targets`` maps it to the full target vector (numpy).
-    Each dataset is generated (cache-keyed) and its Fourier-RBF features built once.
+    Each dataset is generated (cache-keyed) and its Fourier-RBF features built once.  With
+    ``observable`` set, the target is the saved distribution **re-scored offline** under that
+    observable (needs ``generation.save_dist``) instead of the stored soft -- so one generated
+    pool can be measured under any observable without regenerating.  ``prod_parity_consecutive``
+    re-scores per size from the persisted ``(m, k)``.
     """
     from embedding import build_embeddings_for
 
@@ -91,7 +100,7 @@ def run_size_sweep(dataset_map, *, n_train=8000, n_test=2000, C=1.0, gamma="scal
             dcfg, [spec], embeddings_root=embeddings_root,
             dataset_root=dataset_root, use_cache=use_cache)
         F = results[0]["blob"]["data"]                       # (N, d) Fourier-RBF features
-        t = load_target(dcfg, dataset_root)                  # observable=None -> stored soft[:, 0]
+        t = load_target(dcfg, dataset_root, observable=observable)  # None -> stored soft[:, 0]
         tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
                                 split_seed=dcfg.split.split_seed)
         tr, te = tr[:n_train], te[:n_test]
@@ -163,6 +172,10 @@ def main(argv=None) -> None:
                     "R² + raw difference, and the teacher target variance, per size (poly_sweep style).")
     ap.add_argument("--configs-dir", default=DEFAULT_CONFIGS_DIR,
                     help="folder of data configs; each *.yaml -> one x-axis column, ordered by (m, k)")
+    ap.add_argument("--observable", default=None,
+                    help="re-score the saved distribution under this observable at every size "
+                         "(needs generation.save_dist); default: each config's stored soft. "
+                         "e.g. prod_parity_consecutive, prod_parity__M0-1, loop_path_parity__L0-1")
     ap.add_argument("--axis-label", default="problem size", help="x-axis title for the sweep")
     ap.add_argument("--n-train", type=int, default=8000)
     ap.add_argument("--n-test", type=int, default=2000)
@@ -176,15 +189,19 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
 
     dataset_map, observables = discover_configs_by_size(args.configs_dir)
-    obs = next(iter(observables)) if len(observables) == 1 else "mixed"
-    if len(observables) > 1:
-        print(f"[grid_size] WARNING: folder mixes observables {sorted(map(str, observables))}; "
-              "a size sweep is meant to hold the observable constant")
+    if args.observable:                                      # re-score offline: this IS the observable
+        obs = args.observable
+    else:
+        obs = next(iter(observables)) if len(observables) == 1 else "mixed"
+        if len(observables) > 1:
+            print(f"[grid_size] WARNING: folder mixes observables {sorted(map(str, observables))}; "
+                  "hold it constant, or pass --observable to re-score every size the same way")
 
     gamma = float(args.gamma) if args.gamma.replace(".", "", 1).isdigit() else args.gamma
     per_size, _ = run_size_sweep(dataset_map, n_train=args.n_train, n_test=args.n_test,
                                  C=args.C, gamma=gamma, epsilon=args.epsilon,
-                                 fourier_order=args.fourier_order, use_cache=not args.force)
+                                 fourier_order=args.fourier_order, observable=args.observable,
+                                 use_cache=not args.force)
 
     labels = list(dataset_map)
     wl = max(len(lbl.replace("\n", ",")) for lbl in labels)
