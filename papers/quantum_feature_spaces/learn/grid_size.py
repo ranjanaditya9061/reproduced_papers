@@ -9,7 +9,8 @@ Two stacked panels (poly_sweep style, x-axis = problem size):
 
 - **top** -- the Fourier-RBF kernel's test **R²** (usual ``1 - Σ(y-ŷ)²/Σ(y-ȳ)²``, left axis) and
   its raw **difference** = mean squared prediction error ``mean((y-ŷ)²)`` (right axis).
-- **bottom** -- the teacher target **variance** ``Var(y)`` per problem size (bar per size).
+- **bottom** -- a ggplot-style violin per size of the teacher target ``y`` distribution (its
+  spread is the data variance; solid bar = median, dashed = mean).
 
 Keep the observable the same across the folder; ``prod_parity_consecutive`` is a natural fit --
 it derives its monomials from ``(m, k)``, so it stays "the same observable" while scaling with
@@ -112,8 +113,9 @@ def run_size_sweep(dataset_map, *, n_train=8000, n_test=2000, C=1.0, gamma="scal
     return per_size, targets
 
 
-def _plot(labels, per_size, save_path, *, axis_label, obs, show=False):
-    """Two stacked panels: (top) Fourier-RBF R² + raw difference vs size; (bottom) Var(y) vs size."""
+def _plot(labels, per_size, targets, save_path, *, axis_label, obs, show=False):
+    """Two stacked panels: (top) Fourier-RBF R² + raw difference vs size; (bottom) a ggplot-style
+    violin of the teacher target ``y`` distribution per size."""
     import matplotlib
     if not show:
         matplotlib.use("Agg")
@@ -122,7 +124,6 @@ def _plot(labels, per_size, save_path, *, axis_label, obs, show=False):
     xs = range(len(labels))
     r2 = [per_size[l]["test_r2"] for l in labels]
     diff = [per_size[l]["test_diff"] for l in labels]
-    var = [per_size[l]["var"] for l in labels]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(6, 1.7 * len(labels)), 9))
 
@@ -143,14 +144,26 @@ def _plot(labels, per_size, save_path, *, axis_label, obs, show=False):
     ax1.legend(handles=[l1, l2], loc="best", fontsize=9)
     ax1.set_title(f"Fourier-RBF R² and raw difference vs {axis_label}  [{obs}]")
 
-    # --- bottom: teacher target variance per size ------------------------------- #
+    # --- bottom: teacher target distribution per size (ggplot-style violins) ----- #
+    data = [targets[l] for l in labels]
+    parts = ax2.violinplot(data, positions=list(xs), showmeans=True, showmedians=True,
+                           showextrema=True, widths=0.8)
     cmap = plt.get_cmap("viridis")
     denom = max(len(labels) - 1, 1)
-    ax2.bar(list(xs), var, color=[cmap(i / denom) for i in xs], edgecolor="black", alpha=0.85)
+    for i, body in enumerate(parts["bodies"]):
+        body.set_facecolor(cmap(i / denom))
+        body.set_edgecolor("black")
+        body.set_alpha(0.75)
+    for key in ("cmeans", "cmedians", "cmaxes", "cmins", "cbars"):
+        if key in parts:
+            parts[key].set_color("black")
+            parts[key].set_linewidth(1.0)
+    if "cmeans" in parts:
+        parts["cmeans"].set_linestyle("--")            # dashed = mean, solid = median
     ax2.set_xticks(list(xs), labels)
     ax2.set_xlabel(axis_label)
-    ax2.set_ylabel("teacher target variance  Var(y)")
-    ax2.set_title("Teacher target variance per problem size")
+    ax2.set_ylabel("teacher target  y  (soft[:, 0])")
+    ax2.set_title("Teacher target distribution per problem size  (solid = median, dashed = mean)")
     ax2.grid(True, axis="y", alpha=0.3)
 
     fig.tight_layout()
@@ -198,10 +211,10 @@ def main(argv=None) -> None:
                   "hold it constant, or pass --observable to re-score every size the same way")
 
     gamma = float(args.gamma) if args.gamma.replace(".", "", 1).isdigit() else args.gamma
-    per_size, _ = run_size_sweep(dataset_map, n_train=args.n_train, n_test=args.n_test,
-                                 C=args.C, gamma=gamma, epsilon=args.epsilon,
-                                 fourier_order=args.fourier_order, observable=args.observable,
-                                 use_cache=not args.force)
+    per_size, targets = run_size_sweep(dataset_map, n_train=args.n_train, n_test=args.n_test,
+                                       C=args.C, gamma=gamma, epsilon=args.epsilon,
+                                       fourier_order=args.fourier_order, observable=args.observable,
+                                       use_cache=not args.force)
 
     labels = list(dataset_map)
     wl = max(len(lbl.replace("\n", ",")) for lbl in labels)
@@ -213,7 +226,7 @@ def main(argv=None) -> None:
               f"{p['test_diff']:>11.4g}  {p['var']:>9.4g}")
 
     save = None if args.show else str(Path(args.save_dir) / f"grid_size_{obs}.png")
-    _plot(labels, per_size, save, axis_label=args.axis_label, obs=obs, show=args.show)
+    _plot(labels, per_size, targets, save, axis_label=args.axis_label, obs=obs, show=args.show)
 
 
 if __name__ == "__main__":
