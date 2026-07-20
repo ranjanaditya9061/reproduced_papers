@@ -118,18 +118,19 @@ class ExperimentConfig:
                     f"(k={p.k}, n_vertices//2={half}, m={p.m})"
                 )
         elif p.observable.startswith("prod_parity"):
-            # (-1)^P(n) with P a sum of square-free monomials in the photon counts;
-            # the monomial set is encoded in the observable string (see model.photonic).
-            from model.photonic import is_prod_parity_observable, parse_prod_parity
+            # (-1)^P(n) with P a sum of square-free monomials in the photon counts; the monomial
+            # set is encoded in the observable string, or derived from (m, k) for the
+            # consecutive variant (see model.photonic).
+            from model.photonic import is_prod_family, prod_family_monomials
 
-            if not is_prod_parity_observable(p.observable):
+            if not is_prod_family(p.observable):
                 raise ValueError(
-                    f"malformed prod_parity observable {p.observable!r} "
-                    "(expected prod_parity[__<preset|M<i>-<j>-...>...])"
+                    f"malformed prod_parity observable {p.observable!r} (expected "
+                    "prod_parity[__<preset|M<i>-<j>-...|N<i>-<j>-...>...] or prod_parity_consecutive)"
                 )
             if g.generator != "photonic_quantum":
                 raise ValueError("prod_parity observables are photonic_quantum only")
-            parse_prod_parity(p.observable, p.m)   # validate segments + mode indices vs m
+            prod_family_monomials(p.observable, p.m, p.k)   # validate segments / (m, k)
         else:
             # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
             # validate the base observable and let the teacher check N against m.

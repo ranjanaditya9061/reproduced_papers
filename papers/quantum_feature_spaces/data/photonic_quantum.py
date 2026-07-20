@@ -275,10 +275,11 @@ def generate_photonic_quantum(
         raise ValueError("Require 1 <= k <= m.")
     if nsample < 0:
         raise ValueError("nsample must be >= 0.")
-    if observable not in ("parity", "majority", "bunching", "single_output"):
+    is_prod = observable.startswith("prod_parity")
+    if observable not in ("parity", "majority", "bunching", "single_output") and not is_prod:
         raise ValueError(
-            f"observable must be 'parity', 'majority', 'bunching', or 'single_output', "
-            f"got {observable!r}."
+            f"observable must be 'parity', 'majority', 'bunching', 'single_output', "
+            f"or 'prod_parity[__...]', got {observable!r}."
         )
     if observable == "majority" and m % 2 != 0:
         raise ValueError("observable='majority' requires even m.")
@@ -293,7 +294,19 @@ def generate_photonic_quantum(
     layer = layer.to(device)
     output_keys = list(layer.output_keys)
 
-    if observable == "parity":
+    if is_prod:
+        # (-1)^P(n): P a sum of square-free monomials in the counts. Reuse the canonical
+        # monomial builder/scorer from the teacher so both paths agree exactly (the
+        # consecutive variant derives its monomials from (m, k)).
+        from model.photonic import _prod_parity_score, prod_family_monomials
+
+        parity_modes = None
+        monomials = prod_family_monomials(observable, m, k)
+        score_vec = torch.tensor(
+            [_prod_parity_score(key, monomials) for key in output_keys],
+            dtype=dtype, device=device,
+        )
+    elif observable == "parity":
         if parity_modes is None:
             parity_modes = tuple(range((m + 1) // 2))
         else:
