@@ -200,14 +200,33 @@ def parse_prod_parity(observable: str, m: int):
     return sorted(tuple(sorted(mono)) for mono in monos)
 
 
-#: A parameter-free ``prod_parity`` variant whose monomial set is derived from the problem
-#: geometry ``(m, k)`` rather than the observable string (see :func:`consecutive_monomials`).
+#: ``prod_parity`` variants whose monomial set is derived from the problem geometry ``(m[, k])``
+#: rather than the observable string (see :func:`consecutive_monomials` / :func:`second_monomials`).
 PROD_PARITY_CONSECUTIVE = "prod_parity_consecutive"
+PROD_PARITY_SECOND = "prod_parity_second"
 
 
 def is_prod_parity_consecutive(observable: str) -> bool:
     """True for the ``prod_parity_consecutive`` observable (monomials come from ``(m, k)``)."""
     return observable == PROD_PARITY_CONSECUTIVE
+
+
+def is_prod_parity_second(observable: str) -> bool:
+    """True for the ``prod_parity_second`` observable (consecutive PAIRS only; from ``m``)."""
+    return observable == PROD_PARITY_SECOND
+
+
+def second_monomials(m: int):
+    """Consecutive second-order (pair) monomials over ``m`` modes: the order-2 slice.
+
+    ``P(n) = Σ_{i=0}^{m-2} n_i·n_{i+1}`` -- ``n0n1 + n1n2 + n2n3 + …`` -- every neighbouring pair,
+    independent of ``k``.  Returns a sorted list of sorted mode-index tuples, matching
+    :func:`parse_prod_parity`.
+    """
+    m = int(m)
+    if m < 2:
+        raise ValueError(f"prod_parity_second needs m >= 2 (m={m}): there is no pair product")
+    return [(i, i + 1) for i in range(m - 1)]
 
 
 def consecutive_monomials(m: int, k: int):
@@ -230,19 +249,23 @@ def consecutive_monomials(m: int, k: int):
 
 
 def is_prod_family(observable: str) -> bool:
-    """True for any prod-parity-family observable (``prod_parity[...]`` or the consecutive one)."""
-    return is_prod_parity_observable(observable) or is_prod_parity_consecutive(observable)
+    """True for any prod-parity-family observable (``prod_parity[...]``, ``_consecutive``, ``_second``)."""
+    return (is_prod_parity_observable(observable) or is_prod_parity_consecutive(observable)
+            or is_prod_parity_second(observable))
 
 
 def prod_family_monomials(observable: str, m: int, k: int):
     """Monomials for any prod-parity-family observable.
 
-    Dispatches to :func:`consecutive_monomials` (needs ``k``) for ``prod_parity_consecutive``,
-    else to :func:`parse_prod_parity` (``k`` unused).  Both feed the same ``(-1)^P(n)`` scorer
-    :func:`_prod_parity_score`.
+    Dispatches to :func:`consecutive_monomials` (orders 2..k, needs ``k``) for
+    ``prod_parity_consecutive``, to :func:`second_monomials` (order-2 pairs, ``k`` unused) for
+    ``prod_parity_second``, else to :func:`parse_prod_parity`.  All feed the same ``(-1)^P(n)``
+    scorer :func:`_prod_parity_score`.
     """
     if is_prod_parity_consecutive(observable):
         return consecutive_monomials(m, k)
+    if is_prod_parity_second(observable):
+        return second_monomials(m)
     return parse_prod_parity(observable, m)
 
 
@@ -558,8 +581,8 @@ class PhotonicTeacher(Teacher):
         if not self.is_graph and not self.is_prod and observable not in OBSERVABLES:
             raise ValueError(f"observable must be one of {OBSERVABLES} "
                              f"(or loop_path_<base>, base in {GRAPH_BASES}; or prod_parity"
-                             f"[__<preset|M...|N...>...]; or {PROD_PARITY_CONSECUTIVE}), "
-                             f"got {observable!r}")
+                             f"[__<preset|M...|N...>...]; or {PROD_PARITY_CONSECUTIVE}"
+                             f" / {PROD_PARITY_SECOND}), got {observable!r}")
         if observable == "majority" and m % 2:
             raise ValueError("observable 'majority' requires even m")
         self.m, self.k, self.observable, self.nsample = m, k, observable, int(nsample)

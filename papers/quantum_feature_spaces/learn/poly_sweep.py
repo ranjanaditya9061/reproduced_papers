@@ -197,12 +197,13 @@ def _plot(per_poly, targets, polynomials, names, save_path, *, title=None, show=
     ax1.axhline(0.0, color="grey", lw=0.8, ls=":")
     ax1.set_xticks(list(xs), names, rotation=30, ha="right")
     ax1.grid(True, axis="y", alpha=0.3)
+    ax1.set_ylim(0,1)
 
     axr = ax1.twinx()
     l2 = axr.plot(xs, diff, marker="s", color=c_diff,
                   label="Fourier-RBF  difference  (mean (y-ŷ)²)")[0]
     axr.set_ylabel("raw difference  mean (y-ŷ)²", color=c_diff)
-    axr.set_ylim(0,)
+    axr.set_ylim(0,0.03)
     axr.tick_params(axis="y", labelcolor=c_diff)
     ax1.legend(handles=[l1, l2], loc="best", fontsize=9)
     ax1.set_title(title or "Fourier-RBF R² and raw difference per polynomial")
@@ -228,6 +229,7 @@ def _plot(per_poly, targets, polynomials, names, save_path, *, title=None, show=
     ax2.set_ylabel("teacher target  y  (E[(−1)^P(n)])")
     ax2.set_title("Teacher target distribution per polynomial  (solid = median, dashed = mean)")
     ax2.grid(True, axis="y", alpha=0.3)
+    ax2.set_ylim(-1,1)
 
     fig.tight_layout()
     if save_path:
