@@ -48,6 +48,10 @@ class ProblemConfig:
     # no suffix at all -- keeps every count on that dimension.
     n_vertices: int | None = None  # even; vertices of the fixed graph G (M_0 has V/2 edges)
     graph_seed: int | None = None  # seeds G + M_0 (defaults to teacher_seed); folded into the hash
+    # photonic prod_parity_*_random-only: seeds the per-monomial angles theta ~ U[0, pi] of the
+    # phase observable cos(P(n)) (defaults to teacher_seed); folded into the hash so a different
+    # draw is a different dataset.  Unused by prod_parity_*_pi (theta = pi is deterministic).
+    angle_seed: int | None = None
 
 @dataclass
 class GenerationConfig:
@@ -120,17 +124,25 @@ class ExperimentConfig:
         elif p.observable.startswith("prod_parity"):
             # (-1)^P(n) with P a sum of square-free monomials in the photon counts; the monomial
             # set is encoded in the observable string, or derived from (m, k) for the
-            # consecutive variant (see model.photonic).
-            from model.photonic import is_prod_family, prod_family_monomials
+            # consecutive variant.  The angle variants (prod_parity_{consecutive,second}_{pi,random})
+            # instead score cos(P(n)) with per-monomial angles (see model.photonic).
+            from model.photonic import (angle_monomials, is_prod_family,
+                                        is_prod_parity_angle, prod_family_monomials)
 
-            if not is_prod_family(p.observable):
+            if not is_prod_family(p.observable) and not is_prod_parity_angle(p.observable):
                 raise ValueError(
                     f"malformed prod_parity observable {p.observable!r} (expected "
-                    "prod_parity[__<preset|M<i>-<j>-...|N<i>-<j>-...>...] or prod_parity_consecutive)"
+                    "prod_parity[__<preset|M<i>-<j>-...|N<i>-<j>-...>...], prod_parity_consecutive"
+                    " / prod_parity_second, or an angle variant "
+                    "prod_parity_{consecutive,second}_{pi,random})"
                 )
             if g.generator != "photonic_quantum":
                 raise ValueError("prod_parity observables are photonic_quantum only")
-            prod_family_monomials(p.observable, p.m, p.k)   # validate segments / (m, k)
+            if is_prod_parity_angle(p.observable):
+                aseed = self.seeds.teacher_seed if p.angle_seed is None else int(p.angle_seed)
+                angle_monomials(p.observable, p.m, p.k, aseed)   # validate (m, k)
+            else:
+                prod_family_monomials(p.observable, p.m, p.k)    # validate segments / (m, k)
         else:
             # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
             # validate the base observable and let the teacher check N against m.

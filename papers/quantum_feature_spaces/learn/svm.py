@@ -64,7 +64,7 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
     dist = load_distributions(dpath)
 
     if dcfg.generation.generator == "photonic_quantum":
-        from model.photonic import is_graph_observable
+        from model.photonic import is_graph_observable, is_prod_parity_angle
         from model.photonic import score_from_distribution as photonic_score
 
         if is_graph_observable(observable):
@@ -73,6 +73,10 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
             p = dcfg.problem
             scores = photonic_score(dist, observable, n_vertices=p.n_vertices,
                                     graph_seed=p.graph_seed)
+        elif is_prod_parity_angle(observable):
+            # An angle prod_parity variant: its per-monomial angles ride on angle_seed (from the
+            # dataset config; None -> the stored teacher seed, matching the generator's default).
+            scores = photonic_score(dist, observable, angle_seed=dcfg.problem.angle_seed)
         else:
             scores = photonic_score(dist, observable)
     else:
