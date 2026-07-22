@@ -31,6 +31,10 @@ OBSERVABLES = ("parity", "majority", "bunching", "single_output", "n_first", "ma
 #: (mirrors :data:`model.photonic.GRAPH_BASES`).
 GRAPH_BASES = ("parity", "majority", "bunching", "n_first", "loop", "path")
 
+#: Base scorers allowed under a photonic ``connected_<base>`` observable
+#: (mirrors :data:`model.photonic.CONNECTED_BASES`).
+CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "ncc")
+
 
 @dataclass
 class ProblemConfig:
@@ -120,6 +124,29 @@ class ExperimentConfig:
                 raise ValueError(
                     f"loop_path_ needs k <= n_vertices//2 <= m "
                     f"(k={p.k}, n_vertices//2={half}, m={p.m})"
+                )
+        elif p.observable.startswith("connected_"):
+            # Sibling of loop_path_<base>: the clicked edges of each Fock outcome are pre-selected
+            # on connectivity (one component vs >= 2 components), toggled by a ``__disc`` suffix,
+            # then scored <base> (see model.photonic).  Same fixed mode<->edge graph as loop_path,
+            # but no M_0 -- so the k <= V/2 matching bound is not required (edges may share vertices).
+            from model.photonic import parse_connected_observable
+
+            _, base, _ = parse_connected_observable(p.observable)
+            if base not in CONNECTED_BASES:
+                raise ValueError(
+                    f"unknown connected base {p.observable!r}; choose base from {list(CONNECTED_BASES)}"
+                )
+            if g.generator != "photonic_quantum":
+                raise ValueError("connected_<base> observables are photonic_quantum only")
+            if p.n_vertices is None:
+                raise ValueError("connected_<base> observables require problem.n_vertices")
+            if p.n_vertices < 2 or p.n_vertices % 2:
+                raise ValueError(f"n_vertices must be a positive even int (got {p.n_vertices})")
+            if p.n_vertices // 2 > p.m:
+                raise ValueError(
+                    f"connected_ needs n_vertices//2 <= m "
+                    f"(n_vertices//2={p.n_vertices // 2}, m={p.m})"
                 )
         elif p.observable.startswith("prod_parity"):
             # (-1)^P(n) with P a sum of square-free monomials in the photon counts; the monomial
