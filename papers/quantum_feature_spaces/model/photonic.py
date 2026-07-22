@@ -227,7 +227,7 @@ def second_monomials(m: int):
     m = int(m)
     if m < 2:
         raise ValueError(f"prod_parity_second needs m >= 2 (m={m}): there is no pair product")
-    return [(i*2, j) for i in range(int(m/2)) for j in range(m - 1) if i<j]
+    return [(i, j) for i in range(m) for j in range(m) if i<=j]
 
 
 def consecutive_monomials(m: int, k: int):
@@ -336,7 +336,7 @@ def angle_monomials(observable: str, m: int, k: int, angle_seed: int):
     if angle_kind == "random":
         rng = np.random.default_rng(int(angle_seed))
         thetas = [float(t) for t in rng.uniform(0.0, 2*math.pi, size=len(monos))]
-    if angle_kind == "pi":
+    elif angle_kind == "pi":
         thetas = [math.pi] * len(monos)
     else:
         rng = np.random.default_rng(int(angle_seed))
