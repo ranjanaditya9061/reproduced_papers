@@ -896,9 +896,26 @@ class PhotonicTeacher(Teacher):
         else:  # single_output
             vec = [_single_output_score(key, input_state) for key in keys]
         self.register_buffer("score_vec", torch.tensor(vec, dtype=torch.float32))
+        # Row-batch the forward so peak memory scales with the chunk, not the whole pool: the
+        # per-forward (N, n_fock) prob matrix (n_fock = len(keys) = C(m+k-1, k)) blows up for
+        # large (m, k) -- e.g. m=14,k=7 -> n_fock=77520, ~3 GB at N=1e4 in fp32, and merlin's
+        # complex amplitudes push peak higher -> the sampler gets OOM-killed.  Auto-size the chunk
+        # to ~32M fp32 elements (~128 MB) per call; override with ``teacher.forward_batch`` (a
+        # larger value if you have RAM, or <= 0 to disable batching).
+        self.forward_batch = max(1, 33_554_432 // max(len(keys), 1))
 
     @torch.no_grad()
     def forward(self, X: torch.Tensor) -> torch.Tensor:
+        bs = self.forward_batch
+        if bs is None or bs <= 0 or X.shape[0] <= bs:
+            return self._forward_chunk(X)
+        # Process row-chunks and concatenate; peak memory stays at (bs, n_fock) instead of
+        # (N, n_fock).  Row order is preserved, so the result is identical to an unbatched call.
+        scores = [self._forward_chunk(X[i:i + bs]) for i in range(0, X.shape[0], bs)]
+        return torch.cat(scores, dim=0)
+
+    @torch.no_grad()
+    def _forward_chunk(self, X: torch.Tensor) -> torch.Tensor:
         probs = self.layer.forward(X, shots=self.nsample if self.nsample > 0 else None)
         if self._capture:
             self._dist_probs.append(probs.detach().cpu().numpy())
@@ -911,7 +928,7 @@ class PhotonicTeacher(Teacher):
                 score = probs.max(dim=1).values.clamp(min=1e-10)
             elif self.observable == "single_output":
                 score = score / probs.max(dim=1).values.clamp(min=1e-10)
-        return score.unsqueeze(-1)  # (N, 1)
+        return score.unsqueeze(-1)  # (N_chunk, 1)
 
     # --- optional full-distribution capture (parity with spoqc_magic) ---------- #
 
