@@ -479,6 +479,45 @@ def build_matching_graph(m: int, n_vertices: int, seed: int):
     raise RuntimeError(f"could not draw a connected graph (V={V}, m={m}, seed={seed})")
 
 
+def build_connected_graph(m: int, n_vertices: int, seed: int):
+    """A fixed, *connected*, seeded ``mode i <-> edges[i]`` map of ``m`` distinct edges on ``V``.
+
+    The graph builder for the ``connected_<base>`` observable (:func:`is_connected_observable`).
+    Like :func:`build_matching_graph` the whole graph is drawn connected (retried with a bumped
+    sub-seed until so): if ``G`` had isolated parts, a Fock outcome whose clicks straddle them
+    would be disconnected *by fiat*, pre-deciding the selection from ``G``'s fixed topology rather
+    than the quantum outcome -- a connected ``G`` keeps the connectivity verdict a genuine,
+    outcome-dependent global property.  Unlike ``build_matching_graph`` it drops the reference
+    matching ``M_0`` and its restrictions: ``n_vertices`` need not be even, and the only bound is
+    the one connectivity itself forces, ``V - 1 <= m <= C(V, 2)`` (a connected graph on ``V``
+    vertices needs at least ``V - 1`` edges).  Deterministic in ``seed`` -> reproducible/hashable.
+
+    Note: a connected ``G`` is necessary but not sufficient for a *balanced* selection -- how often
+    a clicked edge subset comes out connected is governed by ``G``'s density, i.e. ``m`` vs ``V``
+    (near ``m = V - 1`` ``G`` is tree-like and clicked subsets are mostly disconnected; smaller
+    ``V`` at fixed ``m`` is denser and yields more connected outcomes).
+
+    Returns ``edges``: a list of ``m`` sorted ``(u, v)`` tuples, in mode order.
+    """
+    V = int(n_vertices)
+    if V < 2:
+        raise ValueError(f"n_vertices must be >= 2 (got {V})")
+    if m < V - 1:
+        raise ValueError(f"need m >= V-1={V - 1} for a connected graph on V={V} vertices (m={m})")
+    max_edges = V * (V - 1) // 2
+    if m > max_edges:
+        raise ValueError(f"m={m} exceeds C(V, 2)={max_edges} for V={V}")
+
+    all_edges = [(i, j) for i in range(V) for j in range(i + 1, V)]
+    for attempt in range(1024):
+        rng = np.random.default_rng(int(seed) + attempt)
+        order = rng.permutation(len(all_edges))         # seeded pick of m distinct edges + order
+        edges = [all_edges[int(o)] for o in order[:m]]
+        if _is_connected(edges, V):
+            return edges
+    raise RuntimeError(f"could not draw a connected graph (V={V}, m={m}, seed={seed})")
+
+
 def _overlay_counts(key, edges, m0_edges: set, n_vertices: int):
     """``(valid, n_loops, n_paths)`` for one Fock outcome ``key`` (per-mode counts).
 
@@ -832,7 +871,7 @@ class PhotonicTeacher(Teacher):
             if self.n_vertices is None:
                 raise ValueError("connected_<base> observables require n_vertices")
             _, base, self.keep_connected = parse_connected_observable(observable)
-            self.edges, _ = build_matching_graph(m, self.n_vertices, self.graph_seed)
+            self.edges = build_connected_graph(m, self.n_vertices, self.graph_seed)
             keep, vec = _connected_selection(
                 keys, m=m, k=k, base=base, edges=self.edges,
                 keep_connected=self.keep_connected)
@@ -999,7 +1038,7 @@ def score_from_distribution(dist, observable: str | None = None, *,
                              "(+ graph_seed)")
         gseed = int(dist["seed"]) if graph_seed is None else int(graph_seed)
         _, base, keep_connected = parse_connected_observable(obs)
-        edges, _ = build_matching_graph(m, int(n_vertices), gseed)
+        edges = build_connected_graph(m, int(n_vertices), gseed)
         keep, vec = _connected_selection(keys, m=m, k=k, base=base, edges=edges,
                                          keep_connected=keep_connected)
         score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),

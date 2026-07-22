@@ -128,8 +128,9 @@ class ExperimentConfig:
         elif p.observable.startswith("connected_"):
             # Sibling of loop_path_<base>: the clicked edges of each Fock outcome are pre-selected
             # on connectivity (one component vs >= 2 components), toggled by a ``__disc`` suffix,
-            # then scored <base> (see model.photonic).  Same fixed mode<->edge graph as loop_path,
-            # but no M_0 -- so the k <= V/2 matching bound is not required (edges may share vertices).
+            # then scored <base> (see model.photonic).  Its graph is built connected by
+            # build_connected_graph (no M_0), so loop_path's even-V / m>=V/2 matching restrictions
+            # drop -- the bound is the one connectivity forces, V-1 <= m <= C(V, 2).
             from model.photonic import parse_connected_observable
 
             _, base, _ = parse_connected_observable(p.observable)
@@ -141,12 +142,18 @@ class ExperimentConfig:
                 raise ValueError("connected_<base> observables are photonic_quantum only")
             if p.n_vertices is None:
                 raise ValueError("connected_<base> observables require problem.n_vertices")
-            if p.n_vertices < 2 or p.n_vertices % 2:
-                raise ValueError(f"n_vertices must be a positive even int (got {p.n_vertices})")
-            if p.n_vertices // 2 > p.m:
+            if p.n_vertices < 2:
+                raise ValueError(f"connected_ needs n_vertices >= 2 (got {p.n_vertices})")
+            if p.m < p.n_vertices - 1:
                 raise ValueError(
-                    f"connected_ needs n_vertices//2 <= m "
-                    f"(n_vertices//2={p.n_vertices // 2}, m={p.m})"
+                    f"connected_ needs m >= n_vertices-1={p.n_vertices - 1} for a connected graph "
+                    f"(m={p.m}, n_vertices={p.n_vertices})"
+                )
+            max_edges = p.n_vertices * (p.n_vertices - 1) // 2
+            if p.m > max_edges:
+                raise ValueError(
+                    f"connected_ needs m <= C(n_vertices, 2)={max_edges} "
+                    f"(m={p.m}, n_vertices={p.n_vertices})"
                 )
         elif p.observable.startswith("prod_parity"):
             # (-1)^P(n) with P a sum of square-free monomials in the photon counts; the monomial

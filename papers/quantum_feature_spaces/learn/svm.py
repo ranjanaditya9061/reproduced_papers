@@ -44,11 +44,11 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
     measurements without regenerating.  Raises if no distribution file is present.
 
     The ``.npz`` format is shared, but the re-scorer is teacher-specific: ``photonic_quantum``
-    uses :func:`model.photonic.score_from_distribution` (for a ``loop_path_<base>`` override
-    the graph comes from ``dcfg.problem``'s ``n_vertices`` / ``graph_seed`` while the base
-    scorer *and* the loop/path selection ride in the observable string itself, e.g.
-    ``loop_path_parity__L0-1__P2-3``); every other teacher uses
-    :func:`model.spoqc_magic.score_from_distribution`.
+    uses :func:`model.photonic.score_from_distribution` (for a ``loop_path_<base>`` or
+    ``connected_<base>`` override the graph comes from ``dcfg.problem``'s ``n_vertices`` /
+    ``graph_seed`` while the base scorer *and* the selection ride in the observable string
+    itself, e.g. ``loop_path_parity__L0-1__P2-3`` or ``connected_parity__disc``); every other
+    teacher uses :func:`model.spoqc_magic.score_from_distribution`.
     """
     if observable is None:
         return load_raw(artifact_path(dcfg, dataset_root))[1][:, 0]
@@ -64,12 +64,15 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
     dist = load_distributions(dpath)
 
     if dcfg.generation.generator == "photonic_quantum":
-        from model.photonic import is_graph_observable, is_prod_parity_angle
+        from model.photonic import (is_connected_observable, is_graph_observable,
+                                     is_prod_parity_angle)
         from model.photonic import score_from_distribution as photonic_score
 
-        if is_graph_observable(observable):
-            # The loop/path selection rides in the observable string (__L/__P); the graph
-            # itself comes from the dataset config's n_vertices / graph_seed.
+        if is_graph_observable(observable) or is_connected_observable(observable):
+            # Both graph families (loop_path_<base> and connected_<base>) need the fixed
+            # mode<->edge graph, which comes from the dataset config's n_vertices / graph_seed;
+            # the base scorer *and* the selection (loop/path __L/__P, or the connected /
+            # disconnected __disc toggle) ride in the observable string itself.
             p = dcfg.problem
             scores = photonic_score(dist, observable, n_vertices=p.n_vertices,
                                     graph_seed=p.graph_seed)
