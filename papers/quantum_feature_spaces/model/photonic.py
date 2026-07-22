@@ -499,7 +499,7 @@ def build_connected_graph(m: int, n_vertices: int, seed: int):
 
     Returns ``edges``: a list of ``m`` sorted ``(u, v)`` tuples, in mode order.
     """
-    V = int(n_vertices)
+    V = int(n_vertices*0.8)
     if V < 2:
         raise ValueError(f"n_vertices must be >= 2 (got {V})")
     if m < V - 1:
@@ -514,6 +514,7 @@ def build_connected_graph(m: int, n_vertices: int, seed: int):
         order = rng.permutation(len(all_edges))         # seeded pick of m distinct edges + order
         edges = [all_edges[int(o)] for o in order[:m]]
         if _is_connected(edges, V):
+            print(V, edges)
             return edges
     raise RuntimeError(f"could not draw a connected graph (V={V}, m={m}, seed={seed})")
 
@@ -566,9 +567,9 @@ def _overlay_counts(key, edges, m0_edges: set, n_vertices: int):
                     stack.append(y)
         n_loops += is_cycle
         n_paths += not is_cycle
-    print(m0_edges, key)
-    print(edges)
-    print(n_loops, n_paths)
+    # print(m0_edges, key)
+    # print(edges)
+    # print(n_loops, n_paths)
     
     return True, n_loops, n_paths
 
@@ -1045,6 +1046,8 @@ def score_from_distribution(dist, observable: str | None = None, *,
         keep, vec = _graph_selection(keys, m=m, k=k, base=base, edges=edges, m0_mask=m0_mask,
                                      n_vertices=int(n_vertices), loop_vars=eff_loop,
                                      path_vars=eff_path)
+        print(sum(keep),len(keep))
+        # keep = [1 if k < sum(keep) else 0 for k in range(len(keep))]
         score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),
                                          torch.tensor(vec, dtype=torch.float32), obs)
         return score.numpy()
@@ -1058,6 +1061,8 @@ def score_from_distribution(dist, observable: str | None = None, *,
         edges = build_connected_graph(m, int(n_vertices), gseed)
         keep, vec = _connected_selection(keys, m=m, k=k, base=base, edges=edges,
                                          keep_connected=keep_connected)
+        print(sum(keep),len(keep))
+        # keep = [1 if k < sum(keep) else 0 for k in range(len(keep)) ]
         score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),
                                          torch.tensor(vec, dtype=torch.float32), obs)
         return score.numpy()
