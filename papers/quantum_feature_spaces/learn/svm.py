@@ -44,10 +44,11 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
     measurements without regenerating.  Raises if no distribution file is present.
 
     The ``.npz`` format is shared, but the re-scorer is teacher-specific: ``photonic_quantum``
-    uses :func:`model.photonic.score_from_distribution` (for a ``loop_path_<base>`` or
-    ``connected_<base>`` override the graph comes from ``dcfg.problem``'s ``n_vertices`` /
-    ``graph_seed`` while the base scorer *and* the selection ride in the observable string
-    itself, e.g. ``loop_path_parity__L0-1__P2-3`` or ``connected_parity__disc``); every other
+    uses :func:`model.photonic.score_from_distribution` (for a ``loop_path_<base>`` override the
+    graph comes from ``dcfg.problem``'s ``n_vertices`` / ``graph_seed``, for a
+    ``connected_<base>`` from ``graph_density`` / ``graph_seed``, while the base scorer *and* the
+    selection ride in the observable string itself, e.g. ``loop_path_parity__L0-1__P2-3`` or
+    ``connected_parity__dep``); every other
     teacher uses :func:`model.spoqc_magic.score_from_distribution`.
     """
     if observable is None:
@@ -69,13 +70,14 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
         from model.photonic import score_from_distribution as photonic_score
 
         if is_graph_observable(observable) or is_connected_observable(observable):
-            # Both graph families (loop_path_<base> and connected_<base>) need the fixed
-            # mode<->edge graph, which comes from the dataset config's n_vertices / graph_seed;
-            # the base scorer *and* the selection (loop/path __L/__P, or the connected /
-            # disconnected __disc toggle) ride in the observable string itself.
+            # Both graph families need a fixed, seeded graph from the dataset config; the base
+            # scorer *and* the selection ride in the observable string itself.  loop_path_<base>
+            # maps modes to edges of a graph on n_vertices (loop/path __L/__P selection);
+            # connected_<base> maps modes to the V=m vertices of a graph of density graph_density
+            # (independent-set __indep/__dep toggle).
             p = dcfg.problem
             scores = photonic_score(dist, observable, n_vertices=p.n_vertices,
-                                    graph_seed=p.graph_seed)
+                                    graph_density=p.graph_density, graph_seed=p.graph_seed)
         elif is_prod_parity_angle(observable):
             # An angle prod_parity variant: its per-monomial angles ride on angle_seed (from the
             # dataset config; None -> the stored teacher seed, matching the generator's default).

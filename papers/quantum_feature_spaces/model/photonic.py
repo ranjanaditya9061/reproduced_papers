@@ -479,44 +479,40 @@ def build_matching_graph(m: int, n_vertices: int, seed: int):
     raise RuntimeError(f"could not draw a connected graph (V={V}, m={m}, seed={seed})")
 
 
-def build_connected_graph(m: int, n_vertices: int, seed: int):
-    """A fixed, *connected*, seeded ``mode i <-> edges[i]`` map of ``m`` distinct edges on ``V``.
+def build_vertex_graph(m: int, density: float, seed: int):
+    """A fixed, seeded graph ``G`` on ``V = m`` vertices (``mode i <-> vertex i``).
 
     The graph builder for the ``connected_<base>`` observable (:func:`is_connected_observable`).
-    Like :func:`build_matching_graph` the whole graph is drawn connected (retried with a bumped
-    sub-seed until so): if ``G`` had isolated parts, a Fock outcome whose clicks straddle them
-    would be disconnected *by fiat*, pre-deciding the selection from ``G``'s fixed topology rather
-    than the quantum outcome -- a connected ``G`` keeps the connectivity verdict a genuine,
-    outcome-dependent global property.  Unlike ``build_matching_graph`` it drops the reference
-    matching ``M_0`` and its restrictions: ``n_vertices`` need not be even, and the only bound is
-    the one connectivity itself forces, ``V - 1 <= m <= C(V, 2)`` (a connected graph on ``V``
-    vertices needs at least ``V - 1`` edges).  Deterministic in ``seed`` -> reproducible/hashable.
+    Each of the ``m`` modes is a *vertex* (not an edge, unlike :func:`build_matching_graph`), so
+    ``G`` has ``V = m`` vertices; the Fock outcome's *clicked* vertices (the modes with a non-zero
+    photon count) are pre-selected on whether they form an INDEPENDENT set of ``G`` -- no two
+    clicked vertices joined by an edge -- vs the complement (at least one edge inside the clicked
+    set).  ``G`` need not be connected: the selection is a property of the clicked subset, so the
+    only knob that matters is ``G``'s *density*, which sets how often a clicked subset stays
+    independent (sparse ``G`` -> mostly independent; dense ``G`` -> mostly not).
 
-    Note: a connected ``G`` is necessary but not sufficient for a *balanced* selection -- how often
-    a clicked edge subset comes out connected is governed by ``G``'s density, i.e. ``m`` vs ``V``
-    (near ``m = V - 1`` ``G`` is tree-like and clicked subsets are mostly disconnected; smaller
-    ``V`` at fixed ``m`` is denser and yields more connected outcomes).
+    ``density`` is the fraction of the ``C(V, 2)`` possible edges present, so the edge count is
+    ``round(density * C(V, 2))`` (clamped to ``[1, C(V, 2)]``); pick it dense enough to balance the
+    two parts.  The edges are a seeded pick of that many distinct pairs, deterministic in ``seed``
+    -> reproducible / hashable.
 
-    Returns ``edges``: a list of ``m`` sorted ``(u, v)`` tuples, in mode order.
+    Returns ``edges``: a sorted list of distinct ``(u, v)`` vertex pairs.
     """
-    V = int(n_vertices*0.8)
+    V = int(m)
     if V < 2:
-        raise ValueError(f"n_vertices must be >= 2 (got {V})")
-    if m < V - 1:
-        raise ValueError(f"need m >= V-1={V - 1} for a connected graph on V={V} vertices (m={m})")
+        raise ValueError(f"need m >= 2 vertices for a graph (m={m})")
+    d = float(density)
+    print(d)
+    if not 0.0 < d <= 1.0:
+        raise ValueError(f"graph_density must be in (0, 1] (got {density})")
     max_edges = V * (V - 1) // 2
-    if m > max_edges:
-        raise ValueError(f"m={m} exceeds C(V, 2)={max_edges} for V={V}")
+    n_edges = int(round(d * max_edges))
+    n_edges = max(1, min(n_edges, max_edges))
 
     all_edges = [(i, j) for i in range(V) for j in range(i + 1, V)]
-    for attempt in range(1024):
-        rng = np.random.default_rng(int(seed) + attempt)
-        order = rng.permutation(len(all_edges))         # seeded pick of m distinct edges + order
-        edges = [all_edges[int(o)] for o in order[:m]]
-        if _is_connected(edges, V):
-            print(V, edges)
-            return edges
-    raise RuntimeError(f"could not draw a connected graph (V={V}, m={m}, seed={seed})")
+    rng = np.random.default_rng(int(seed))
+    order = rng.permutation(len(all_edges))              # seeded pick of n_edges distinct pairs
+    return sorted(all_edges[int(o)] for o in order[:n_edges])
 
 
 def _overlay_counts(key, edges, m0_edges: set, n_vertices: int):
@@ -644,51 +640,54 @@ def _conditional_expectation(probs: torch.Tensor, keep_mask: torch.Tensor,
     return torch.where(den > 1e-12, num / den.clamp(min=1e-12), torch.zeros_like(den))
 
 
-# --- connected_<base>: interpret Fock outcomes as edge sets, pre-select on connectivity ---- #
+# --- connected_<base>: interpret Fock outcomes as vertex sets, pre-select on independence --- #
 #
-# A sibling of ``loop_path_<base>`` (:func:`parse_graph_observable`) that keeps the mode ``i``
-# <-> edge ``e_i`` interpretation but drops the reference matching ``M_0`` and the loop/path
-# overlay.  Each Fock outcome's *clicked* edges (the modes with a non-zero photon count) form a
-# subgraph; the observable pre-selects on whether that subgraph is CONNECTED (a single
-# component) and scores ``<base>`` over the renormalised survivors -- exactly the masked mean the
-# graph observables use (shared :func:`_conditional_expectation`).  A ``__disc`` suffix flips the
-# toggle to keep the DISCONNECTED outcomes (>= 2 components) instead; ``__conn`` states the
-# default explicitly.  The mode<->edge graph is the same fixed, seeded one as loop_path
-# (:func:`build_matching_graph`, its ``M_0`` unused), so equal ``(m, n_vertices, graph_seed)``
+# A sibling of ``loop_path_<base>`` (:func:`parse_graph_observable`) that maps each mode to a
+# *vertex* (``mode i <-> vertex i``) of a fixed, seeded, sufficiently dense graph ``G`` on
+# ``V = m`` vertices (:func:`build_vertex_graph`) rather than to an edge.  Each Fock outcome's
+# *clicked* vertices (the modes with a non-zero photon count) are pre-selected on whether they
+# form an INDEPENDENT set of ``G`` -- no two clicked vertices joined by an edge -- and scored
+# ``<base>`` over the renormalised survivors, exactly the masked mean the graph observables use
+# (shared :func:`_conditional_expectation`).  A ``__dep`` suffix flips the toggle to keep the
+# complement instead (the clicked set spans at least one edge); ``__indep`` states the default
+# explicitly.  ``G``'s density (``graph_density``, fraction of the ``C(V, 2)`` possible edges)
+# sets how often a clicked subset stays independent, so equal ``(m, graph_density, graph_seed)``
 # give the identical edge set.
 
 _CONNECTED_RE = re.compile(r"^connected_(.+)$")
 
-#: Base scorers usable under a ``connected_<base>`` observable.  ``ncc`` returns the mean number
-#: of connected components of the clicked edge set over the selected subset; the rest are the
-#: plain per-Fock-state scores (:func:`_parity_score` etc.) averaged over that subset.
-CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "ncc")
+#: Base scorers usable under a ``connected_<base>`` observable.  ``nedges`` returns the mean
+#: number of internal edges of the clicked vertex set (0 exactly on the independent outcomes)
+#: over the selected subset; the rest are the plain per-Fock-state scores (:func:`_parity_score`
+#: etc.) averaged over that subset.
+CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "nedges")
 
 
 def parse_connected_observable(observable: str):
-    """Split a ``connected_<base>`` string into ``(is_conn, base, keep_connected)``.
+    """Split a ``connected_<base>`` string into ``(is_conn, base, keep_independent)``.
 
-    Plain observables return ``(False, observable, None)``.  ``keep_connected`` is ``True`` by
-    default (keep the outcomes whose clicked edges form one component) and ``False`` under a
-    ``__disc`` / ``__disconnected`` suffix (keep the >= 2-component outcomes); ``__conn`` /
-    ``__connected`` states the default explicitly.  So ``connected_parity`` keeps the connected
-    outcomes and ``connected_parity__disc`` keeps the disconnected ones.
+    Plain observables return ``(False, observable, None)``.  ``keep_independent`` is ``True`` by
+    default (keep the outcomes whose clicked vertices form an independent set -- no two joined by
+    an edge) and ``False`` under a ``__dep`` / ``__dependent`` suffix (keep the outcomes whose
+    clicked set spans at least one edge); ``__indep`` / ``__independent`` states the default
+    explicitly.  So ``connected_parity`` keeps the independent outcomes and
+    ``connected_parity__dep`` keeps their complement.
     """
     mo = _CONNECTED_RE.match(observable)
     if mo is None:
         return False, observable, None
     parts = mo.group(1).split("__")
     base = parts[0]
-    keep_connected = True
+    keep_independent = True
     for seg in parts[1:]:
-        if seg in ("conn", "connected"):
-            keep_connected = True
-        elif seg in ("disc", "disconnected"):
-            keep_connected = False
+        if seg in ("indep", "independent"):
+            keep_independent = True
+        elif seg in ("dep", "dependent"):
+            keep_independent = False
         else:
             raise ValueError(f"bad connected segment {seg!r} in {observable!r} "
-                             "(expected 'conn'/'connected' or 'disc'/'disconnected')")
-    return True, base, keep_connected
+                             "(expected 'indep'/'independent' or 'dep'/'dependent')")
+    return True, base, keep_independent
 
 
 def is_connected_observable(observable: str) -> bool:
@@ -697,49 +696,29 @@ def is_connected_observable(observable: str) -> bool:
     return is_conn and base in CONNECTED_BASES
 
 
-def _clicked_component_count(key, edges) -> int:
-    """Number of connected components spanned by the clicked edges of one Fock outcome.
+def _clicked_internal_edges(key, edges) -> int:
+    """Number of edges of ``G`` with both endpoints among the clicked vertices of one outcome.
 
-    A mode is *clicked* iff its photon count is > 0; its edge ``e_i`` is then present.  Counts
-    components over the vertices those edges touch (0 if nothing is clicked -- impossible for
-    k >= 1); a single component (return 1) means the clicked edge set is connected.
+    A mode is *clicked* iff its photon count is > 0; vertex ``i`` is then present.  An edge is
+    *internal* when both its endpoints are clicked, so ``0`` means the clicked vertices form an
+    independent set of ``G`` (no two joined by an edge) and ``>= 1`` means they span an edge.
     """
-    clicked = [edges[i] for i, c in enumerate(key) if int(c) > 0]
-    if not clicked:
-        return 0
-    adj: dict = {}
-    for u, w in clicked:
-        adj.setdefault(u, []).append(w)
-        adj.setdefault(w, []).append(u)
-    seen: set = set()
-    ncc = 0
-    for start in adj:
-        if start in seen:
-            continue
-        ncc += 1
-        stack = [start]
-        seen.add(start)
-        while stack:
-            x = stack.pop()
-            for y in adj[x]:
-                if y not in seen:
-                    seen.add(y)
-                    stack.append(y)
-    return ncc
+    clicked = {i for i, c in enumerate(key) if int(c) > 0}
+    return sum(1 for u, w in edges if u in clicked and w in clicked)
 
 
 def _connected_tables(keys, edges):
-    """Per-Fock-state component-count array ``ncc`` over the fixed basis ``keys``."""
-    ncc = np.zeros(len(keys), dtype=np.int64)
+    """Per-Fock-state internal-edge-count array ``nedges`` over the fixed basis ``keys``."""
+    nedges = np.zeros(len(keys), dtype=np.int64)
     for i, key in enumerate(keys):
-        ncc[i] = _clicked_component_count(key, edges)
-    return ncc
+        nedges[i] = _clicked_internal_edges(key, edges)
+    return nedges
 
 
-def _connected_base_scores(keys, base: str, ncc, *, m: int, k: int):
+def _connected_base_scores(keys, base: str, nedges, *, m: int, k: int):
     """Per-Fock-state ``<base>`` score vector for a ``connected_<base>`` observable."""
-    if base == "ncc":
-        return ncc.astype(np.float64)
+    if base == "nedges":
+        return nedges.astype(np.float64)
     if base == "parity":
         pm = tuple(range((m + 1) // 2))
         return np.array([_parity_score(key, pm) for key in keys], dtype=np.float64)
@@ -752,17 +731,17 @@ def _connected_base_scores(keys, base: str, ncc, *, m: int, k: int):
     raise ValueError(f"unknown connected base {base!r}; choose from {CONNECTED_BASES}")
 
 
-def _connected_selection(keys, *, m, k, base, edges, keep_connected):
+def _connected_selection(keys, *, m, k, base, edges, keep_independent):
     """``(keep_mask, base_scores)`` float vectors for a ``connected_<base>`` observable.
 
-    ``keep_mask`` keeps the connected outcomes (component count == 1) when ``keep_connected`` is
-    True, else the disconnected ones (count >= 2); ``base_scores`` is the per-state ``<base>``
+    ``keep_mask`` keeps the independent outcomes (no internal edge) when ``keep_independent`` is
+    True, else their complement (>= 1 internal edge); ``base_scores`` is the per-state ``<base>``
     value.  Both align to the fixed Fock basis, so scoring a distribution is the same masked,
     renormalised dot product the graph observables use (:func:`_conditional_expectation`).
     """
-    ncc = _connected_tables(keys, edges)
-    keep = (ncc == 1) if keep_connected else (ncc >= 2)
-    scores = _connected_base_scores(keys, base, ncc, m=m, k=k)
+    nedges = _connected_tables(keys, edges)
+    keep = (nedges == 0) if keep_independent else (nedges >= 1)
+    scores = _connected_base_scores(keys, base, nedges, m=m, k=k)
     return keep.astype(np.float64), scores
 
 
@@ -813,7 +792,7 @@ class PhotonicTeacher(Teacher):
     def __init__(self, m: int, k: int, n_features: int,
                  observable: str = "parity", seed: int = 1234, nsample: int = 0,
                  n_vertices: int | None = None, graph_seed: int | None = None,
-                 angle_seed: int | None = None):
+                 angle_seed: int | None = None, graph_density: float | None = None):
         super().__init__(n_features)
         self.is_graph = is_graph_observable(observable)
         self.is_prod = is_prod_family(observable)
@@ -832,8 +811,9 @@ class PhotonicTeacher(Teacher):
         self.m, self.k, self.observable, self.nsample = m, k, observable, int(nsample)
         self.seed = int(seed)
         self.n_vertices = None if n_vertices is None else int(n_vertices)
+        self.graph_density = None if graph_density is None else float(graph_density)
         self.loop_vars = self.path_vars = None   # parsed from the observable string (graph obs)
-        self.keep_connected = None               # parsed from the observable string (connected obs)
+        self.keep_independent = None             # parsed from the observable string (connected obs)
         self.graph_seed = self.seed if graph_seed is None else int(graph_seed)
         self.angle_seed = self.seed if angle_seed is None else int(angle_seed)
         self._capture = False
@@ -869,13 +849,13 @@ class PhotonicTeacher(Teacher):
                 n_vertices=self.n_vertices, loop_vars=self.loop_vars, path_vars=self.path_vars)
             self.register_buffer("keep_mask", torch.tensor(keep, dtype=torch.float32))
         elif self.is_connected:
-            if self.n_vertices is None:
-                raise ValueError("connected_<base> observables require n_vertices")
-            _, base, self.keep_connected = parse_connected_observable(observable)
-            self.edges = build_connected_graph(m, self.n_vertices, self.graph_seed)
+            if self.graph_density is None:
+                raise ValueError("connected_<base> observables require graph_density")
+            _, base, self.keep_independent = parse_connected_observable(observable)
+            self.edges = build_vertex_graph(m, self.graph_density, self.graph_seed)
             keep, vec = _connected_selection(
                 keys, m=m, k=k, base=base, edges=self.edges,
-                keep_connected=self.keep_connected)
+                keep_independent=self.keep_independent)
             self.register_buffer("keep_mask", torch.tensor(keep, dtype=torch.float32))
         elif self.is_prod:
             self.monomials = prod_family_monomials(observable, m, k)
@@ -967,7 +947,8 @@ class PhotonicTeacher(Teacher):
         return cls(m=p.m, k=p.k, n_features=cfg.resolved_n_features,
                    observable=p.observable, seed=cfg.seeds.teacher_seed,
                    nsample=cfg.generation.nsample, n_vertices=p.n_vertices,
-                   graph_seed=p.graph_seed, angle_seed=p.angle_seed)
+                   graph_seed=p.graph_seed, angle_seed=p.angle_seed,
+                   graph_density=p.graph_density)
 
     @classmethod
     def hash_spec(cls, cfg: "ExperimentConfig") -> dict:
@@ -1004,13 +985,13 @@ class PhotonicTeacher(Teacher):
             )
         elif is_connected_observable(cfg.problem.observable):
             p = cfg.problem
-            _, base, keep_connected = parse_connected_observable(p.observable)
-            # Canonicalise: the connected/disconnected toggle is folded into keep_connected, so
-            # ``connected_parity`` and ``connected_parity__conn`` map to one dataset.
+            _, base, keep_independent = parse_connected_observable(p.observable)
+            # Canonicalise: the independent/dependent toggle is folded into keep_independent, so
+            # ``connected_parity`` and ``connected_parity__indep`` map to one dataset.
             spec.update(
                 observable=f"connected_{base}",
-                n_vertices=p.n_vertices,
-                keep_connected=keep_connected,
+                graph_density=p.graph_density,
+                keep_independent=keep_independent,
                 graph_seed=cfg.seeds.teacher_seed if p.graph_seed is None else int(p.graph_seed),
             )
         return spec
@@ -1019,7 +1000,8 @@ class PhotonicTeacher(Teacher):
 def score_from_distribution(dist, observable: str | None = None, *,
                             n_vertices: int | None = None, loop_vars=None,
                             path_vars=None, graph_seed: int | None = None,
-                            angle_seed: int | None = None):
+                            angle_seed: int | None = None,
+                            graph_density: float | None = None):
     """Re-score a saved photonic distribution (dict from :func:`spoqc_magic.load_distributions`).
 
     ``observable`` defaults to the stored one.  For a ``loop_path_<base>`` observable the
@@ -1027,7 +1009,9 @@ def score_from_distribution(dist, observable: str | None = None, *,
     supplied -- they are not persisted in the ``.npz`` -- and ``graph_seed`` defaults to the
     stored teacher ``seed``.  ``__L``/``__P`` var suffixes encoded in ``observable`` override
     the passed ``loop_vars`` / ``path_vars``, so a sweep can vary the selection purely
-    through the observable string.  For an angle prod_parity variant (``*_random``) the
+    through the observable string.  For a ``connected_<base>`` observable supply ``graph_density``
+    (+ ``graph_seed``) instead, and the ``__indep``/``__dep`` suffix in ``observable`` picks the
+    kept part.  For an angle prod_parity variant (``*_random``) the
     ``angle_seed`` fixes the drawn angles and likewise defaults to the stored teacher ``seed``
     (``_pi`` is deterministic).  Returns ``(n_rows,)`` scores.
     """
@@ -1053,16 +1037,14 @@ def score_from_distribution(dist, observable: str | None = None, *,
         return score.numpy()
 
     if is_connected_observable(obs):
-        if n_vertices is None:
-            raise ValueError("re-scoring a connected_<base> observable needs n_vertices "
+        if graph_density is None:
+            raise ValueError("re-scoring a connected_<base> observable needs graph_density "
                              "(+ graph_seed)")
         gseed = int(dist["seed"]) if graph_seed is None else int(graph_seed)
-        _, base, keep_connected = parse_connected_observable(obs)
-        edges = build_connected_graph(m, int(n_vertices), gseed)
+        _, base, keep_independent = parse_connected_observable(obs)
+        edges = build_vertex_graph(m, float(graph_density), gseed)
         keep, vec = _connected_selection(keys, m=m, k=k, base=base, edges=edges,
-                                         keep_connected=keep_connected)
-        print(sum(keep),len(keep))
-        # keep = [1 if k < sum(keep) else 0 for k in range(len(keep)) ]
+                                         keep_independent=keep_independent)
         score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),
                                          torch.tensor(vec, dtype=torch.float32), obs)
         return score.numpy()

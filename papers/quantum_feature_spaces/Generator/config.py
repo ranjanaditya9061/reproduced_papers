@@ -33,7 +33,7 @@ GRAPH_BASES = ("parity", "majority", "bunching", "n_first", "loop", "path")
 
 #: Base scorers allowed under a photonic ``connected_<base>`` observable
 #: (mirrors :data:`model.photonic.CONNECTED_BASES`).
-CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "ncc")
+CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "nedges")
 
 
 @dataclass
@@ -51,6 +51,10 @@ class ProblemConfig:
     # ``loop_path_parity__L0-1__P2-3`` (dash-joined counts to keep); an omitted segment -- or
     # no suffix at all -- keeps every count on that dimension.
     n_vertices: int | None = None  # even; vertices of the fixed graph G (M_0 has V/2 edges)
+    # photonic connected_<base>-only: modes map to the V=m vertices of a fixed graph G, and
+    # graph_density is the fraction of the C(m, 2) possible edges present (edge count =
+    # round(graph_density * C(m, 2))); denser G -> fewer clicked subsets stay independent.
+    graph_density: float | None = None
     graph_seed: int | None = None  # seeds G + M_0 (defaults to teacher_seed); folded into the hash
     # photonic prod_parity_*_random-only: seeds the per-monomial angles theta ~ U[0, pi] of the
     # phase observable cos(P(n)) (defaults to teacher_seed); folded into the hash so a different
@@ -126,11 +130,11 @@ class ExperimentConfig:
                     f"(k={p.k}, n_vertices//2={half}, m={p.m})"
                 )
         elif p.observable.startswith("connected_"):
-            # Sibling of loop_path_<base>: the clicked edges of each Fock outcome are pre-selected
-            # on connectivity (one component vs >= 2 components), toggled by a ``__disc`` suffix,
-            # then scored <base> (see model.photonic).  Its graph is built connected by
-            # build_connected_graph (no M_0), so loop_path's even-V / m>=V/2 matching restrictions
-            # drop -- the bound is the one connectivity forces, V-1 <= m <= C(V, 2).
+            # Sibling of loop_path_<base>: each mode is a *vertex* of a fixed graph G on V=m
+            # vertices (build_vertex_graph), and each Fock outcome's clicked vertices are
+            # pre-selected on whether they form an INDEPENDENT set of G (no two joined by an
+            # edge), toggled by a ``__dep`` suffix, then scored <base> (see model.photonic).
+            # G's density rides on graph_density, not m/n_vertices.
             from model.photonic import parse_connected_observable
 
             _, base, _ = parse_connected_observable(p.observable)
@@ -140,20 +144,13 @@ class ExperimentConfig:
                 )
             if g.generator != "photonic_quantum":
                 raise ValueError("connected_<base> observables are photonic_quantum only")
-            if p.n_vertices is None:
-                raise ValueError("connected_<base> observables require problem.n_vertices")
-            if p.n_vertices < 2:
-                raise ValueError(f"connected_ needs n_vertices >= 2 (got {p.n_vertices})")
-            if p.m < p.n_vertices - 1:
+            if p.m < 2:
+                raise ValueError(f"connected_ needs m >= 2 vertices (got m={p.m})")
+            if p.graph_density is None:
+                raise ValueError("connected_<base> observables require problem.graph_density")
+            if not 0.0 < p.graph_density <= 1.0:
                 raise ValueError(
-                    f"connected_ needs m >= n_vertices-1={p.n_vertices - 1} for a connected graph "
-                    f"(m={p.m}, n_vertices={p.n_vertices})"
-                )
-            max_edges = p.n_vertices * (p.n_vertices - 1) // 2
-            if p.m > max_edges:
-                raise ValueError(
-                    f"connected_ needs m <= C(n_vertices, 2)={max_edges} "
-                    f"(m={p.m}, n_vertices={p.n_vertices})"
+                    f"connected_ needs graph_density in (0, 1] (got {p.graph_density})"
                 )
         elif p.observable.startswith("prod_parity"):
             # (-1)^P(n) with P a sum of square-free monomials in the photon counts; the monomial
