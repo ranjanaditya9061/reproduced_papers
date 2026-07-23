@@ -479,22 +479,33 @@ def build_matching_graph(m: int, n_vertices: int, seed: int):
     raise RuntimeError(f"could not draw a connected graph (V={V}, m={m}, seed={seed})")
 
 
+#: Hard cap on any single vertex's degree in :func:`build_vertex_graph`'s ``G``.  An edge whose
+#: addition would push either endpoint past this is skipped, so ``G`` stays bounded-degree
+#: (expander-like) rather than growing hubs as ``density`` rises; it also caps the achievable
+#: edge count at ``V * MAX_VERTEX_DEGREE // 2``.  Set to ``-1`` to disable the cap entirely, i.e.
+#: draw exactly ``round(density * C(V, 2))`` edges with no degree limit.
+MAX_VERTEX_DEGREE = 4
+
+
 def build_vertex_graph(m: int, density: float, seed: int):
-    """A fixed, seeded graph ``G`` on ``V = m`` vertices (``mode i <-> vertex i``).
+    """A fixed, seeded, *connected*, bounded-degree graph ``G`` on ``V = m`` vertices.
 
-    The graph builder for the ``connected_<base>`` observable (:func:`is_connected_observable`).
-    Each of the ``m`` modes is a *vertex* (not an edge, unlike :func:`build_matching_graph`), so
-    ``G`` has ``V = m`` vertices; the Fock outcome's *clicked* vertices (the modes with a non-zero
-    photon count) are pre-selected on whether they form an INDEPENDENT set of ``G`` -- no two
-    clicked vertices joined by an edge -- vs the complement (at least one edge inside the clicked
-    set).  ``G`` need not be connected: the selection is a property of the clicked subset, so the
-    only knob that matters is ``G``'s *density*, which sets how often a clicked subset stays
-    independent (sparse ``G`` -> mostly independent; dense ``G`` -> mostly not).
+    The graph builder for the ``connected_<base>`` observable (:func:`is_connected_observable`);
+    ``mode i <-> vertex i``.  Each of the ``m`` modes is a *vertex* (not an edge, unlike
+    :func:`build_matching_graph`), so ``G`` has ``V = m`` vertices; each Fock outcome scores a
+    global property of its *clicked* vertices' (the modes with a non-zero photon count) induced
+    subgraph -- ``maxcc``, the size of the largest connected component.  ``G`` itself is drawn
+    connected (a random spanning path first, so ``maxcc`` can in principle reach ``V`` when every
+    mode clicks), then how large the clicked subsets' components grow is governed by ``G``'s
+    density and degree cap.
 
-    ``density`` is the fraction of the ``C(V, 2)`` possible edges present, so the edge count is
-    ``round(density * C(V, 2))`` (clamped to ``[1, C(V, 2)]``); pick it dense enough to balance the
-    two parts.  The edges are a seeded pick of that many distinct pairs, deterministic in ``seed``
-    -> reproducible / hashable.
+    ``density`` is the fraction of the ``C(V, 2)`` possible edges targeted, so the edge count is
+    ``round(density * C(V, 2))`` -- but it is floored at ``V - 1`` (a connected graph needs a
+    spanning tree) and every vertex's degree is capped at :data:`MAX_VERTEX_DEGREE`, so the count
+    is also bounded by ``V * MAX_VERTEX_DEGREE // 2``.  ``MAX_VERTEX_DEGREE = -1`` disables the
+    cap.  A degree cap below ``2`` can't span ``V > 2`` vertices, so it is rejected.  The spanning
+    path plus the seeded filler edges are all drawn from ``seed``, deterministic -> reproducible /
+    hashable.
 
     Returns ``edges``: a sorted list of distinct ``(u, v)`` vertex pairs.
     """
@@ -502,17 +513,46 @@ def build_vertex_graph(m: int, density: float, seed: int):
     if V < 2:
         raise ValueError(f"need m >= 2 vertices for a graph (m={m})")
     d = float(density)
-    print(d)
     if not 0.0 < d <= 1.0:
         raise ValueError(f"graph_density must be in (0, 1] (got {density})")
     max_edges = V * (V - 1) // 2
-    n_edges = int(round(d * max_edges))
-    n_edges = max(1, min(n_edges, max_edges))
+    capped = MAX_VERTEX_DEGREE >= 0
+    if capped and V > 2 and MAX_VERTEX_DEGREE < 2:
+        raise ValueError(f"MAX_VERTEX_DEGREE={MAX_VERTEX_DEGREE} can't span V={V} vertices "
+                         "(a connected graph needs degree >= 2 on interior vertices)")
+    # with a cap, at most V * MAX_VERTEX_DEGREE // 2 edges fit; uncapped, the density target rules
+    degree_cap_edges = V * MAX_VERTEX_DEGREE // 2 if capped else max_edges
+    n_edges = max(int(round(d * max_edges)), V - 1)      # >= V-1 so G can be connected
+    n_edges = min(n_edges, max_edges, degree_cap_edges)
 
-    all_edges = [(i, j) for i in range(V) for j in range(i + 1, V)]
     rng = np.random.default_rng(int(seed))
-    order = rng.permutation(len(all_edges))              # seeded pick of n_edges distinct pairs
-    return sorted(all_edges[int(o)] for o in order[:n_edges])
+    degree = [0] * V
+    edges = []
+    used: set = set()
+    # spanning path (max degree 2) -> a connected, degree-legal backbone of V-1 edges
+    perm = rng.permutation(V)
+    for a, b in zip(perm[:-1], perm[1:]):
+        e = (int(a), int(b)) if a < b else (int(b), int(a))
+        edges.append(e)
+        used.add(e)
+        degree[e[0]] += 1
+        degree[e[1]] += 1
+    # fill with more seeded edges up to n_edges, respecting the degree cap
+    all_edges = [(i, j) for i in range(V) for j in range(i + 1, V)]
+    order = rng.permutation(len(all_edges))              # seeded scan order
+    for o in order:
+        if len(edges) >= n_edges:
+            break
+        u, w = all_edges[int(o)]
+        if (u, w) in used:
+            continue
+        if capped and (degree[u] >= MAX_VERTEX_DEGREE or degree[w] >= MAX_VERTEX_DEGREE):
+            continue                                     # keep G bounded-degree
+        edges.append((u, w))
+        used.add((u, w))
+        degree[u] += 1
+        degree[w] += 1
+    return sorted(edges)
 
 
 def _overlay_counts(key, edges, m0_edges: set, n_vertices: int):
@@ -640,85 +680,97 @@ def _conditional_expectation(probs: torch.Tensor, keep_mask: torch.Tensor,
     return torch.where(den > 1e-12, num / den.clamp(min=1e-12), torch.zeros_like(den))
 
 
-# --- connected_<base>: interpret Fock outcomes as vertex sets, pre-select on independence --- #
+# --- connected_<base>: interpret Fock outcomes as vertex sets, score a global connectivity ---- #
 #
 # A sibling of ``loop_path_<base>`` (:func:`parse_graph_observable`) that maps each mode to a
-# *vertex* (``mode i <-> vertex i``) of a fixed, seeded, sufficiently dense graph ``G`` on
-# ``V = m`` vertices (:func:`build_vertex_graph`) rather than to an edge.  Each Fock outcome's
-# *clicked* vertices (the modes with a non-zero photon count) are pre-selected on whether they
-# form an INDEPENDENT set of ``G`` -- no two clicked vertices joined by an edge -- and scored
-# ``<base>`` over the renormalised survivors, exactly the masked mean the graph observables use
-# (shared :func:`_conditional_expectation`).  A ``__dep`` suffix flips the toggle to keep the
-# complement instead (the clicked set spans at least one edge); ``__indep`` states the default
-# explicitly.  ``G``'s density (``graph_density``, fraction of the ``C(V, 2)`` possible edges)
-# sets how often a clicked subset stays independent, so equal ``(m, graph_density, graph_seed)``
-# give the identical edge set.
+# *vertex* (``mode i <-> vertex i``) of a fixed, seeded, connected, bounded-degree graph ``G`` on
+# ``V = m`` vertices (:func:`build_vertex_graph`) rather than to an edge.  For each Fock outcome the
+# *clicked* vertices (the modes with a non-zero photon count) induce a subgraph of ``G``, and the
+# score is a GLOBAL property of that subgraph: the size (vertex count) of its largest connected
+# component (base ``maxcc``).  There is no pre-selection -- the observable's output is the plain
+# expectation ``E[<base>]`` over the full Fock distribution (``probs @ score_vec``), so unlike
+# ``loop_path_<base>`` it needs no ``keep_mask``.  ``G``'s density (``graph_density``, fraction of
+# the ``C(V, 2)`` possible edges) and degree cap set how large those components can grow, so equal
+# ``(m, graph_density, graph_seed)`` give the identical edge set.
 
 _CONNECTED_RE = re.compile(r"^connected_(.+)$")
 
-#: Base scorers usable under a ``connected_<base>`` observable.  ``nedges`` returns the mean
-#: number of internal edges of the clicked vertex set (0 exactly on the independent outcomes)
-#: over the selected subset; the rest are the plain per-Fock-state scores (:func:`_parity_score`
-#: etc.) averaged over that subset.
-CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "nedges")
+#: Base scorers usable under a ``connected_<base>`` observable.  ``maxcc`` returns the size of the
+#: largest connected component of the clicked vertices' induced subgraph of ``G`` (a global
+#: connectivity property, 1 when the clicked set is independent); the rest are the plain
+#: per-Fock-state scores (:func:`_parity_score` etc.).
+CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "maxcc")
 
 
 def parse_connected_observable(observable: str):
-    """Split a ``connected_<base>`` string into ``(is_conn, base, keep_independent)``.
+    """Split a ``connected_<base>`` string into ``(is_conn, base)``.
 
-    Plain observables return ``(False, observable, None)``.  ``keep_independent`` is ``True`` by
-    default (keep the outcomes whose clicked vertices form an independent set -- no two joined by
-    an edge) and ``False`` under a ``__dep`` / ``__dependent`` suffix (keep the outcomes whose
-    clicked set spans at least one edge); ``__indep`` / ``__independent`` states the default
-    explicitly.  So ``connected_parity`` keeps the independent outcomes and
-    ``connected_parity__dep`` keeps their complement.
+    Plain observables return ``(False, observable)``.  The ``connected_<base>`` family takes no
+    ``__`` suffixes (the score is a single global property, not a selectable subset), so
+    ``connected_maxcc`` scores the largest-connected-component size.
     """
     mo = _CONNECTED_RE.match(observable)
     if mo is None:
-        return False, observable, None
+        return False, observable
     parts = mo.group(1).split("__")
-    base = parts[0]
-    keep_independent = True
-    for seg in parts[1:]:
-        if seg in ("indep", "independent"):
-            keep_independent = True
-        elif seg in ("dep", "dependent"):
-            keep_independent = False
-        else:
-            raise ValueError(f"bad connected segment {seg!r} in {observable!r} "
-                             "(expected 'indep'/'independent' or 'dep'/'dependent')")
-    return True, base, keep_independent
+    if len(parts) > 1:
+        raise ValueError(f"connected_<base> takes no '__' suffix, got {observable!r}")
+    return True, parts[0]
 
 
 def is_connected_observable(observable: str) -> bool:
     """True for a well-formed ``connected_<base>`` observable (``base`` in :data:`CONNECTED_BASES`)."""
-    is_conn, base, _ = parse_connected_observable(observable)
+    is_conn, base = parse_connected_observable(observable)
     return is_conn and base in CONNECTED_BASES
 
 
-def _clicked_internal_edges(key, edges) -> int:
-    """Number of edges of ``G`` with both endpoints among the clicked vertices of one outcome.
+def _clicked_max_component(key, edges) -> int:
+    """Size of the largest connected component of the clicked vertices' induced subgraph of ``G``.
 
-    A mode is *clicked* iff its photon count is > 0; vertex ``i`` is then present.  An edge is
-    *internal* when both its endpoints are clicked, so ``0`` means the clicked vertices form an
-    independent set of ``G`` (no two joined by an edge) and ``>= 1`` means they span an edge.
+    A mode is *clicked* iff its photon count is > 0; vertex ``i`` is then present.  Only edges of
+    ``G`` with both endpoints clicked join the induced subgraph, whose components are found by
+    flood fill; the return is the vertex count of the biggest one (1 when the clicked set is
+    independent, 0 only if nothing is clicked -- impossible for k >= 1).
     """
     clicked = {i for i, c in enumerate(key) if int(c) > 0}
-    return sum(1 for u, w in edges if u in clicked and w in clicked)
+    if not clicked:
+        return 0
+    adj: dict = {v: [] for v in clicked}
+    for u, w in edges:
+        if u in clicked and w in clicked:
+            adj[u].append(w)
+            adj[w].append(u)
+    seen: set = set()
+    best = 0
+    for start in clicked:
+        if start in seen:
+            continue
+        size = 0
+        stack = [start]
+        seen.add(start)
+        while stack:
+            x = stack.pop()
+            size += 1
+            for y in adj[x]:
+                if y not in seen:
+                    seen.add(y)
+                    stack.append(y)
+        best = max(best, size)
+    return best
 
 
 def _connected_tables(keys, edges):
-    """Per-Fock-state internal-edge-count array ``nedges`` over the fixed basis ``keys``."""
-    nedges = np.zeros(len(keys), dtype=np.int64)
+    """Per-Fock-state largest-connected-component-size array ``maxcc`` over the basis ``keys``."""
+    maxcc = np.zeros(len(keys), dtype=np.int64)
     for i, key in enumerate(keys):
-        nedges[i] = _clicked_internal_edges(key, edges)
-    return nedges
+        maxcc[i] = _clicked_max_component(key, edges)
+    return maxcc
 
 
-def _connected_base_scores(keys, base: str, nedges, *, m: int, k: int):
+def _connected_base_scores(keys, base: str, maxcc, *, m: int, k: int):
     """Per-Fock-state ``<base>`` score vector for a ``connected_<base>`` observable."""
-    if base == "nedges":
-        return nedges.astype(np.float64)
+    if base == "maxcc":
+        return maxcc.astype(np.float64)
     if base == "parity":
         pm = tuple(range((m + 1) // 2))
         return np.array([_parity_score(key, pm) for key in keys], dtype=np.float64)
@@ -731,18 +783,14 @@ def _connected_base_scores(keys, base: str, nedges, *, m: int, k: int):
     raise ValueError(f"unknown connected base {base!r}; choose from {CONNECTED_BASES}")
 
 
-def _connected_selection(keys, *, m, k, base, edges, keep_independent):
-    """``(keep_mask, base_scores)`` float vectors for a ``connected_<base>`` observable.
+def _connected_scores(keys, *, m, k, base, edges):
+    """Per-Fock-state ``<base>`` score vector for a ``connected_<base>`` observable (no selection).
 
-    ``keep_mask`` keeps the independent outcomes (no internal edge) when ``keep_independent`` is
-    True, else their complement (>= 1 internal edge); ``base_scores`` is the per-state ``<base>``
-    value.  Both align to the fixed Fock basis, so scoring a distribution is the same masked,
-    renormalised dot product the graph observables use (:func:`_conditional_expectation`).
+    Aligns to the fixed Fock basis, so scoring a distribution is the plain expectation
+    ``probs @ score_vec`` -- no ``keep_mask`` (the score is a global property of every outcome).
     """
-    nedges = _connected_tables(keys, edges)
-    keep = (nedges == 0) if keep_independent else (nedges >= 1)
-    scores = _connected_base_scores(keys, base, nedges, m=m, k=k)
-    return keep.astype(np.float64), scores
+    maxcc = _connected_tables(keys, edges)
+    return _connected_base_scores(keys, base, maxcc, m=m, k=k)
 
 
 class PhotonicFeatureMap(nn.Module):
@@ -813,7 +861,6 @@ class PhotonicTeacher(Teacher):
         self.n_vertices = None if n_vertices is None else int(n_vertices)
         self.graph_density = None if graph_density is None else float(graph_density)
         self.loop_vars = self.path_vars = None   # parsed from the observable string (graph obs)
-        self.keep_independent = None             # parsed from the observable string (connected obs)
         self.graph_seed = self.seed if graph_seed is None else int(graph_seed)
         self.angle_seed = self.seed if angle_seed is None else int(angle_seed)
         self._capture = False
@@ -851,12 +898,9 @@ class PhotonicTeacher(Teacher):
         elif self.is_connected:
             if self.graph_density is None:
                 raise ValueError("connected_<base> observables require graph_density")
-            _, base, self.keep_independent = parse_connected_observable(observable)
+            _, base = parse_connected_observable(observable)
             self.edges = build_vertex_graph(m, self.graph_density, self.graph_seed)
-            keep, vec = _connected_selection(
-                keys, m=m, k=k, base=base, edges=self.edges,
-                keep_independent=self.keep_independent)
-            self.register_buffer("keep_mask", torch.tensor(keep, dtype=torch.float32))
+            vec = _connected_scores(keys, m=m, k=k, base=base, edges=self.edges)
         elif self.is_prod:
             self.monomials = prod_family_monomials(observable, m, k)
             vec = [_prod_parity_score(key, self.monomials) for key in keys]
@@ -900,10 +944,11 @@ class PhotonicTeacher(Teacher):
         probs = self.layer.forward(X, shots=self.nsample if self.nsample > 0 else None)
         if self._capture:
             self._dist_probs.append(probs.detach().cpu().numpy())
-        if self.is_graph or self.is_connected:
-            # E[base | pre-selection]: renormalised masked mean (loop/path or connectivity).
+        if self.is_graph:
+            # E[base | pre-selection]: renormalised masked mean (loop/path selection).
             score = _conditional_expectation(probs, self.keep_mask, self.score_vec, self.observable)
         else:
+            # connected_<base> falls here too: plain E[base] over all outcomes (no keep_mask).
             score = probs @ self.score_vec
             if self.observable == "max_prob":
                 score = probs.max(dim=1).values.clamp(min=1e-10)
@@ -985,13 +1030,10 @@ class PhotonicTeacher(Teacher):
             )
         elif is_connected_observable(cfg.problem.observable):
             p = cfg.problem
-            _, base, keep_independent = parse_connected_observable(p.observable)
-            # Canonicalise: the independent/dependent toggle is folded into keep_independent, so
-            # ``connected_parity`` and ``connected_parity__indep`` map to one dataset.
+            _, base = parse_connected_observable(p.observable)
             spec.update(
                 observable=f"connected_{base}",
                 graph_density=p.graph_density,
-                keep_independent=keep_independent,
                 graph_seed=cfg.seeds.teacher_seed if p.graph_seed is None else int(p.graph_seed),
             )
         return spec
@@ -1010,8 +1052,8 @@ def score_from_distribution(dist, observable: str | None = None, *,
     stored teacher ``seed``.  ``__L``/``__P`` var suffixes encoded in ``observable`` override
     the passed ``loop_vars`` / ``path_vars``, so a sweep can vary the selection purely
     through the observable string.  For a ``connected_<base>`` observable supply ``graph_density``
-    (+ ``graph_seed``) instead, and the ``__indep``/``__dep`` suffix in ``observable`` picks the
-    kept part.  For an angle prod_parity variant (``*_random``) the
+    (+ ``graph_seed``) instead; it scores E[<base>] over all outcomes (``connected_maxcc`` = the
+    largest-connected-component size), no selection.  For an angle prod_parity variant (``*_random``) the
     ``angle_seed`` fixes the drawn angles and likewise defaults to the stored teacher ``seed``
     (``_pi`` is deterministic).  Returns ``(n_rows,)`` scores.
     """
@@ -1041,13 +1083,10 @@ def score_from_distribution(dist, observable: str | None = None, *,
             raise ValueError("re-scoring a connected_<base> observable needs graph_density "
                              "(+ graph_seed)")
         gseed = int(dist["seed"]) if graph_seed is None else int(graph_seed)
-        _, base, keep_independent = parse_connected_observable(obs)
+        _, base = parse_connected_observable(obs)
         edges = build_vertex_graph(m, float(graph_density), gseed)
-        keep, vec = _connected_selection(keys, m=m, k=k, base=base, edges=edges,
-                                         keep_independent=keep_independent)
-        score = _conditional_expectation(probs, torch.tensor(keep, dtype=torch.float32),
-                                         torch.tensor(vec, dtype=torch.float32), obs)
-        return score.numpy()
+        vec = _connected_scores(keys, m=m, k=k, base=base, edges=edges)
+        return (probs @ torch.tensor(vec, dtype=torch.float32)).numpy()
 
     if is_prod_parity_angle(obs):
         # Fully offline: like the prod family, needs only counts + probs + k (all persisted).

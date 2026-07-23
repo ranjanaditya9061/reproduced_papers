@@ -46,9 +46,9 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
     The ``.npz`` format is shared, but the re-scorer is teacher-specific: ``photonic_quantum``
     uses :func:`model.photonic.score_from_distribution` (for a ``loop_path_<base>`` override the
     graph comes from ``dcfg.problem``'s ``n_vertices`` / ``graph_seed``, for a
-    ``connected_<base>`` from ``graph_density`` / ``graph_seed``, while the base scorer *and* the
-    selection ride in the observable string itself, e.g. ``loop_path_parity__L0-1__P2-3`` or
-    ``connected_parity__dep``); every other
+    ``connected_<base>`` from ``graph_density`` / ``graph_seed``, while the base scorer (and the
+    loop/path selection) ride in the observable string itself, e.g. ``loop_path_parity__L0-1__P2-3``
+    or ``connected_maxcc``); every other
     teacher uses :func:`model.spoqc_magic.score_from_distribution`.
     """
     if observable is None:
@@ -74,7 +74,7 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
             # scorer *and* the selection ride in the observable string itself.  loop_path_<base>
             # maps modes to edges of a graph on n_vertices (loop/path __L/__P selection);
             # connected_<base> maps modes to the V=m vertices of a graph of density graph_density
-            # (independent-set __indep/__dep toggle).
+            # and scores a global property (maxcc = largest connected component).
             p = dcfg.problem
             scores = photonic_score(dist, observable, n_vertices=p.n_vertices,
                                     graph_density=p.graph_density, graph_seed=p.graph_seed)

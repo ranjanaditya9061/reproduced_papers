@@ -33,7 +33,7 @@ GRAPH_BASES = ("parity", "majority", "bunching", "n_first", "loop", "path")
 
 #: Base scorers allowed under a photonic ``connected_<base>`` observable
 #: (mirrors :data:`model.photonic.CONNECTED_BASES`).
-CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "nedges")
+CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "maxcc")
 
 
 @dataclass
@@ -131,13 +131,13 @@ class ExperimentConfig:
                 )
         elif p.observable.startswith("connected_"):
             # Sibling of loop_path_<base>: each mode is a *vertex* of a fixed graph G on V=m
-            # vertices (build_vertex_graph), and each Fock outcome's clicked vertices are
-            # pre-selected on whether they form an INDEPENDENT set of G (no two joined by an
-            # edge), toggled by a ``__dep`` suffix, then scored <base> (see model.photonic).
+            # vertices (build_vertex_graph), and each Fock outcome scores a global property of the
+            # clicked vertices' induced subgraph -- ``maxcc``, its largest connected component
+            # size -- as a plain E[<base>] over all outcomes (no selection; see model.photonic).
             # G's density rides on graph_density, not m/n_vertices.
             from model.photonic import parse_connected_observable
 
-            _, base, _ = parse_connected_observable(p.observable)
+            _, base = parse_connected_observable(p.observable)
             if base not in CONNECTED_BASES:
                 raise ValueError(
                     f"unknown connected base {p.observable!r}; choose base from {list(CONNECTED_BASES)}"
