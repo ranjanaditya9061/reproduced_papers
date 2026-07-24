@@ -174,6 +174,22 @@ class ExperimentConfig:
                 angle_monomials(p.observable, p.m, p.k, aseed)   # validate (m, k)
             else:
                 prod_family_monomials(p.observable, p.m, p.k)    # validate segments / (m, k)
+        elif p.observable.startswith("sq_") or p.observable == "pairprod":
+            # Nonlinear (degree-2) observables: sq_<base> = Σ_n <base>(n) p(n)^2 (diagonal), or
+            # pairprod = Σ_{n1,n2} p(n1) p(n2) (-1)^<n1,n2> (a full quadratic form with a
+            # non-separable ±1 kernel).  Both are 2-copy/collision quantities -- not additive-error
+            # estimable from single-shot samples -- and signed, so no balancing is required.
+            from model.photonic import SQ_BASES, is_pairprod_observable, is_sq_observable
+
+            if not (is_sq_observable(p.observable) or is_pairprod_observable(p.observable)):
+                raise ValueError(
+                    f"unknown nonlinear observable {p.observable!r}; expected sq_<base> "
+                    f"(base in {list(SQ_BASES)}) or pairprod"
+                )
+            if g.generator != "photonic_quantum":
+                raise ValueError("sq_<base> / pairprod observables are photonic_quantum only")
+            if p.observable == "sq_majority" and p.m % 2:
+                raise ValueError("sq_majority requires an even m")
         else:
             # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
             # validate the base observable and let the teacher check N against m.

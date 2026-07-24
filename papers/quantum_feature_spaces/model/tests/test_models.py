@@ -54,6 +54,53 @@ def test_photonic_runs_small():
     assert torch.isfinite(soft).all()
 
 
+def test_photonic_nonlinear_observables_run_and_are_deterministic():
+    """sq_<base> and pairprod (degree-2 in the probabilities) run and are seed-deterministic."""
+    from model.photonic import PhotonicTeacher
+
+    X = sample_X(16, 3, seed=0)
+    for obs in ("sq_parity", "sq_bunching", "pairprod"):
+        a = PhotonicTeacher(m=4, k=2, n_features=3, observable=obs, seed=2)(X)
+        b = PhotonicTeacher(m=4, k=2, n_features=3, observable=obs, seed=2)(X)
+        assert a.shape == (16, 1)
+        assert torch.isfinite(a).all()
+        assert torch.allclose(a, b)                 # same seed -> identical teacher
+
+
+def test_photonic_pairprod_is_genuinely_nonlinear():
+    """pairprod = p^T K p is not a linear functional probs @ v: its value on the average of two
+    distributions differs from the average of its two values (a linear functional would not)."""
+    from model.photonic import PhotonicTeacher, pairprod_kernel
+
+    t = PhotonicTeacher(m=4, k=2, n_features=3, observable="pairprod", seed=2)
+    keys = t._fock_keys
+    n = len(keys)
+    K = torch.tensor(pairprod_kernel(keys, 4), dtype=torch.float32)
+
+    # Two arbitrary normalised distributions and their mean.
+    p = torch.zeros(n); p[0] = 0.7; p[1] = 0.3
+    q = torch.zeros(n); q[2 % n] = 0.4; q[3 % n] = 0.6
+    quad = lambda d: float((d @ K * d).sum())
+    mid = quad((p + q) / 2)
+    avg = (quad(p) + quad(q)) / 2
+    assert abs(mid - avg) > 1e-6                     # strict convexity -> not linear
+
+
+def test_photonic_sq_offline_matches_forward():
+    """score_from_distribution reproduces the teacher's sq_<base> / pairprod forward score."""
+    import numpy as np
+
+    from model.photonic import PhotonicTeacher, score_from_distribution
+
+    X = sample_X(12, 3, seed=1)
+    for obs in ("sq_parity", "pairprod"):
+        t = PhotonicTeacher(m=4, k=2, n_features=3, observable=obs, seed=3)
+        t.enable_distribution_capture()
+        online = t(X).squeeze(-1).numpy()
+        offline = score_from_distribution(t.captured_distributions(), obs)
+        assert np.allclose(online, offline, atol=1e-5)
+
+
 def test_matching_graph_is_connected_perfect_matching():
     from model.photonic import build_matching_graph
 

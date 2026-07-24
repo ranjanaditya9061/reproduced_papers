@@ -358,6 +358,87 @@ def _prod_parity_angle_score(key, angle_monos) -> float:
     return math.cos(total)
 
 
+# --- nonlinear (degree-2) observables: quadratic forms in the Fock probabilities --- #
+#
+# Every observable above is LINEAR in the output distribution: ``O(x) = Σ_n p_x(n)·P(n) = <P>``,
+# a bounded diagonal expectation.  Such a value is additive-error estimable from single-shot samples
+# in ~1/eps^2 shots (just average ``P`` over the samples -- no permanents), which is the classically
+# "easy" regime and a weak basis for a hardness / quantum-advantage teacher.  The two observables
+# here are degree-2 in ``p`` -- collision / 2-copy quantities that are NOT single-shot additive
+# estimable (you need two independent samples to hit the same outcome):
+#
+#   ``sq_<base>``  : ``O(x) = Σ_n <base>(n) · p(n)^2``            -- diagonal (a signed purity term)
+#   ``pairprod``   : ``O(x) = Σ_{n1,n2} p(n1) p(n2) (-1)^<n1,n2>`` -- full quadratic form ``p^T K p``
+#
+# ``pairprod``'s kernel ``K(n1,n2) = (-1)^{Σ_i n1_i·n2_i}`` (parity of the two outcomes' occupation
+# OVERLAP) is deliberately NON-SEPARABLE: a separable ``K(n1,n2) = f(n1)·f(n2)`` would collapse to
+# ``<f>^2``, a product of two independently additive-estimable expectations -- straight back into the
+# easy regime.  The overlap does not factor over the sum, so ``p^T K p`` is a genuine two-point
+# function.  Both scores are signed (mixed ±1), so ``sign(O)`` yields two classes with no centering
+# or balancing needed.  Both are deterministic in ``(observable, m, k)`` -> reproducible / hashable.
+
+#: Per-Fock-state bases usable under a ``sq_<base>`` observable (the plain ±1/float scorers).
+SQ_BASES = ("parity", "majority", "bunching", "n_first")
+_SQ_RE = re.compile(r"^sq_(.+)$")
+
+#: Cap on the Fock dimension for ``pairprod``'s dense ``(n_fock, n_fock)`` kernel.  8192 -> a 256 MB
+#: fp32 matrix; above this, use a ``sq_<base>`` observable (diagonal, no dense kernel).
+PAIRPROD_MAX_FOCK = 8192
+
+
+def parse_sq_observable(observable: str):
+    """Split ``sq_<base>`` into ``(is_sq, base)`` (plain observables -> ``(False, observable)``)."""
+    mo = _SQ_RE.match(observable)
+    if mo is None:
+        return False, observable
+    return True, mo.group(1)
+
+
+def is_sq_observable(observable: str) -> bool:
+    """True for a ``sq_<base>`` observable (score ``Σ_n <base>(n) p(n)^2``; base in :data:`SQ_BASES`)."""
+    is_sq, base = parse_sq_observable(observable)
+    return is_sq and base in SQ_BASES
+
+
+def is_pairprod_observable(observable: str) -> bool:
+    """True for the ``pairprod`` observable (score ``Σ_{n1,n2} p(n1) p(n2) (-1)^<n1,n2>``)."""
+    return observable == "pairprod"
+
+
+def _sq_base_vec(base: str, keys, *, m: int, k: int):
+    """Per-Fock-state ``<base>`` score list for a ``sq_<base>`` observable (reuses the plain scorers)."""
+    if base == "parity":
+        return [_parity_score(key, tuple(range((m + 1) // 2))) for key in keys]
+    if base == "majority":
+        if m % 2:
+            raise ValueError("sq_majority requires even m")
+        return [_majority_score(key, m, k) for key in keys]
+    if base == "bunching":
+        return [_bunching_score(key) for key in keys]
+    if base == "n_first":
+        return [_first_mode_score(key) for key in keys]
+    raise ValueError(f"unknown sq base {base!r}; choose from {SQ_BASES}")
+
+
+def pairprod_kernel(keys, m: int) -> np.ndarray:
+    """Symmetric ±1 pair kernel ``K[a,b] = (-1)^{Σ_i n^a_i · n^b_i}`` for ``a != b`` (``0`` on the diagonal).
+
+    The exponent is the OVERLAP (dot product) of the two outcomes' per-mode occupation vectors, so
+    ``K`` does not factor as ``f(a)·f(b)`` -- the quadratic form ``p^T K p = Σ_{a!=b} p(a) p(b) K[a,b]``
+    is a genuine two-point (distinct-sample, 2-copy) functional, not a product of two separately
+    additive-estimable expectations.  The diagonal is zeroed on purpose: ``K[a,a] = (-1)^{Σ_i (n^a_i)^2}``
+    is a *constant* ``(-1)^k`` on the collision-free outcomes, i.e. a fixed-sign purity term that would
+    bias the whole score one way (all one class for even ``k``); dropping it leaves the mixed-sign
+    off-diagonal part, so ``sign(p^T K p)`` gives two classes with no balancing.  Returns a
+    ``(n_fock, n_fock)`` float64 array; deterministic in ``(keys, m)`` -> reproducible / hashable.
+    """
+    occ = np.array([[int(key[i]) for i in range(m)] for key in keys], dtype=np.int64)
+    overlap = occ @ occ.T                               # (n_fock, n_fock) integer overlaps
+    K = np.where(overlap % 2 == 0, 1.0, -1.0)
+    np.fill_diagonal(K, 0.0)                             # distinct-sample two-point functional
+    return K
+
+
 # --- loop_path_<base>: interpret Fock outcomes as edge sets of a fixed graph ---- #
 
 def _parse_var_segment(spec: str):
@@ -846,14 +927,18 @@ class PhotonicTeacher(Teacher):
         self.is_prod = is_prod_family(observable)
         self.is_prod_angle = is_prod_parity_angle(observable)
         self.is_connected = is_connected_observable(observable)
+        self.is_sq = is_sq_observable(observable)
+        self.is_pairprod = is_pairprod_observable(observable)
         if (not self.is_graph and not self.is_prod and not self.is_prod_angle
-                and not self.is_connected and observable not in OBSERVABLES):
+                and not self.is_connected and not self.is_sq and not self.is_pairprod
+                and observable not in OBSERVABLES):
             raise ValueError(f"observable must be one of {OBSERVABLES} "
                              f"(or loop_path_<base>, base in {GRAPH_BASES}; or connected_<base>, "
                              f"base in {CONNECTED_BASES}; or prod_parity"
                              f"[__<preset|M...|N...>...]; or {PROD_PARITY_CONSECUTIVE}"
                              f" / {PROD_PARITY_SECOND}; or an angle variant "
-                             f"prod_parity_{{consecutive,second}}_{{pi,random}}), got {observable!r}")
+                             f"prod_parity_{{consecutive,second}}_{{pi,random}}; or a nonlinear "
+                             f"sq_<base> (base in {SQ_BASES}) / pairprod), got {observable!r}")
         if observable == "majority" and m % 2:
             raise ValueError("observable 'majority' requires even m")
         self.m, self.k, self.observable, self.nsample = m, k, observable, int(nsample)
@@ -882,7 +967,19 @@ class PhotonicTeacher(Teacher):
 
         keys = list(self.layer.output_keys)
         self._fock_keys = keys
-        if self.is_graph:
+        if self.is_sq:
+            base = parse_sq_observable(observable)[1]
+            vec = _sq_base_vec(base, keys, m=m, k=k)
+        elif self.is_pairprod:
+            n_fock = len(keys)
+            if n_fock > PAIRPROD_MAX_FOCK:
+                raise ValueError(
+                    f"pairprod builds a dense {n_fock}x{n_fock} kernel (n_fock={n_fock} > "
+                    f"{PAIRPROD_MAX_FOCK}); lower (m, k) or use a sq_<base> observable")
+            self.register_buffer("pair_kernel",
+                                 torch.tensor(pairprod_kernel(keys, m), dtype=torch.float32))
+            vec = [0.0] * n_fock                        # unused: pairprod scores via pair_kernel
+        elif self.is_graph:
             if self.n_vertices is None:
                 raise ValueError("loop_path_<base> observables require n_vertices")
             half = self.n_vertices // 2
@@ -947,6 +1044,10 @@ class PhotonicTeacher(Teacher):
         if self.is_graph:
             # E[base | pre-selection]: renormalised masked mean (loop/path selection).
             score = _conditional_expectation(probs, self.keep_mask, self.score_vec, self.observable)
+        elif self.is_sq:
+            score = (probs * probs) @ self.score_vec           # Σ_n <base>(n) p(n)^2
+        elif self.is_pairprod:
+            score = (probs @ self.pair_kernel * probs).sum(dim=1)  # p^T K p (K symmetric ±1)
         else:
             # connected_<base> falls here too: plain E[base] over all outcomes (no keep_mask).
             score = probs @ self.score_vec
@@ -1103,6 +1204,22 @@ def score_from_distribution(dist, observable: str | None = None, *,
         monomials = prod_family_monomials(obs, m, k)
         vec = [_prod_parity_score(key, monomials) for key in keys]
         return (probs @ torch.tensor(vec, dtype=torch.float32)).numpy()
+
+    if is_sq_observable(obs):
+        # Fully offline: diagonal degree-2 form, needs only counts + probs (+ k for majority).
+        _, base = parse_sq_observable(obs)
+        vec = torch.tensor(_sq_base_vec(base, keys, m=m, k=k), dtype=torch.float32)
+        return ((probs * probs) @ vec).numpy()
+
+    if is_pairprod_observable(obs):
+        # Fully offline: quadratic form p^T K p over the persisted counts + probs.
+        n_fock = len(keys)
+        if n_fock > PAIRPROD_MAX_FOCK:
+            raise ValueError(
+                f"pairprod builds a dense {n_fock}x{n_fock} kernel (n_fock={n_fock} > "
+                f"{PAIRPROD_MAX_FOCK}); lower (m, k) or use a sq_<base> observable")
+        K = torch.tensor(pairprod_kernel(keys, m), dtype=torch.float32)
+        return (probs @ K * probs).sum(dim=1).numpy()
 
     if obs not in OBSERVABLES:
         raise ValueError(f"observable must be one of {OBSERVABLES} "
