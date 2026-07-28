@@ -1,0 +1,13 @@
+# Multi-term polynomials: disjoint-pair sums, plus an N-subtracted term and a preset.
+# Shows the readable "sum over monomials" rendering (n0*n1 + n2*n3 + ...) and the N<...>
+# subtracted-monomial syntax.
+name: Permuted
+polynomials:
+  First:      prod_parity__M1-4__M1-2__M1-3-5__M2-3-5__M0-2-3__M1-3__M3__M4-5__M0-1-4__M1
+  First_P:    prod_parity__M1-2__M1-4__M1-3-5__M4-3-5__M0-4-3__M1-3__M3__M2-5__M0-1-2__M1
+  Second:     prod_parity__M1__M0__M0-2-4__M5__M0-3-5__M0-4
+  Second_P:   prod_parity__M3__M0__M0-2-4__M5__M0-1-5__M0-4
+  Third:      prod_parity__M0-1-4__M0-1__M3__M0-1-5__M0-2__M4__M2-4-5 
+  Third_P:    prod_parity__M0-2-4__M0-2__M3__M0-2-5__M0-1__M4__M1-4-5 
+  Fourth:     prod_parity__M1-2-4__M4-5__M3__M1 
+  Fourth_P:   prod_parity__M1-3-4__M4-5__M2__M1 

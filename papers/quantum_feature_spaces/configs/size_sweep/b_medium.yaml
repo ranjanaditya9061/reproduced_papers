@@ -1,0 +1,19 @@
+# Problem-size sweep, MEDIUM point.  Constant observable prod_parity_consecutive across the
+# folder (its monomials scale with (m, k)).  Ordered by (m, k) at plot time, not by filename.
+name: medium
+problem:
+  m: 6
+  k: 3
+  observable: prod_parity_consecutive
+  n_features: null
+generation:
+  generator: photonic_quantum
+  size: 10000
+  nsample: 0
+  save_dist: true
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

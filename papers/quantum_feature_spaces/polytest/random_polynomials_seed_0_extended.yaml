@@ -1,0 +1,7 @@
+# Auto-generated random prod_parity polynomials (m=6).  Edit freely, or regenerate
+# with learn.make_polys.  Run:  python -m learn.poly_sweep --config <data cfg> --sweep polytest\random_polynomials_seed_0.yaml
+name: Random polynomials (seed 0) Extended
+polynomials:
+  P1: prod_parity__M0-1-5__M5__M1__M2-3-4__M2__M0-4-5                                     # n0*n1*n2*n3*n4*n5 + n0*n1*n2*n3*n5 + n0*n1*n4*n5 + n0*n1*n5 + n1 + n2 + n5
+  P2: prod_parity__M0-1-5__M5__M1__M2-3-4__M2__M0-4-5__M3-4                                     # n0*n1*n2*n3*n4*n5 + n0*n1*n2*n3*n5 + n0*n1*n4*n5 + n0*n1*n5 + n1 + n2 + n5
+  P3: prod_parity__M0-1-5__M5__M1__M2-3-4__M2__M0-4-5__M3-4__M1-2

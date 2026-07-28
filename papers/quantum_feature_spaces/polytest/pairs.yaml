@@ -1,0 +1,10 @@
+# Multi-term polynomials: disjoint-pair sums, plus an N-subtracted term and a preset.
+# Shows the readable "sum over monomials" rendering (n0*n1 + n2*n3 + ...) and the N<...>
+# subtracted-monomial syntax.
+name: Pairs
+polynomials:
+  Disjoint_Pairs:   prod_parity__M0-1__M2-3__M4-5     # n0*n1 + n2*n3 + n4*n5
+  Joint_Pairs:    prod_parity__M0-1__M1-2__M2-3__M3-4__M4-5         # n0*n1 - n2*n3*n4  (N = subtracted term)
+  Random_Pairs1:    prod_parity__M0-1__M2-3__M3-4__M4-5         # n0*n1 - n2*n3*n4  (N = subtracted term)
+  Random_Pairs2:    prod_parity__M0-1__M1-2__M2-3__M1-4__M4-5         # n0*n1 - n2*n3*n4  (N = subtracted term)
+

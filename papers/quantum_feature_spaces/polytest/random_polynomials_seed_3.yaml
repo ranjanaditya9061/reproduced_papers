@@ -1,0 +1,14 @@
+# Auto-generated random prod_parity polynomials (m=6).  Edit freely, or regenerate
+# with learn.make_polys.  Run:  python -m learn.poly_sweep --config <data cfg> --sweep polytest\random_polynomials_seed_3.yaml
+name: Random polynomials (seed 3)
+polynomials:
+  P1:  prod_parity__M1-2-4__M4-5__M3__M1                                 # n1 + n1*n2*n4 + n3 + n4*n5
+  P2:  prod_parity__M3-4-5__M1__M0-3-4__M0-2-5__M3-4__M3-5__M1-2-3__M3   # n0*n2*n5 + n0*n3*n4 + n1 + n1*n2*n3 + n3 + n3*n4 + n3*n4*n5 + n3*n5
+  P3:  prod_parity__M2-3-4__M1-3-4__M0-1-2__M4-5__M1-2-5__M3__M0-2       # n0*n1*n2 + n0*n2 + n1*n2*n5 + n1*n3*n4 + n2*n3*n4 + n3 + n4*n5
+  P4:  prod_parity__M0__M0-5__M3__M2-4__M2__M4__M5                       # n0 + n0*n5 + n2 + n2*n4 + n3 + n4 + n5
+  P5:  prod_parity__M1-2__M3-5__M4-5__M4__M1-2-3__M2-4                   # n1*n2 + n1*n2*n3 + n2*n4 + n3*n5 + n4 + n4*n5
+  P6:  prod_parity__M3__M0-3__M0-1-2__M2-4-5__M4__M0-2-4                 # n0*n1*n2 + n0*n2*n4 + n0*n3 + n2*n4*n5 + n3 + n4
+  P7:  prod_parity__M1-2-4__M2-4__M0-5__M1-2-5__M5                       # n0*n5 + n1*n2*n4 + n1*n2*n5 + n2*n4 + n5
+  P8:  prod_parity__M4__M1-5                                             # n1*n5 + n4
+  P9:  prod_parity__M2__M4__M0                                           # n0 + n2 + n4
+  P10: prod_parity__M1-4__M0-5__M2-4__M2-3                               # n0*n5 + n1*n4 + n2*n3 + n2*n4

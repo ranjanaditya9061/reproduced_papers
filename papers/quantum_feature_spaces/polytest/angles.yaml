@@ -1,0 +1,15 @@
+# Angle / phase prod_parity variants, re-scored on ONE generated pool.
+# Compares the plain (-1)^P observable against its cos(P(n)) generalisations: the _pi variants
+# must reproduce the plain target exactly (cos(π·N)=(-1)^N), while the _random variants use
+# θ~U[0,π] per monomial (+ diagonal n_i^2 self-terms) for a continuous [-1,1] target.
+# The _random draw uses the dataset config's seeds.angle_seed (one draw per pool); sweep that
+# via `python sweep.py --param problem.angle_seed --values 0 1 2` to compare draws.
+#   python -m learn.poly_sweep --config configs/Datasets/14_photonic_prod_parity_angle.yaml --sweep polytest/angles.yaml
+name: Angles
+polynomials:
+  # Consecutive:         prod_parity_consecutive          # plain (-1)^P
+  # Consecutive_pi:      prod_parity_consecutive_pi       # == Consecutive (θ=π reduction check)
+  # Consecutive_random:  prod_parity_consecutive_random   # cos(P), θ~U[0,π] + n_i^2 diagonals
+  # Second:              prod_parity_second               # plain (-1)^P, pairs only
+  # Second_pi:           prod_parity_second_pi            # == Second
+  Second_random:       prod_parity_second_random        # cos(P), θ~U[0,π] + n_i^2 diagonals

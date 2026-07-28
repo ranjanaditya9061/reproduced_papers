@@ -276,13 +276,18 @@ def generate_photonic_quantum(
     if nsample < 0:
         raise ValueError("nsample must be >= 0.")
     is_prod = observable.startswith("prod_parity")
-    if observable not in ("parity", "majority", "bunching", "single_output") and not is_prod:
+    is_sq = observable.startswith("sq_")
+    is_pairprod = observable == "pairprod"
+    if (observable not in ("parity", "majority", "bunching", "single_output")
+            and not is_prod and not is_sq and not is_pairprod):
         raise ValueError(
             f"observable must be 'parity', 'majority', 'bunching', 'single_output', "
-            f"or 'prod_parity[__...]', got {observable!r}."
+            f"'prod_parity[__...]', 'sq_<base>', or 'pairprod', got {observable!r}."
         )
     if observable == "majority" and m % 2 != 0:
         raise ValueError("observable='majority' requires even m.")
+    if observable == "sq_majority" and m % 2 != 0:
+        raise ValueError("observable='sq_majority' requires even m.")
 
     if n_features is None:
         n_features = m - 1
@@ -294,6 +299,7 @@ def generate_photonic_quantum(
     layer = layer.to(device)
     output_keys = list(layer.output_keys)
 
+    pair_kernel = None
     if is_prod:
         # (-1)^P(n): P a sum of square-free monomials in the counts. Reuse the canonical
         # monomial builder/scorer from the teacher so both paths agree exactly (the
@@ -306,6 +312,29 @@ def generate_photonic_quantum(
             [_prod_parity_score(key, monomials) for key in output_keys],
             dtype=dtype, device=device,
         )
+    elif is_sq:
+        # Diagonal degree-2 observable Σ_n <base>(n) p(n)^2 (nonlinear). Reuse the teacher's
+        # per-Fock-state base scorer so both paths agree exactly.
+        from model.photonic import _sq_base_vec, parse_sq_observable
+
+        parity_modes = None
+        base = parse_sq_observable(observable)[1]
+        score_vec = torch.tensor(
+            _sq_base_vec(base, output_keys, m=m, k=k), dtype=dtype, device=device,
+        )
+    elif is_pairprod:
+        # Quadratic form p^T K p with a non-separable ±1 kernel (nonlinear). score_vec unused.
+        from model.photonic import PAIRPROD_MAX_FOCK, pairprod_kernel
+
+        parity_modes = None
+        n_fock = len(output_keys)
+        if n_fock > PAIRPROD_MAX_FOCK:
+            raise ValueError(
+                f"pairprod builds a dense {n_fock}x{n_fock} kernel (n_fock={n_fock} > "
+                f"{PAIRPROD_MAX_FOCK}); lower (m, k) or use a sq_<base> observable"
+            )
+        pair_kernel = torch.tensor(pairprod_kernel(output_keys, m), dtype=dtype, device=device)
+        score_vec = torch.zeros(n_fock, dtype=dtype, device=device)   # unused
     elif observable == "parity":
         if parity_modes is None:
             parity_modes = tuple(range((m + 1) // 2))
@@ -338,7 +367,12 @@ def generate_photonic_quantum(
     def _draw(n: int):
         Xb = 2.0 * np.pi * torch.rand(n, n_features, dtype=dtype, device=device)
         probs = layer.forward(Xb, shots=nsample if nsample > 0 else None)
-        score = probs @ score_vec
+        if is_pairprod:
+            score = (probs @ pair_kernel * probs).sum(dim=1)   # p^T K p (K symmetric ±1)
+        elif is_sq:
+            score = (probs * probs) @ score_vec                # Σ_n <base>(n) p(n)^2
+        else:
+            score = probs @ score_vec
         if observable == "single_output":
             # P(A) and P(B) shrink as 1/dim(Fock) with m and k, making the raw
             # difference exponentially small and min_margin meaningless.

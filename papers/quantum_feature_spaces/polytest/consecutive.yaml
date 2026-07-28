@@ -1,0 +1,9 @@
+# Consecutive-mode single monomial: P_j = n_0 * n_1 * ... * n_{j-1}  (growing order).
+# Diagnostic for how the (-1)^P(n) target collapses toward the constant +1 as the monomial
+# order grows past the photon count k (the product is then almost always 0).
+name: consecutive
+polynomials:
+  O1: prod_parity__M0
+  O2: prod_parity__M0-1
+  O3: prod_parity__M0-1-2
+  O4: prod_parity__M0-1-2-3

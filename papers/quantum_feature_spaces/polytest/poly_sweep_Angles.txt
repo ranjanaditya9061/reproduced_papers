@@ -1,0 +1,4 @@
+# poly sweep 'Angles'   (data config: 14_photonic_prod_parity_angle, m=6)
+# label : [observable]   Fourier-RBF test R2 / raw difference   =  polynomial
+
+Second_random : [prod_parity_second_random]   R2=+0.587  diff=0.004302   =  prod_parity_second_random

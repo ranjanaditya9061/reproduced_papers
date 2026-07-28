@@ -5,3 +5,6 @@ datasets/
 # Kernel embeddings / Gram caches from the embedding stage
 # (reproducible from the embedding config + dataset).
 embeddings/
+
+
+img/

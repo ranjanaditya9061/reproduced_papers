@@ -6,11 +6,14 @@ name: "Photonic prod-parity"
 # monomial -- no higher powers).  It generalises `parity` (which is just the sum of all
 # size-1 monomials, (-1)^{Σ n_i}).
 #
-# The monomial set rides in the observable string via `__`-suffixes, summed (set-union):
-#   prod_parity              highest monomial: n_0·n_1·…·n_{m-1}   (== prod_parity__full)
-#   prod_parity__lo<t>       "leave-t-out": all (m-t)-subset monomials (lo1 = one dropped)
-#   prod_parity__M0-1__M2-3  explicit custom monomials: n_0·n_1 + n_2·n_3
-#   prod_parity__full__lo1   preset + preset (a "custom = presetA + presetB")
+# The monomial set rides in the observable string via `__`-suffixes, summed by coefficient:
+#   prod_parity               highest monomial: n_0·n_1·…·n_{m-1}   (== prod_parity__full)
+#   prod_parity__lo<t>        "leave-t-out": all (m-t)-subset monomials (lo1 = one dropped)
+#   prod_parity__M0-1__M2-3   explicit custom monomials (added):    n_0·n_1 + n_2·n_3
+#   prod_parity__M0-1__N2-3-4 N<...> subtracts a monomial:          n_0·n_1 - n_2·n_3·n_4
+#   prod_parity__full__lo1    preset + preset (a "custom = presetA + presetB")
+# Under (-1)^P only P mod 2 matters, so N behaves like M for the score but lets a term
+# cancel (M__N of one monomial -> even coeff -> drops out).
 #
 # NOTE on the label: E[(-1)^P] = P(P even) - P(P odd) is biased POSITIVE, because most
 # Fock outcomes leave at least one mode in a monomial empty -> that product is 0 -> P=0 ->
@@ -23,8 +26,8 @@ name: "Photonic prod-parity"
 #   python -m Generator --config configs/Datasets/13_photonic_prod_parity.yaml
 problem:
   m: 6
-  k: 4
-  observable: prod_parity__M0-1__M2-3__M4-5   # n_0·n_1 + n_2·n_3 + n_4·n_5
+  k: 3
+  observable: prod_parity__M0-1   # n_0·n_1 + n_2·n_3 + n_4·n_5
   n_features: null                            # -> m-1 = 5
 generation:
   generator: photonic_quantum

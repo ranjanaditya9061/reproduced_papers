@@ -1,0 +1,13 @@
+# poly sweep 'Random polynomials (seed 5)'   (data config: 13_photonic_prod_parity, m=6)
+# label : [observable]   Fourier-RBF test R2 / raw difference   =  polynomial
+
+P1  : [prod_parity__M2-5__M0-4-5__M5__M0__M3__M0-1-5__M4__M1__M2__M1-4-5]   R2=+0.564  diff=0.003838   =  n0 + n0*n1*n5 + n0*n4*n5 + n1 + n1*n4*n5 + n2 + n2*n5 + n3 + n4 + n5
+P2  : [prod_parity__M0-2__M1__M2-4__M0-2-5                              ]   R2=+0.780  diff=0.004835   =  n0*n2 + n0*n2*n5 + n1 + n2*n4
+P3  : [prod_parity__M2-5__M1-5__M5__M0-4__M3-4                          ]   R2=+0.526  diff=0.007851   =  n0*n4 + n1*n5 + n2*n5 + n3*n4 + n5
+P4  : [prod_parity__M5__M0__M2-4__M0-2-3__M0-2__M1__M1-2-5__M0-2-4      ]   R2=+0.542  diff=0.009256   =  n0 + n0*n2 + n0*n2*n3 + n0*n2*n4 + n1 + n1*n2*n5 + n2*n4 + n5
+P5  : [prod_parity__M0__M2-3-5__M0-3-4__M0-1-3__M0-2-3                  ]   R2=+0.790  diff=0.00266   =  n0 + n0*n1*n3 + n0*n2*n3 + n0*n3*n4 + n2*n3*n5
+P6  : [prod_parity__M1-3-4__M1-2__M1-4                                  ]   R2=+0.623  diff=0.001989   =  n1*n2 + n1*n3*n4 + n1*n4
+P7  : [prod_parity__M2-5__M3-5__M3__M1-2-3__M2-4__M0-2-5__M0-2-4__M2-3-5]   R2=+0.559  diff=0.006463   =  n0*n2*n4 + n0*n2*n5 + n1*n2*n3 + n2*n3*n5 + n2*n4 + n2*n5 + n3 + n3*n5
+P8  : [prod_parity__M1-5__M3__M2-5__M2-4-5__M3-5                        ]   R2=+0.541  diff=0.008988   =  n1*n5 + n2*n4*n5 + n2*n5 + n3 + n3*n5
+P9  : [prod_parity__M2-3-4__M1-2-5__M0-2                                ]   R2=+0.692  diff=0.001385   =  n0*n2 + n1*n2*n5 + n2*n3*n4
+P10 : [prod_parity__M4__M2-3-4__M0-1-2__M1-4__M0-1-3__M0__M2            ]   R2=+0.755  diff=0.005358   =  n0 + n0*n1*n2 + n0*n1*n3 + n1*n4 + n2 + n2*n3*n4 + n4

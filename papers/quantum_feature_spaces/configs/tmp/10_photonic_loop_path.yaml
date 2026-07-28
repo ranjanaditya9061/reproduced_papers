@@ -21,7 +21,7 @@ name: "Photonic loop-path"
 problem:
   m: 10                       # 10 modes <-> 10 graph edges
   k: 3                        # 3 photons -> a 3-edge matching E(x)
-  observable: loop_path_parity__L0-1__P2-3-4
+  observable: loop_path_parity
   n_features: null            # -> m-1 = 9
   n_vertices: 8               # even; M_0 is a perfect matching (V/2 = 4 edges)
   graph_seed: 7               # seeds G + M_0 (defaults to teacher_seed); part of the hash

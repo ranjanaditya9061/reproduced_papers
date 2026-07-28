@@ -1,0 +1,7 @@
+# poly sweep 'consecutive'   (data config: 13_photonic_prod_parity, m=6)
+# label : [observable]   Fourier-RBF test R2 / raw difference   =  polynomial
+
+O1 : [prod_parity__M0      ]   R2=+0.910  diff=0.0009692   =  n0
+O2 : [prod_parity__M0-1    ]   R2=+0.758  diff=0.0007862   =  n0*n1
+O3 : [prod_parity__M0-1-2  ]   R2=+0.534  diff=0.0003101   =  n0*n1*n2
+O4 : [prod_parity__M0-1-2-3]   R2=+0.051  diff=1.545e-14   =  n0*n1*n2*n3
