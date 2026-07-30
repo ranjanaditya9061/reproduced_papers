@@ -101,6 +101,57 @@ def test_photonic_sq_offline_matches_forward():
         assert np.allclose(online, offline, atol=1e-5)
 
 
+def test_squared_observable_is_quadratic_with_diagonal_kernel():
+    """sq_<base> is p^T K p with K = diag(<base>); it just stores the diagonal instead of K."""
+    import numpy as np
+
+    from model.photonic import PhotonicTeacher, QuadraticObservable, SquaredObservable
+
+    t = PhotonicTeacher(m=4, k=2, n_features=3, observable="sq_parity", seed=2)
+    assert isinstance(t.obs, SquaredObservable)
+    assert isinstance(t.obs, QuadraticObservable)            # the diagonal special case
+
+    v = t.obs.score_vec
+    dense = QuadraticObservable(np.diag(v.numpy()))
+    probs = t.layer.forward(sample_X(8, 3, seed=0))
+    assert torch.allclose(t.obs.score(probs), dense.score(probs), atol=1e-7)
+    assert torch.allclose(t.obs.kernel_matrix(), dense.kernel_matrix(), atol=1e-7)
+    assert t.obs.score_vec.shape == v.shape                  # (n_fock,), not (n_fock, n_fock)
+
+
+def test_entropy_observable_is_negative_entropy_and_rescores():
+    """ent = Σ p log p = -H(p); ent_<base> weights each surprisal term by <base>."""
+    import numpy as np
+
+    from model.photonic import EntropyWeightedObservable, PhotonicTeacher, score_from_distribution
+
+    n = 12
+    p = torch.rand(5, n)
+    p = p / p.sum(dim=1, keepdim=True)
+    plain = EntropyWeightedObservable()
+    H = -(p * torch.log(p)).sum(dim=1)
+    assert torch.allclose(plain.score(p), -H, atol=1e-6)     # unweighted -> -H(p)
+    assert (plain.score(p) <= 0).all()                       # p log p <= 0 termwise
+
+    # p log p -> 0 as p -> 0: a zero-probability outcome must contribute exactly 0, not -inf
+    spike = torch.zeros(1, n)
+    spike[0, 0] = 1.0
+    assert float(plain.score(spike)) == 0.0                  # a point mass has zero entropy
+    uniform = torch.full((1, n), 1.0 / n)
+    assert abs(float(plain.score(uniform)) + math.log(n)) < 1e-5
+
+    # on the real teacher: signed base -> mixed sign, and it re-scores offline exactly
+    X = sample_X(12, 3, seed=1)
+    for obs, signed in (("ent", False), ("ent_parity", True)):
+        t = PhotonicTeacher(m=4, k=2, n_features=3, observable=obs, seed=3)
+        t.enable_distribution_capture()
+        online = t(X)
+        assert online.shape == (12, 1) and torch.isfinite(online).all()
+        assert (online <= 0).all() or signed                 # unweighted ent is non-positive
+        offline = score_from_distribution(t.captured_distributions(), obs)
+        assert np.allclose(online.squeeze(-1).numpy(), offline, atol=1e-6)
+
+
 def test_matching_graph_is_connected_perfect_matching():
     from model.photonic import build_matching_graph
 
