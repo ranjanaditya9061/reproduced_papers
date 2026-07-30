@@ -1,4 +1,12 @@
-"""Classical control teacher: a random MLP emitting a distribution over the photonic Fock basis.
+"""Capacity-unbounded classical reference: a random MLP emitting a distribution over the Fock basis.
+
+CAVEAT, read first: this model is NOT poly-size.  Its output layer is ``2 * n_fock`` wide, so its
+parameter count grows exponentially in ``m`` -- 34.6k at ``m=6`` and 19.9M at ``m=14``, against the
+photonic map's ``2 m^2`` = 72 and 392 (a 50,693x gap).  That hands the classical side the very
+resource the quantum claim is about, so this teacher CANNOT answer "is a classical model enough";
+it answers only the weaker "is the function learnable by an unconstrained classical map", i.e. it
+is an upper bound on what any classical model could do.  For the actual poly-size control -- same
+Fock basis, ``O(m^2)`` parameters -- use :mod:`model.ebm_fock`.
 
 The point of this teacher is to answer one question about the nonlinear observables
 (:mod:`model.photonic_observables.entropy`, :mod:`~model.photonic_observables.oscillatory`):

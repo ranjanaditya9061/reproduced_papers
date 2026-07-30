@@ -21,6 +21,7 @@ from .sampler import sample_X
 from .analytical import AnalyticalTeacher
 from .mlp import MLPTeacher
 from .mlp_fock import MlpFockTeacher
+from .ebm_fock import EbmFockTeacher
 from .qubit import QubitTeacher
 from .photonic import PhotonicTeacher
 from .spoqc import SpoqcPhotonicTeacher
@@ -39,6 +40,7 @@ __all__ = [
     "AnalyticalTeacher",
     "MLPTeacher",
     "MlpFockTeacher",
+    "EbmFockTeacher",
     "QubitTeacher",
     "PhotonicTeacher",
     "SpoqcPhotonicTeacher",

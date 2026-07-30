@@ -37,10 +37,10 @@ CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "maxcc")
 
 #: Generators that expose a full distribution over the ``C(m+k-1, k)`` Fock basis and so can be
 #: scored by the shared registry in :mod:`model.photonic_observables`: the boson sampler itself and
-#: :class:`model.mlp_fock.MlpFockTeacher`, its classical control (same basis, same scorers, a random
-#: MLP instead of ``W2 P(x) W1``).  Every observable beyond the plain per-outcome scorers is
+#: its two classical controls -- :class:`model.ebm_fock.EbmFockTeacher` (poly-size, the
+#: meaningful control) and :class:`model.mlp_fock.MlpFockTeacher` (capacity-unbounded reference).  Every observable beyond the plain per-outcome scorers is
 #: restricted to these, since the rest of the teachers report only a scalar readout.
-FOCK_GENERATORS = ("photonic_quantum", "mlp_fock")
+FOCK_GENERATORS = ("photonic_quantum", "ebm_fock", "mlp_fock")
 
 
 @dataclass

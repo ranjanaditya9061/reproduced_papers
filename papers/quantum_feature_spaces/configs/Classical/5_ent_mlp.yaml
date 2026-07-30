@@ -16,14 +16,14 @@
 # too high-frequency and its nonlinear numbers are not interpretable.
 #
 #   python -m Generator --configs-dir configs/Classical
-name: "parity / quantum"
+name: "ent / mlp"
 problem:
   m: 6
   k: 3                       # k = m//2 -> n_fock = C(m+k-1, k) = 56
-  observable: parity
+  observable: ent
   n_features: null           # -> m-1 = 5
 generation:
-  generator: photonic_quantum
+  generator: mlp_fock
   size: 10000
   nsample: 0                 # exact probabilities: osc is not recoverable from few shots
 split:
