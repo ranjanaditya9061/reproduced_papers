@@ -35,6 +35,13 @@ GRAPH_BASES = ("parity", "majority", "bunching", "n_first", "loop", "path")
 #: (mirrors :data:`model.photonic.CONNECTED_BASES`).
 CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "maxcc")
 
+#: Generators that expose a full distribution over the ``C(m+k-1, k)`` Fock basis and so can be
+#: scored by the shared registry in :mod:`model.photonic_observables`: the boson sampler itself and
+#: :class:`model.mlp_fock.MlpFockTeacher`, its classical control (same basis, same scorers, a random
+#: MLP instead of ``W2 P(x) W1``).  Every observable beyond the plain per-outcome scorers is
+#: restricted to these, since the rest of the teachers report only a scalar readout.
+FOCK_GENERATORS = ("photonic_quantum", "mlp_fock")
+
 
 @dataclass
 class ProblemConfig:
@@ -117,8 +124,9 @@ class ExperimentConfig:
                 raise ValueError(
                     f"unknown loop_path base {p.observable!r}; choose base from {list(GRAPH_BASES)}"
                 )
-            if g.generator != "photonic_quantum":
-                raise ValueError("loop_path_<base> observables are photonic_quantum only")
+            if g.generator not in FOCK_GENERATORS:
+                raise ValueError(f"loop_path_<base> observables need a Fock-distribution "
+                                 f"generator, one of {list(FOCK_GENERATORS)}")
             if p.n_vertices is None:
                 raise ValueError("loop_path_<base> observables require problem.n_vertices")
             if p.n_vertices < 2 or p.n_vertices % 2:
@@ -142,8 +150,9 @@ class ExperimentConfig:
                 raise ValueError(
                     f"unknown connected base {p.observable!r}; choose base from {list(CONNECTED_BASES)}"
                 )
-            if g.generator != "photonic_quantum":
-                raise ValueError("connected_<base> observables are photonic_quantum only")
+            if g.generator not in FOCK_GENERATORS:
+                raise ValueError(f"connected_<base> observables need a Fock-distribution "
+                                 f"generator, one of {list(FOCK_GENERATORS)}")
             if p.m < 2:
                 raise ValueError(f"connected_ needs m >= 2 vertices (got m={p.m})")
             if p.graph_density is None:
@@ -167,8 +176,9 @@ class ExperimentConfig:
                     " / prod_parity_second, or an angle variant "
                     "prod_parity_{consecutive,second}_{pi,random})"
                 )
-            if g.generator != "photonic_quantum":
-                raise ValueError("prod_parity observables are photonic_quantum only")
+            if g.generator not in FOCK_GENERATORS:
+                raise ValueError(f"prod_parity observables need a Fock-distribution "
+                                 f"generator, one of {list(FOCK_GENERATORS)}")
             if is_prod_parity_angle(p.observable):
                 aseed = self.seeds.teacher_seed if p.angle_seed is None else int(p.angle_seed)
                 angle_monomials(p.observable, p.m, p.k, aseed)   # validate (m, k)
@@ -195,9 +205,10 @@ class ExperimentConfig:
                     f"unknown nonlinear observable {p.observable!r}; expected sq_<base>, "
                     f"ent[_<base>] or osc[_<base>] (base in {list(SQ_BASES)}), or pairprod"
                 )
-            if g.generator != "photonic_quantum":
-                raise ValueError("sq_<base> / ent[_<base>] / osc[_<base>] / pairprod observables "
-                                 "are photonic_quantum only")
+            if g.generator not in FOCK_GENERATORS:
+                raise ValueError(f"sq_<base> / ent[_<base>] / osc[_<base>] / pairprod "
+                                 f"observables need a Fock-distribution generator, one of "
+                                 f"{list(FOCK_GENERATORS)}")
             if p.observable in ("sq_majority", "ent_majority", "osc_majority") and p.m % 2:
                 raise ValueError(f"{p.observable} requires an even m")
         elif p.observable == "xent" or p.observable.startswith("xent_"):
@@ -215,8 +226,9 @@ class ExperimentConfig:
                     f"unknown cross-entropy observable {p.observable!r}; expected xent or "
                     f"xent_<base> (base in {list(SQ_BASES)})"
                 )
-            if g.generator != "photonic_quantum":
-                raise ValueError("xent[_<base>] observables are photonic_quantum only")
+            if g.generator not in FOCK_GENERATORS:
+                raise ValueError(f"xent[_<base>] observables need a Fock-distribution "
+                                 f"generator, one of {list(FOCK_GENERATORS)}")
             if p.observable == "xent_majority" and p.m % 2:
                 raise ValueError("xent_majority requires an even m")
         else:
@@ -233,7 +245,7 @@ class ExperimentConfig:
             raise ValueError(
                 f"n_features ({p.n_features}) must be <= m-1 = {p.m - 1}"
             )
-        if p.observable == "majority" and g.generator == "photonic_quantum" and p.m % 2:
+        if p.observable == "majority" and g.generator in FOCK_GENERATORS and p.m % 2:
             raise ValueError("observable 'majority' requires an even m")
         if g.size <= 0:
             raise ValueError("generation.size must be positive")

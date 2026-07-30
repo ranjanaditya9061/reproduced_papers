@@ -1,0 +1,25 @@
+# Classical-control comparison: is the nonlinear-observable hardness a property of the
+# p -> score functional, or does it need the quantum feature map?
+#
+# Matched pairs at (m=6, k=m//2=3, n_fock=56): the SAME observable and the SAME scoring code
+# on two maps -- photonic_quantum (W2 P(x) W1 boson sampling) vs mlp_fock (a random MLP over
+# the identical Fock basis, classical).  parity is the calibration control: it must come out
+# easy on BOTH, otherwise the MLP is too high-frequency and the osc number means nothing.
+#
+#   python -m Generator --configs-dir configs/Classical
+name: "parity / classical"
+problem:
+  m: 6
+  k: 3                       # k = m//2 -> n_fock = C(m+k-1, k) = 56
+  observable: parity
+  n_features: null           # -> m-1 = 5
+generation:
+  generator: mlp_fock
+  size: 4000
+  nsample: 0                 # exact probabilities: osc is not recoverable from few shots
+split:
+  test_fraction: 0.20
+  split_seed: 0
+seeds:
+  sample_seed: 42
+  teacher_seed: 42

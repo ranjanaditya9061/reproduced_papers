@@ -20,6 +20,7 @@ from .sampler import sample_X
 # (photonic imports perceval/merlin lazily, on construction — not here.)
 from .analytical import AnalyticalTeacher
 from .mlp import MLPTeacher
+from .mlp_fock import MlpFockTeacher
 from .qubit import QubitTeacher
 from .photonic import PhotonicTeacher
 from .spoqc import SpoqcPhotonicTeacher
@@ -37,6 +38,7 @@ __all__ = [
     "sample_X",
     "AnalyticalTeacher",
     "MLPTeacher",
+    "MlpFockTeacher",
     "QubitTeacher",
     "PhotonicTeacher",
     "SpoqcPhotonicTeacher",
