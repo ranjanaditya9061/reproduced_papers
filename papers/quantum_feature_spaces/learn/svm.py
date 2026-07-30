@@ -43,13 +43,16 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
     observable instead -- so a single generated dataset can be swept across *different*
     measurements without regenerating.  Raises if no distribution file is present.
 
-    The ``.npz`` format is shared, but the re-scorer is teacher-specific: ``photonic_quantum``
-    uses :func:`model.photonic.score_from_distribution` (for a ``loop_path_<base>`` override the
-    graph comes from ``dcfg.problem``'s ``n_vertices`` / ``graph_seed``, for a
-    ``connected_<base>`` from ``graph_density`` / ``graph_seed``, while the base scorer (and the
-    loop/path selection) ride in the observable string itself, e.g. ``loop_path_parity__L0-1__P2-3``
-    or ``connected_maxcc``); every other
-    teacher uses :func:`model.spoqc_magic.score_from_distribution`.
+    The ``.npz`` format is shared, but the re-scorer is teacher-specific.  The Fock-distribution
+    generators (:data:`Generator.config.FOCK_GENERATORS` -- ``photonic_quantum`` and its classical
+    controls ``ebm_fock`` / ``mlp_fock``, which share the Fock basis and the observable registry)
+    use :func:`model.photonic.score_from_distribution`: for a ``loop_path_<base>`` override the
+    graph comes from ``dcfg.problem``'s ``n_vertices`` / ``graph_seed``, for a ``connected_<base>``
+    from ``graph_density`` / ``graph_seed``, while the base scorer (and the loop/path selection)
+    ride in the observable string itself, e.g. ``loop_path_parity__L0-1__P2-3`` or
+    ``connected_maxcc``.  Every other teacher uses
+    :func:`model.spoqc_magic.score_from_distribution`, which needs the dual-rail ``readout_modes``
+    pair the spoqc teachers persist -- routing a Fock-basis dataset there fails on unpacking it.
     """
     if observable is None:
         return load_raw(artifact_path(dcfg, dataset_root))[1][:, 0]
@@ -64,7 +67,9 @@ def load_target(dcfg, dataset_root, *, observable: str | None = None) -> torch.T
         )
     dist = load_distributions(dpath)
 
-    if dcfg.generation.generator == "photonic_quantum":
+    from Generator.config import FOCK_GENERATORS
+
+    if dcfg.generation.generator in FOCK_GENERATORS:
         from model.photonic import (is_connected_observable, is_graph_observable,
                                      is_prod_parity_angle)
         from model.photonic import score_from_distribution as photonic_score
