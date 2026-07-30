@@ -6,7 +6,8 @@ identify it for caching.  The kernel applied on top is always a Gaussian RBF
 produced*:
 
 - ``rbf``              -- the raw angles (Huang's universal baseline).
-- ``fourier_rbf``      -- Fourier features ``[sin(jx), cos(jx)]`` (periodicity-aware).
+- ``fourier_rbf``      -- Fourier features ``[sin(jx), cos(jx)]`` (periodicity-aware); the
+  harmonic mode / offset / step are configurable, see :mod:`embedding.fourier`.
 - ``qubit_projected``  -- Huang projected kernel: 1-qubit reduced-state Pauli
   expectations (``<X_q>, <Y_q>, <Z_q>`` -> ``3n``), from :class:`model.qubit.QubitFeatureMap`.
 - ``photonic_projected`` -- per-mode occupation moments up to 2nd order
@@ -24,7 +25,7 @@ import math
 
 import torch
 
-from model.mlp import fourier_features
+from .fourier import fourier_features, fourier_kwargs_from_spec, fourier_spec
 from model.photonic import PhotonicFeatureMap
 from model.qubit import QubitFeatureMap
 
@@ -125,22 +126,39 @@ class RawEmbedding(Embedding):
 
 
 class FourierEmbedding(Embedding):
-    """Fourier features ``[sin(jx), cos(jx)]_{j=1..order}`` -- periodicity-aware."""
+    """Fourier features over ``order`` harmonics -- periodicity-aware, and configurable.
+
+    ``mode="mul"`` (default) is the standard ``[sin(jx), cos(jx)]``; ``mode="div"`` uses ``j/x``.
+    ``j0`` / ``step`` pick which harmonics, ``include_raw`` prepends ``x``.  See
+    :func:`embedding.fourier.fourier_features` -- in particular the caveat that a large ``j0``
+    under ``mode="div"`` turns the basis into a hash of ``x``.
+
+    Every knob (and the formula version) rides in :meth:`spec`, so the on-disk feature cache is
+    invalidated when any of them changes instead of silently serving a different vintage.
+    """
 
     name = "fourier_rbf"
 
-    def __init__(self, fourier_order: int = 3):
+    def __init__(self, fourier_order: int = 3, mode: str = "mul", j0: int = 1,
+                 step: int = 1, eps: float = 1e-6, include_raw: bool = False):
         self.fourier_order = int(fourier_order)
+        self.mode, self.j0, self.step = mode, int(j0), int(step)
+        self.eps, self.include_raw = float(eps), bool(include_raw)
+
+    def _kwargs(self) -> dict:
+        return {"mode": self.mode, "j0": self.j0, "step": self.step,
+                "eps": self.eps, "include_raw": self.include_raw}
 
     def features(self, X: torch.Tensor) -> torch.Tensor:
-        return fourier_features(X, self.fourier_order)
+        return fourier_features(X, self.fourier_order, **self._kwargs())
 
     def spec(self) -> dict:
-        return {"name": self.name, "fourier_order": self.fourier_order}
+        return {"name": self.name, **fourier_spec(self.fourier_order, **self._kwargs())}
 
     @classmethod
     def from_spec(cls, spec: dict, cfg=None) -> "FourierEmbedding":
-        return cls(fourier_order=spec.get("fourier_order", 3))
+        kw = fourier_kwargs_from_spec(spec, default_order=3)
+        return cls(fourier_order=kw.pop("order"), **kw)
 
 
 def gaussian_bump_features(X: torch.Tensor, n_bumps: int,
@@ -196,8 +214,10 @@ class ComboEmbedding(Embedding):
 
     def __init__(self, fourier_order: int = 4, n_bumps: int = 8,
                  x_min: float = 0.0, x_max: float = 2 * math.pi,
-                 n_rff: int = 256, rff_gamma: float = 0.1, rff_seed: int = 0):
+                 n_rff: int = 256, rff_gamma: float = 0.1, rff_seed: int = 0,
+                 mode: str = "mul", j0: int = 1, step: int = 1, eps: float = 1e-6):
         self.fourier_order = int(fourier_order)
+        self.mode, self.j0, self.step, self.eps = mode, int(j0), int(step), float(eps)
         self.n_bumps = int(n_bumps)
         self.x_min, self.x_max = float(x_min), float(x_max)
         self.n_rff = int(n_rff)
@@ -207,19 +227,24 @@ class ComboEmbedding(Embedding):
     def features(self, X: torch.Tensor) -> torch.Tensor:
         return torch.cat([
             X,                                                   # x itself
-            fourier_features(X, self.fourier_order),             # Fourier of x
+            fourier_features(X, self.fourier_order, mode=self.mode, j0=self.j0,
+                             step=self.step, eps=self.eps),      # Fourier of x
             gaussian_bump_features(X, self.n_bumps, self.x_min, self.x_max),  # local bumps
             rff_features(X, self.n_rff, self.rff_gamma, self.rff_seed),       # RBF dynamics
         ], dim=1)
 
     def spec(self) -> dict:
-        return {"name": self.name, "fourier_order": self.fourier_order,
+        return {"name": self.name,
+                **fourier_spec(self.fourier_order, mode=self.mode, j0=self.j0,
+                               step=self.step, eps=self.eps),
                 "n_bumps": self.n_bumps, "x_min": self.x_min, "x_max": self.x_max,
                 "n_rff": self.n_rff, "rff_gamma": self.rff_gamma, "rff_seed": self.rff_seed}
 
     @classmethod
     def from_spec(cls, spec: dict, cfg=None) -> "ComboEmbedding":
-        return cls(fourier_order=spec.get("fourier_order", 4),
+        kw = fourier_kwargs_from_spec(spec, default_order=4)
+        return cls(fourier_order=kw["order"], mode=kw["mode"], j0=kw["j0"],
+                   step=kw["step"], eps=kw["eps"],
                    n_bumps=spec.get("n_bumps", 8),
                    x_min=spec.get("x_min", 0.0),
                    x_max=spec.get("x_max", 2 * math.pi),

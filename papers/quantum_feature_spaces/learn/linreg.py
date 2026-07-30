@@ -82,7 +82,7 @@ def _fourier_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
     import torch
     # Xtr_raw, Xte_raw = _standardize(Xtr_raw, Xte_raw)
 
-    from model.mlp import fourier_features
+    from embedding.fourier import fourier_features
     Btr = fourier_features(torch.as_tensor(Xtr_raw, dtype=torch.float32), fourier_order).numpy()
     Bte = fourier_features(torch.as_tensor(Xte_raw, dtype=torch.float32), fourier_order).numpy()
     return Btr, Bte
@@ -91,7 +91,7 @@ def _combined_base(Xtr_raw, Xte_raw, *, n_features, fourier_order):
 
     import torch
 
-    from model.mlp import fourier_features
+    from embedding.fourier import fourier_features
     Btr = fourier_features(torch.as_tensor(Xtr_raw, dtype=torch.float32), fourier_order).numpy()
     Bte = fourier_features(torch.as_tensor(Xte_raw, dtype=torch.float32), fourier_order).numpy()
     

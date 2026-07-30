@@ -18,10 +18,29 @@ the problem.  ``--observable`` re-scores the saved distribution offline at every
 ``generation.save_dist``), so one generated pool can be measured under any observable without
 regenerating.
 
+The learner's Fourier basis is configurable (:mod:`embedding.fourier`): ``--fourier-order``,
+``--fourier-mode`` (``mul`` = ``sin(jx)``, ``div`` = ``sin(j/x)``), ``--fourier-j0`` /
+``--fourier-step`` to choose which harmonics, ``--fourier-include-raw`` to prepend ``x``; or pass
+the whole dict at once with ``--fourier '{"order":3,"j0":1000,"mode":"div"}'``.  Every knob rides in
+the embedding spec, so the feature cache key moves with it and runs cannot mix vintages.
+
+NOTE when comparing a quantum teacher against its classical control (``ebm_fock`` / ``mlp_fock``):
+those teachers encode ``x`` through a Fourier expansion internally, so a *matched* learner basis
+hands them their own representation and inflates their score while depressing the photonic one
+(measured on ``parity``: 0.689 -> 0.957 for ``ebm_fock``, 0.785 -> 0.606 for photonic).  Use
+``--basis rbf`` (raw angles) for that comparison.
+
     # each config's own (stored) observable
     python -m learn.grid_size --configs-dir configs/size_sweep --save-dir img
     # re-score every size under one observable, computed offline from the saved distributions
     python -m learn.grid_size --configs-dir configs/size_sweep --observable prod_parity_consecutive
+    # a different Fourier band
+    python -m learn.grid_size --configs-dir configs/osc --observable parity --fourier-order 6
+    # the reciprocal basis, harmonics 1000..1002
+    python -m learn.grid_size --configs-dir configs/osc --observable parity \
+        --fourier-mode div --fourier-j0 1000
+    # raw angles -- the neutral basis for quantum-vs-classical comparisons
+    python -m learn.grid_size --configs-dir configs/osc --observable parity --basis rbf
 """
 
 from __future__ import annotations
@@ -37,7 +56,7 @@ if __package__ in (None, ""):
 
 from Generator import generate, load_config
 
-from .poly_sweep import FOURIER_RBF, _fit_r2_and_diff
+from .poly_sweep import _fit_r2_and_diff
 from .svm import _split_indices, load_target
 
 DEFAULT_CONFIGS_DIR = "configs/size_sweep"
@@ -78,21 +97,32 @@ def discover_configs_by_size(configs_dir):
 
 
 def run_size_sweep(dataset_map, *, n_train=8000, n_test=2000, C=1.0, gamma="scale", epsilon=0.01,
-                   fourier_order=3, observable=None, embeddings_root="embeddings",
-                   dataset_root=DATASET_ROOT, use_cache=True):
+                   fourier_order=3, fourier=None, basis="fourier_rbf", observable=None,
+                   embeddings_root="embeddings", dataset_root=DATASET_ROOT, use_cache=True):
     """Fit the Fourier-RBF kernel on each size's dataset; return ``(per_size, targets)``.
 
     ``per_size`` maps each label to ``{test_r2, test_diff, var}`` (R², raw MSE difference, and the
     teacher target variance ``Var(y)``); ``targets`` maps it to the full target vector (numpy).
-    Each dataset is generated (cache-keyed) and its Fourier-RBF features built once.  With
-    ``observable`` set, the target is the saved distribution **re-scored offline** under that
-    observable (needs ``generation.save_dist``) instead of the stored soft -- so one generated
-    pool can be measured under any observable without regenerating.  ``prod_parity_consecutive``
-    re-scores per size from the persisted ``(m, k)``.
+    Each dataset is generated (cache-keyed) and its features built once.  With ``observable`` set,
+    the target is the saved distribution **re-scored offline** under that observable (needs
+    ``generation.save_dist``) instead of the stored soft -- so one generated pool can be measured
+    under any observable without regenerating.  ``prod_parity_consecutive`` re-scores per size from
+    the persisted ``(m, k)``.
+
+    ``basis`` picks the feature map: ``"fourier_rbf"`` (default) or ``"rbf"`` (raw angles, the
+    neutral choice when comparing a quantum teacher against a classical control that itself
+    encodes through Fourier features).  ``fourier`` is a dict of the short knob names accepted by
+    :func:`embedding.fourier.fourier_embedding_spec` (``mode``, ``j0``, ``step``, ``eps``,
+    ``include_raw``, and ``order`` which overrides ``fourier_order``); it is ignored for
+    ``basis="rbf"``.
     """
     from embedding import build_embeddings_for
+    from embedding.fourier import fourier_embedding_spec
 
-    spec = dict(FOURIER_RBF, fourier_order=fourier_order)
+    if basis == "rbf":
+        spec = {"type": "rbf"}
+    else:
+        spec = fourier_embedding_spec(**{"order": fourier_order, **(fourier or {})})
     per_size, targets = {}, {}
     for label, path in dataset_map.items():
         dcfg = load_config(path)
@@ -100,7 +130,7 @@ def run_size_sweep(dataset_map, *, n_train=8000, n_test=2000, C=1.0, gamma="scal
         results, _, _ = build_embeddings_for(
             dcfg, [spec], embeddings_root=embeddings_root,
             dataset_root=dataset_root, use_cache=use_cache)
-        F = results[0]["blob"]["data"]                       # (N, d) Fourier-RBF features
+        F = results[0]["blob"]["data"]                       # (N, d) features
         t = load_target(dcfg, dataset_root, observable=observable)  # None -> stored soft[:, 0]
         tr, te = _split_indices(t, test_fraction=dcfg.split.test_fraction,
                                 split_seed=dcfg.split.split_seed)
@@ -199,7 +229,23 @@ def main(argv=None) -> None:
     ap.add_argument("--C", type=float, default=1.0, help="SVR regularisation")
     ap.add_argument("--gamma", default="scale")
     ap.add_argument("--epsilon", type=float, default=0.01, help="SVR epsilon-insensitive tube")
-    ap.add_argument("--fourier-order", type=int, default=3)
+    ap.add_argument("--basis", default="fourier_rbf", choices=["fourier_rbf", "rbf"],
+                    help="learner feature map: fourier_rbf (default) or rbf = raw angles. Use rbf "
+                         "when comparing a quantum teacher against a Fourier-encoding classical "
+                         "control, else the matched basis flatters the control")
+    ap.add_argument("--fourier-order", type=int, default=3,
+                    help="number of harmonics in the learner's Fourier basis")
+    ap.add_argument("--fourier-mode", default="mul", choices=["mul", "div"],
+                    help="harmonic argument: mul -> sin(j*x) (default), div -> sin(j/x)")
+    ap.add_argument("--fourier-j0", type=int, default=1, help="first harmonic index (default 1)")
+    ap.add_argument("--fourier-step", type=int, default=1, help="harmonic spacing (default 1)")
+    ap.add_argument("--fourier-eps", type=float, default=1e-6,
+                    help="floor on |x| in div mode, so j/x stays finite")
+    ap.add_argument("--fourier-include-raw", action="store_true",
+                    help="prepend the raw angles x to the Fourier features")
+    ap.add_argument("--fourier", default=None, metavar="JSON",
+                    help='override the basis knobs with a JSON dict, e.g. '
+                         '\'{"order":3,"j0":1000,"mode":"div"}\'')
     ap.add_argument("--save-dir", default="img", help="directory for the output PNG")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--force", action="store_true")
@@ -215,21 +261,44 @@ def main(argv=None) -> None:
                   "hold it constant, or pass --observable to re-score every size the same way")
 
     gamma = float(args.gamma) if args.gamma.replace(".", "", 1).isdigit() else args.gamma
+    fourier = {"mode": args.fourier_mode, "j0": args.fourier_j0, "step": args.fourier_step,
+               "eps": args.fourier_eps, "include_raw": args.fourier_include_raw}
+    if args.fourier:                                         # JSON dict overrides the flags
+        import json
+
+        fourier.update(json.loads(args.fourier))
     per_size, targets = run_size_sweep(dataset_map, n_train=args.n_train, n_test=args.n_test,
                                        C=args.C, gamma=gamma, epsilon=args.epsilon,
-                                       fourier_order=args.fourier_order, observable=args.observable,
+                                       fourier_order=args.fourier_order, fourier=fourier,
+                                       basis=args.basis, observable=args.observable,
                                        use_cache=not args.force)
 
     labels = list(dataset_map)
     wl = max(len(lbl.replace("\n", ",")) for lbl in labels)
-    print(f"\n=== Fourier-RBF per problem size  (observable={obs}) ===")
+    if args.basis == "rbf":
+        btag, bdesc = "rbf", "raw angles"
+    else:
+        # effective order: a JSON --fourier may override --fourier-order, and the label/filename
+        # must report what was actually used or plots get silently mislabelled.
+        bits = [f"order={fourier.get('order', args.fourier_order)}"]
+        if fourier["mode"] != "mul":
+            bits.append(f"mode={fourier['mode']}")
+        if fourier["j0"] != 1:
+            bits.append(f"j0={fourier['j0']}")
+        if fourier["step"] != 1:
+            bits.append(f"step={fourier['step']}")
+        if fourier["include_raw"]:
+            bits.append("+raw")
+        bdesc = "fourier " + " ".join(bits)
+        btag = "fourier-" + "-".join(b.replace("=", "") for b in bits)
+    print(f"\n=== {bdesc} per problem size  (observable={obs}) ===")
     print(f"  {'size':>{wl}}  {'test R2':>9}  {'difference':>11}  {'Var(y)':>9}")
     for lbl in labels:
         p = per_size[lbl]
         print(f"  {lbl.replace(chr(10), ','):>{wl}}  {p['test_r2']:>9.3f}  "
               f"{p['test_diff']:>11.4g}  {p['var']:>9.4g}")
 
-    save = None if args.show else str(Path(args.save_dir) / f"grid_size_{obs}.png")
+    save = None if args.show else str(Path(args.save_dir) / f"grid_size_{obs}_{btag}.png")
     _plot(labels, per_size, targets, save, axis_label=args.axis_label, obs=obs, show=args.show)
 
 

@@ -82,7 +82,7 @@ def kernel_dictionary(Xa, Xb, *, kind: str, degree: int, n_features: int, fourie
     if kind == "fourier":
         import torch
 
-        from model.mlp import fourier_features
+        from embedding.fourier import fourier_features
         Fa = fourier_features(torch.as_tensor(Xa, dtype=torch.float32), fourier_order).numpy()
         Fb = fourier_features(torch.as_tensor(Xb, dtype=torch.float32), fourier_order).numpy()
         # interaction-order ladder among the Fourier modes (cross-qubit parity terms appear

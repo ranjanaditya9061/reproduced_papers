@@ -66,7 +66,7 @@ import torch
 import torch.nn as nn
 
 from .base import Teacher
-from .mlp import fourier_features
+from .mlp import TEACHER_FOURIER_VERSION, fourier_features
 from .photonic_observables import (ObservableContext, is_known_observable, observable_hash_spec,
                                    observable_help, resolve_observable)
 
@@ -267,7 +267,8 @@ class MlpFockTeacher(Teacher):
         """Observable identity (shared with the photonic teacher) plus the architecture knobs."""
         p = cfg.problem
         spec = {"observable": p.observable, "nsample": cfg.generation.nsample,
-                "fourier_order": MLP_FOURIER_ORDER, "depth": MLP_DEPTH,
+                "fourier_order": MLP_FOURIER_ORDER,
+                "encoding": "teacher_fourier_v" + str(TEACHER_FOURIER_VERSION), "depth": MLP_DEPTH,
                 "hidden_size": MLP_HIDDEN, "weight_gain": MLP_WEIGHT_GAIN,
                 "normalisation": "complex_amplitude"}
         spec.update(observable_hash_spec(p.observable, ObservableContext(

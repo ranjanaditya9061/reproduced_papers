@@ -13,8 +13,26 @@ if TYPE_CHECKING:
     from Generator.config import ExperimentConfig
 
 
+#: Bump if the teacher-side feature formula below ever changes; it rides in the fock
+#: teachers' ``hash_spec``, so datasets built with a different formula hash distinctly.
+TEACHER_FOURIER_VERSION = 1
+
+
 def fourier_features(X: torch.Tensor, order: int) -> torch.Tensor:
-    """Expand angles ``(N, d)`` into ``[sin(jx), cos(jx)]_{j=1..order}`` -> ``(N, 2*order*d)``."""
+    """Expand angles ``(N, d)`` into ``[sin(jx), cos(jx)]_{j=1..order}`` -> ``(N, 2*order*d)``.
+
+    TEACHER-SIDE: this helps DEFINE LABELS.  :class:`MLPTeacher`,
+    :class:`model.mlp_fock.MlpFockTeacher` and :class:`model.ebm_fock.EbmFockTeacher` all call it
+    inside ``forward``, so editing it changes every dataset those teachers produce -- and the
+    artifact hash records ``fourier_order``, not the formula, so cached datasets would be reused
+    across the change.  Bump :data:`TEACHER_FOURIER_VERSION` if you must alter it (that lands in
+    the fock teachers' ``hash_spec``, giving changed datasets a distinct hash) and regenerate.
+
+    For LEARNER featurisation use :func:`embedding.fourier.fourier_features` -- the configurable
+    one, kept separate so learner experiments cannot reach the labels.  A shared implementation
+    also let the learner see the classical teachers' own encoding, which inflated their scores and
+    depressed the photonic ones; :mod:`embedding.fourier` has the measured numbers.
+    """
     parts = []
     for j in range(1, order + 1):
         parts.append(torch.sin(j * X))

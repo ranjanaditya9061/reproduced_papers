@@ -57,7 +57,7 @@ import numpy as np
 import torch
 
 from .base import Teacher
-from .mlp import fourier_features
+from .mlp import TEACHER_FOURIER_VERSION, fourier_features
 from .mlp_fock import fock_keys
 from .photonic_observables import (ObservableContext, is_known_observable, observable_hash_spec,
                                    observable_help, resolve_observable)
@@ -232,6 +232,7 @@ class EbmFockTeacher(Teacher):
         p = cfg.problem
         spec = {"observable": p.observable, "nsample": cfg.generation.nsample,
                 "fourier_order": EBM_FOURIER_ORDER,
+                "encoding": "teacher_fourier_v" + str(TEACHER_FOURIER_VERSION),
                 "amplitudes": "bilinear_random_complex",
                 "energy_features": "occupation_moments_1_2"}
         spec.update(observable_hash_spec(p.observable, ObservableContext(
