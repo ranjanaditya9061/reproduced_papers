@@ -40,9 +40,19 @@ single-shot samples, i.e. the classically easy regime:
 * :mod:`.sq` -- ``Σ_n <base>(n) p(n)^2``, i.e. ``p^T K p`` with ``K`` diagonal.
 * :mod:`.pairprod` -- ``p^T K p`` for a dense, non-separable ±1 pair kernel.
 
-**Non-polynomial** in ``p`` -- not the expectation of any fixed observable:
+**Non-polynomial** in ``p`` -- ``Σ_n <base>(n) φ(p(n))`` for a scalar ``φ``, so not the
+expectation of any fixed observable:
 
-* :mod:`.entropy` -- ``Σ_n <base>(n) p(n) log p(n)``; bare ``ent`` is ``-H(p)``.
+* :mod:`.entropy` -- ``φ(p) = p log p``; bare ``ent`` is ``-H(p)``.
+* :mod:`.oscillatory` -- ``φ(p) = p sin(1/(p + eps))``, by far the hardest to estimate from
+  samples (uncorrelated with its own exact value at 100 shots), so generate it with
+  ``nsample = 0``.  ``eps`` is not a monotone dial -- read that module before changing it.
+
+and its linear counterpart, which scores against a fixed reference rather than against ``p``:
+
+* :mod:`.cross_entropy` -- ``Σ_n <base>(n) p(n) log q(n)``, ``q`` the circuit's output at
+  ``x = 0``.  Linear in ``p`` (``q`` is constant), so it is a ``LinearObservable`` over
+  ``log q``; ``KL(p || q) = ent(x) - xent(x)``.
 
 **Other**:
 
@@ -55,10 +65,11 @@ two graph families interpret outcomes against).
 from __future__ import annotations
 
 from .base import (BASE_SCORERS, EntropyWeightedObservable, LinearObservable, Observable,
-                   ObservableContext, ObservableFamily, QuadraticObservable,
-                   SelectiveObservable, SquaredObservable, base_observable, base_score_vec,
-                   find_family, is_known_observable, observable_hash_spec, observable_help,
-                   register, resolve_observable)
+                   ObservableContext, ObservableFamily, OscillatoryObservable,
+                   PointwiseObservable, QuadraticObservable, SelectiveObservable,
+                   SquaredObservable, base_observable, base_score_vec, find_family,
+                   is_known_observable, observable_hash_spec, observable_help, register,
+                   resolve_observable)
 
 # Family modules, imported for their registration side effect.  Import order = match order in
 # `find_family` (first match wins) and the order families are listed in the "unknown observable"
@@ -66,13 +77,19 @@ from .base import (BASE_SCORERS, EntropyWeightedObservable, LinearObservable, Ob
 # disjoint from the prefixed composites, which makes the order documentation rather than
 # disambiguation.
 from . import parity, majority, bunching, n_first, single_output, max_prob       # noqa: E402
-from . import prod_parity, prod_angle, sq, pairprod, entropy, loop_path, connected  # noqa: E402
+from . import prod_parity, prod_angle, sq, pairprod                              # noqa: E402
+from . import entropy, cross_entropy, oscillatory                               # noqa: E402
+from . import loop_path, connected                                              # noqa: E402
 from . import graphs                                                            # noqa: E402
 
 from .bunching import bunching_score
 from .connected import (CONNECTED_BASES, clicked_max_component, connected_scores,
                         is_connected_observable, parse_connected_observable)
+from .cross_entropy import (XENT_BASES, XENT_EPS, is_xent_observable, parse_xent_observable,
+                            reference_log_probs, xent_score_vec)
 from .entropy import ENT_BASES, ent_base_vec, is_ent_observable, parse_ent_observable
+from .oscillatory import (OSC_BASES, OSC_EPS, is_osc_observable, osc_base_vec,
+                          parse_osc_observable)
 from .graphs import (MAX_VERTEX_DEGREE, build_matching_graph, build_vertex_graph,
                      is_connected_graph)
 from .loop_path import (GRAPH_BASES, graph_selection, graph_tables, is_graph_observable,
@@ -104,12 +121,13 @@ __all__ = [
     # framework
     "Observable", "ObservableContext", "ObservableFamily", "LinearObservable",
     "SelectiveObservable", "SquaredObservable", "QuadraticObservable",
-    "EntropyWeightedObservable", "MaxProbObservable",
+    "PointwiseObservable", "EntropyWeightedObservable", "OscillatoryObservable",
+    "MaxProbObservable",
     "BASE_SCORERS", "base_observable", "base_score_vec", "find_family", "is_known_observable",
     "observable_help", "observable_hash_spec", "register", "resolve_observable",
     # name sets
-    "OBSERVABLES", "GRAPH_BASES", "CONNECTED_BASES", "SQ_BASES", "ENT_BASES",
-    "PROD_PARITY_PRESETS",
+    "OBSERVABLES", "GRAPH_BASES", "CONNECTED_BASES", "SQ_BASES", "ENT_BASES", "XENT_BASES",
+    "XENT_EPS", "OSC_BASES", "OSC_EPS", "PROD_PARITY_PRESETS",
     "PROD_PARITY_CONSECUTIVE", "PROD_PARITY_SECOND", "PAIRPROD_MAX_FOCK", "MAX_VERTEX_DEGREE",
     # predicates / parsers
     "is_graph_observable", "parse_graph_observable", "resolve_graph_spec",
@@ -118,11 +136,14 @@ __all__ = [
     "is_prod_parity_second", "is_prod_parity_angle", "parse_prod_parity", "parse_prod_segment",
     "is_sq_observable", "parse_sq_observable", "is_pairprod_observable",
     "is_ent_observable", "parse_ent_observable",
+    "is_xent_observable", "parse_xent_observable",
+    "is_osc_observable", "parse_osc_observable",
     # per-Fock-state scorers and table builders
     "parity_score", "parity_modes", "majority_score", "require_even_m", "bunching_score",
     "first_mode_score", "single_output_score", "prod_parity_score", "prod_parity_angle_score",
-    "sq_base_vec", "ent_base_vec", "connected_scores", "clicked_max_component",
-    "graph_selection", "graph_tables", "overlay_counts",
+    "sq_base_vec", "ent_base_vec", "osc_base_vec", "xent_score_vec", "reference_log_probs",
+    "connected_scores", "clicked_max_component", "graph_selection", "graph_tables",
+    "overlay_counts",
     # monomials / graphs / kernels
     "prod_family_monomials", "consecutive_monomials", "second_monomials", "angle_monomials",
     "build_matching_graph", "build_vertex_graph", "is_connected_graph", "occ_matrix",

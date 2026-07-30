@@ -74,7 +74,8 @@ class PhotonicTeacher(Teacher):
         self.obs = resolve_observable(observable, ObservableContext(
             m=m, k=k, keys=self._fock_keys, seed=self.seed, graph_seed=self.graph_seed,
             angle_seed=self.angle_seed, n_vertices=self.n_vertices,
-            graph_density=self.graph_density, input_state=self.input_state))
+            graph_density=self.graph_density, input_state=self.input_state,
+            reference_probs=self.exact_probs_at_zero))   # lazy: only the xent family calls it
         # Row-batch the forward so peak memory scales with the chunk, not the whole pool: the
         # per-forward (N, n_fock) prob matrix (n_fock = C(m+k-1, k)) blows up for large (m, k) --
         # e.g. m=14,k=7 -> n_fock=77520, ~3 GB at N=1e4 in fp32, and merlin's complex amplitudes
@@ -93,6 +94,21 @@ class PhotonicTeacher(Teacher):
     def edges(self):
         """The observable's fixed seeded graph (``loop_path_``/``connected_`` only)."""
         return self.obs.edges
+
+    @torch.no_grad()
+    def exact_probs_at_zero(self) -> torch.Tensor:
+        """``q``: the ``(n_fock,)`` output distribution with every encoded feature set to zero.
+
+        The circuit's *unencoded* interference pattern ``|<n| W2 W1 |in>|^2`` -- the fixed
+        reference the ``xent`` family scores against (:mod:`model.photonic_observables.
+        cross_entropy`).  Always exact: ``shots`` is not applied even when ``nsample > 0``, so the
+        reference carries no sampling noise and is reproducible from the seed alone.  Costs one
+        row through the layer, and is evaluated lazily -- only ``xent[_<base>]`` asks for it.
+
+        Also the way to re-score an ``xent`` observable offline: build a matched-seed teacher and
+        hand the result to :func:`score_from_distribution` as ``reference_probs``.
+        """
+        return self.layer.forward(torch.zeros(1, self.n_features))[0]
 
     @torch.no_grad()
     def forward(self, X: torch.Tensor) -> torch.Tensor:
@@ -170,7 +186,8 @@ def score_from_distribution(dist, observable: str | None = None, *,
                             n_vertices: int | None = None, loop_vars=None,
                             path_vars=None, graph_seed: int | None = None,
                             angle_seed: int | None = None,
-                            graph_density: float | None = None):
+                            graph_density: float | None = None,
+                            reference_probs=None):
     """Re-score a saved photonic distribution (dict from :func:`spoqc_magic.load_distributions`).
 
     Builds the *same* observable object the teacher would and applies it to the stored probs, so
@@ -179,11 +196,14 @@ def score_from_distribution(dist, observable: str | None = None, *,
 
     The knobs that are not persisted in the ``.npz`` must be supplied for the families that need
     them: ``n_vertices`` (+ optional ``loop_vars`` / ``path_vars`` / ``graph_seed``) for
-    ``loop_path_<base>``, ``graph_density`` (+ ``graph_seed``) for ``connected_<base>``.  Any
-    ``__L``/``__P`` suffix in ``observable`` overrides the passed ``loop_vars`` / ``path_vars``, so
-    a sweep can vary the selection purely through the observable string.  ``graph_seed`` and
-    ``angle_seed`` default to the stored teacher ``seed``.  ``single_output`` is the one observable
-    that cannot be re-scored: it needs the input state, which is not persisted.
+    ``loop_path_<base>``, ``graph_density`` (+ ``graph_seed``) for ``connected_<base>``, and
+    ``reference_probs`` -- the ``q`` at ``x = 0``, from
+    :meth:`PhotonicTeacher.exact_probs_at_zero` on a matched-seed teacher -- for
+    ``xent[_<base>]``.  Any ``__L``/``__P`` suffix in ``observable`` overrides the passed
+    ``loop_vars`` / ``path_vars``, so a sweep can vary the selection purely through the observable
+    string.  ``graph_seed`` and ``angle_seed`` default to the stored teacher ``seed``.
+    ``single_output`` is the one observable that cannot be re-scored at all: it needs the input
+    state, which is not persisted and has no override.
 
     Returns ``(n_rows,)`` scores.
     """
@@ -194,7 +214,7 @@ def score_from_distribution(dist, observable: str | None = None, *,
         keys=[tuple(int(v) for v in row) for row in dist["keys"]],
         seed=int(dist["seed"]), graph_seed=graph_seed, angle_seed=angle_seed,
         n_vertices=n_vertices, graph_density=graph_density,
-        loop_vars=loop_vars, path_vars=path_vars,
+        loop_vars=loop_vars, path_vars=path_vars, reference_probs=reference_probs,
         input_state=None,                    # not persisted -> single_output is unavailable
     )
     return resolve_observable(obs_name, ctx).score(probs).numpy()

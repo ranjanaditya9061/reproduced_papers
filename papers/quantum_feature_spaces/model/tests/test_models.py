@@ -152,6 +152,83 @@ def test_entropy_observable_is_negative_entropy_and_rescores():
         assert np.allclose(online.squeeze(-1).numpy(), offline, atol=1e-6)
 
 
+def test_cross_entropy_observable_scores_against_x_zero_reference():
+    """xent = Σ_n p_x(n) log q(n) with q the circuit's output at x = 0 -- linear in p."""
+    import numpy as np
+
+    from model.photonic import LinearObservable, PhotonicTeacher, score_from_distribution
+
+    t = PhotonicTeacher(m=4, k=2, n_features=3, observable="xent", seed=3)
+    q = t.exact_probs_at_zero()
+    assert q.shape == (len(t._fock_keys),)
+    assert abs(float(q.sum()) - 1.0) < 1e-5                  # q is a distribution
+    assert torch.allclose(q, t.layer.forward(torch.zeros(1, 3))[0])
+
+    X = sample_X(12, 3, seed=1)
+    probs = t.layer.forward(X)
+    manual = (probs * torch.log(q.clamp(min=1e-12))).sum(dim=1)
+    assert torch.allclose(t(X).squeeze(-1), manual, atol=1e-5)
+
+    # q is fixed, so the score is LINEAR in p -- unlike pairprod it is not strictly convex
+    assert isinstance(t.obs, LinearObservable)
+    p, r = probs[0:1], probs[1:2]
+    mid = float(t.obs.score((p + r) / 2))
+    avg = (float(t.obs.score(p)) + float(t.obs.score(r))) / 2
+    assert abs(mid - avg) < 1e-5
+
+    # KL(p || q) = ent(x) - xent(x) >= 0, and vanishes at x = 0 where p == q
+    ent = PhotonicTeacher(m=4, k=2, n_features=3, observable="ent", seed=3)
+    assert bool((ent(X) - t(X) >= -1e-5).all())               # Gibbs' inequality
+    zero = torch.zeros(1, 3)
+    assert abs(float(ent(zero)) - float(t(zero))) < 1e-5      # p == q -> KL == 0
+
+    # q is not persisted, so an offline re-score must be handed it back
+    t.enable_distribution_capture()
+    online = t(X).squeeze(-1).numpy()
+    dist = t.captured_distributions()
+    assert np.allclose(online, score_from_distribution(dist, "xent", reference_probs=q), atol=1e-6)
+    try:
+        score_from_distribution(dist, "xent")
+        raise AssertionError("xent re-score without reference_probs should raise")
+    except ValueError:
+        pass
+
+
+def test_oscillatory_observable_is_damped_and_bounded():
+    """osc = Σ_n p(n) sin(1/(p(n)+eps)); the p prefactor bounds it and kills the p=0 terms."""
+    import numpy as np
+
+    from model.photonic import (EntropyWeightedObservable, OSC_EPS, OscillatoryObservable,
+                                PhotonicTeacher, PointwiseObservable, score_from_distribution)
+
+    # osc and ent are the same shape -- Σ v·φ(p) -- differing only in φ
+    assert isinstance(OscillatoryObservable(), PointwiseObservable)
+    assert isinstance(EntropyWeightedObservable(), PointwiseObservable)
+
+    osc = OscillatoryObservable()
+    zeros = torch.zeros(2, 7)
+    assert float(osc.transform(zeros).abs().max()) == 0.0    # φ(0) = 0 exactly, no singularity
+    p = torch.rand(4, 20)
+    p = p / p.sum(dim=1, keepdim=True)
+    assert bool((osc.transform(p).abs() <= p + 1e-7).all())  # |φ(p)| <= p
+    assert float(osc.score(p).abs().max()) <= 1.0            # so |O| <= Σ p = 1
+
+    X = sample_X(12, 3, seed=1)
+    t = PhotonicTeacher(m=4, k=2, n_features=3, observable="osc", seed=3)
+    t.enable_distribution_capture()
+    online = t(X)
+    probs = t.layer.forward(X)
+    manual = (probs * torch.sin(1.0 / (probs + OSC_EPS))).sum(dim=1)
+    assert torch.allclose(online.squeeze(-1), manual, atol=1e-6)
+    assert torch.isfinite(online).all() and float(online.abs().max()) <= 1.0
+
+    # weighted by a base, and re-scorable offline with no extra knobs
+    offline = score_from_distribution(t.captured_distributions(), "osc")
+    assert np.allclose(online.squeeze(-1).numpy(), offline, atol=1e-6)
+    w = PhotonicTeacher(m=4, k=2, n_features=3, observable="osc_parity", seed=3)(X)
+    assert w.shape == (12, 1) and torch.isfinite(w).all()
+
+
 def test_matching_graph_is_connected_perfect_matching():
     from model.photonic import build_matching_graph
 

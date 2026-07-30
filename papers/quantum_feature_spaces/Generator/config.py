@@ -175,28 +175,50 @@ class ExperimentConfig:
             else:
                 prod_family_monomials(p.observable, p.m, p.k)    # validate segments / (m, k)
         elif (p.observable.startswith("sq_") or p.observable == "pairprod"
-                or p.observable == "ent" or p.observable.startswith("ent_")):
+                or p.observable == "ent" or p.observable.startswith("ent_")
+                or p.observable == "osc" or p.observable.startswith("osc_")):
             # Nonlinear observables.  Degree-2 in p (2-copy/collision quantities, not
             # additive-error estimable from single-shot samples): sq_<base> = Σ_n <base>(n) p(n)^2
             # (p^T K p with K diagonal), or pairprod = Σ_{n1,n2} p(n1) p(n2) (-1)^<n1,n2> (a dense,
             # non-separable ±1 kernel).  Not polynomial in p at all -- so not the expectation of
-            # any fixed observable: ent[_<base>] = Σ_n <base>(n) p(n) log p(n), bare ent being
-            # -H(p).  sq_/ent_<base> are signed so no balancing is required; bare ent is
-            # non-positive, so label it by a threshold rather than by sign.
-            from model.photonic import (SQ_BASES, is_ent_observable, is_pairprod_observable,
-                                        is_sq_observable)
+            # any fixed observable -- are the pointwise families Σ_n <base>(n) φ(p(n)):
+            # ent[_<base>] with φ = p log p (bare ent being -H(p)), and osc[_<base>] with
+            # φ = p sin(1/(p + eps)).  sq_/ent_/osc_<base> are signed so no balancing is required;
+            # bare ent is non-positive, so label it by a threshold rather than by sign.  NOTE osc
+            # trades learnability for hardness -- see model.photonic_observables.oscillatory.
+            from model.photonic import (SQ_BASES, is_ent_observable, is_osc_observable,
+                                        is_pairprod_observable, is_sq_observable)
 
             if not (is_sq_observable(p.observable) or is_pairprod_observable(p.observable)
-                    or is_ent_observable(p.observable)):
+                    or is_ent_observable(p.observable) or is_osc_observable(p.observable)):
                 raise ValueError(
-                    f"unknown nonlinear observable {p.observable!r}; expected sq_<base> or "
-                    f"ent[_<base>] (base in {list(SQ_BASES)}) or pairprod"
+                    f"unknown nonlinear observable {p.observable!r}; expected sq_<base>, "
+                    f"ent[_<base>] or osc[_<base>] (base in {list(SQ_BASES)}), or pairprod"
                 )
             if g.generator != "photonic_quantum":
-                raise ValueError("sq_<base> / ent[_<base>] / pairprod observables are "
-                                 "photonic_quantum only")
-            if p.observable in ("sq_majority", "ent_majority") and p.m % 2:
+                raise ValueError("sq_<base> / ent[_<base>] / osc[_<base>] / pairprod observables "
+                                 "are photonic_quantum only")
+            if p.observable in ("sq_majority", "ent_majority", "osc_majority") and p.m % 2:
                 raise ValueError(f"{p.observable} requires an even m")
+        elif p.observable == "xent" or p.observable.startswith("xent_"):
+            # xent[_<base>] = Σ_n <base>(n) p(n) log q(n), scoring against the FIXED reference q =
+            # the circuit's output with every encoded feature at zero.  Because q does not depend
+            # on x this is LINEAR in p -- the plain expectation <log q>, not a hardness witness
+            # like ent -- but it is the other half of KL(p||q) = ent - xent.  q is reproducible
+            # from (m, k, n_features, seed), which already fix the dataset identity, so no extra
+            # hashed knob is needed; it is not persisted in distributions.npz, though, so an
+            # offline re-score must be handed reference_probs explicitly.
+            from model.photonic import SQ_BASES, is_xent_observable
+
+            if not is_xent_observable(p.observable):
+                raise ValueError(
+                    f"unknown cross-entropy observable {p.observable!r}; expected xent or "
+                    f"xent_<base> (base in {list(SQ_BASES)})"
+                )
+            if g.generator != "photonic_quantum":
+                raise ValueError("xent[_<base>] observables are photonic_quantum only")
+            if p.observable == "xent_majority" and p.m % 2:
+                raise ValueError("xent_majority requires an even m")
         else:
             # spoqc_magic allows a ``match{N}_<base>`` prefix (half-agreement pre-selection);
             # validate the base observable and let the teacher check N against m.

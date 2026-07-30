@@ -21,23 +21,25 @@ reloaded from disk identically.
 **Score shapes.**  Most observables are LINEAR in the distribution, and the blocks below cover
 every shape in use, ordered by how hard the value is to estimate from samples:
 
-================================  =========================  ==================================
-class                             score                      character
-================================  =========================  ==================================
-:class:`LinearObservable`         ``probs @ v``              diagonal expectation ``<P>``
-:class:`SelectiveObservable`      ``E[v | keep]``            renormalised masked mean
-:class:`SquaredObservable`        ``(probs * probs) @ v``    degree-2, ``K`` diagonal
-:class:`QuadraticObservable`      ``probs^T K probs``        degree-2, ``K`` dense
-:class:`EntropyWeightedObservable` ``Σ v·p log p``           non-polynomial in ``p``
-================================  =========================  ==================================
+==============================  =========================  ====================================
+class                           score                      character
+==============================  =========================  ====================================
+:class:`LinearObservable`       ``probs @ v``              diagonal expectation ``<P>``
+:class:`SelectiveObservable`    ``E[v | keep]``            renormalised masked mean
+:class:`SquaredObservable`      ``(probs * probs) @ v``    degree-2, ``K`` diagonal
+:class:`QuadraticObservable`    ``probs^T K probs``        degree-2, ``K`` dense
+:class:`PointwiseObservable`    ``Σ v·φ(p)``               non-polynomial in ``p``
+==============================  =========================  ====================================
 
 A linear score is additive-error estimable from single-shot samples in ~1/eps^2 shots (just
 average ``P`` over them), which is the classically easy regime.  The degree-2 rows are 2-copy /
 collision quantities and are not; ``SquaredObservable`` *is* ``QuadraticObservable`` with
 ``K = diag(v)`` and subclasses it -- it exists only because storing the diagonal alone drops the
-cost from O(n_fock^2) to O(n_fock).  The last row is not a polynomial in ``p`` at all, so it is
-not the expectation of any fixed observable.  A family needing none of these subclasses
-:class:`Observable` directly (see :mod:`.max_prob`).
+cost from O(n_fock^2) to O(n_fock).  The last row is the general elementwise-nonlinearity shape:
+pick ``φ`` and the value stops being a polynomial in ``p``, hence stops being the expectation of
+any fixed observable.  Its concrete ``φ``s are :class:`EntropyWeightedObservable`
+(``φ = p log p``) and :class:`OscillatoryObservable` (``φ = p sin(1/(p+eps))``).  A family
+needing none of these subclasses :class:`Observable` directly (see :mod:`.max_prob`).
 """
 
 from __future__ import annotations
@@ -63,8 +65,9 @@ class ObservableContext:
     that pins only ``seed`` still gets a reproducible graph / angle draw.  ``loop_vars`` and
     ``path_vars`` are *programmatic* overrides for the ``loop_path_`` selection; normally the
     selection rides in the observable string instead (``__L0-1__P2``) and these stay ``None``.
-    ``input_state`` is the teacher's photon injection -- available live, but not persisted in a
-    saved distribution, so an observable that needs it cannot be re-scored offline.
+    ``input_state`` is the teacher's photon injection and ``reference_probs`` the fixed reference
+    distribution ``q`` -- both available live, neither persisted in a saved distribution, so an
+    observable needing one cannot be re-scored offline unless it is passed back in.
     """
 
     m: int
@@ -78,6 +81,7 @@ class ObservableContext:
     loop_vars: Sequence[int] | None = None
     path_vars: Sequence[int] | None = None
     input_state: Sequence[int] | None = None
+    reference_probs: Sequence | Callable[[], Sequence] | None = None
 
     def __post_init__(self):
         set_ = object.__setattr__                       # frozen -> resolve defaults in place
@@ -102,6 +106,26 @@ class ObservableContext:
         if missing:
             raise ValueError(f"this observable requires {', '.join(missing)}")
         return tuple(knobs.values()) if len(knobs) > 1 else next(iter(knobs.values()))
+
+    def resolve_reference_probs(self, label: str) -> np.ndarray:
+        """The fixed reference distribution ``q`` as a ``(n_fock,)`` float64 array.
+
+        ``reference_probs`` may be the vector itself or a zero-argument callable returning it.
+        The teacher passes a callable (:meth:`~model.photonic.PhotonicTeacher.exact_probs_at_zero`)
+        so the extra circuit evaluation happens only for the families that actually want ``q``.
+        """
+        q = self.reference_probs
+        if q is None:
+            raise ValueError(
+                f"{label} needs reference_probs -- the output distribution q at x = 0 -- which is "
+                "not persisted in a saved distribution; pass reference_probs=<(n_fock,) vector> "
+                "(e.g. PhotonicTeacher(...).exact_probs_at_zero() on a matched-seed teacher) to "
+                "re-score offline")
+        q = np.asarray(q() if callable(q) else q, dtype=np.float64).ravel()
+        if self.keys and q.shape[0] != self.n_fock:
+            raise ValueError(f"reference_probs has {q.shape[0]} entries but the Fock basis has "
+                             f"{self.n_fock}")
+        return q
 
 
 # --- score shapes ------------------------------------------------------------------------ #
@@ -202,21 +226,46 @@ class SquaredObservable(QuadraticObservable):
         return torch.diag(self.score_vec)
 
 
-class EntropyWeightedObservable(Observable):
-    """``O(x) = Σ_n v_n · p(n) log p(n)`` -- a base-weighted (negative) Shannon entropy.
+class PointwiseObservable(Observable):
+    """``O(x) = Σ_n v_n · φ(p(n))`` -- a weighted sum of an elementwise nonlinearity of the probs.
 
-    With ``v`` omitted (weight ``1`` everywhere) this is ``Σ_n p log p = -H(p)``, the plain
-    negative entropy of the outcome distribution: a pure concentration measure, like
-    :class:`~.max_prob.MaxProbObservable` but reading the whole distribution rather than its
-    peak.  A general ``v`` re-weights each outcome's surprisal contribution by that outcome's
-    base score, so the result reports *where* the mass concentrates and not merely how much.
+    The shared shape of the non-polynomial families: choose the scalar ``φ`` by overriding
+    :meth:`transform` and the rest -- the optional per-outcome weight ``v`` (omitted = ``1``
+    everywhere), the reduction, the buffer plumbing -- comes for free.  A *linear* ``φ`` would
+    just reproduce :class:`LinearObservable`; the point is the ones that are not, whose value is
+    therefore not the expectation of any fixed diagonal observable and cannot be estimated to
+    additive error from a bounded number of single-shot samples.
 
-    Unlike every other family here this is neither linear nor polynomial in ``p``: ``p log p``
-    has no Taylor expansion at ``p = 0``, so the value is not the expectation of any fixed
-    diagonal observable and cannot be estimated to additive error from a bounded number of
-    single-shot samples -- entropy estimation over ``n_fock`` outcomes needs ~``n_fock /
-    log n_fock`` of them.  That places it further from the classically easy regime than the
-    degree-2 forms above, which at least need only two copies.
+    ``φ`` is a method rather than a stored callable so subclasses stay picklable and their
+    parameters (an ``eps``, say) are plain attributes.
+    """
+
+    def __init__(self, score_vec=None):
+        super().__init__()
+        self.register_buffer("score_vec", None if score_vec is None else _as_vec(score_vec))
+
+    def transform(self, probs: torch.Tensor) -> torch.Tensor:
+        """``φ`` applied elementwise to a ``(N, n_fock)`` probability matrix."""
+        raise NotImplementedError
+
+    def score(self, probs: torch.Tensor) -> torch.Tensor:
+        t = self.transform(probs)
+        return t.sum(dim=1) if self.score_vec is None else t @ self.score_vec
+
+
+class EntropyWeightedObservable(PointwiseObservable):
+    """``φ(p) = p log p``, so ``O(x) = Σ_n v_n · p(n) log p(n)`` -- a weighted negative entropy.
+
+    With ``v`` omitted this is ``Σ_n p log p = -H(p)``, the plain negative entropy of the outcome
+    distribution: a pure concentration measure, like :class:`~.max_prob.MaxProbObservable` but
+    reading the whole distribution rather than its peak.  A general ``v`` re-weights each
+    outcome's surprisal contribution by that outcome's base score, so the result reports *where*
+    the mass concentrates and not merely how much.
+
+    ``p log p`` has no Taylor expansion at ``p = 0``, so this is not the expectation of any fixed
+    diagonal observable: entropy estimation over ``n_fock`` outcomes needs ~``n_fock / log
+    n_fock`` samples.  That places it further from the classically easy regime than the degree-2
+    forms above, which at least need only two copies.
 
     Sign: ``p log p <= 0`` for every term, so ``v`` decides entirely.  Unweighted -- or weighted
     by any *non-negative* ``v`` -- the result is non-positive and ``sign(O)`` gives ONE class, so
@@ -228,13 +277,42 @@ class EntropyWeightedObservable(Observable):
     """
 
     def __init__(self, score_vec=None, *, eps: float = 1e-12):
-        super().__init__()
+        super().__init__(score_vec)
         self.eps = float(eps)
-        self.register_buffer("score_vec", None if score_vec is None else _as_vec(score_vec))
 
-    def score(self, probs: torch.Tensor) -> torch.Tensor:
-        plogp = probs * torch.log(probs.clamp(min=self.eps))
-        return plogp.sum(dim=1) if self.score_vec is None else plogp @ self.score_vec
+    def transform(self, probs: torch.Tensor) -> torch.Tensor:
+        return probs * torch.log(probs.clamp(min=self.eps))
+
+
+class OscillatoryObservable(PointwiseObservable):
+    """``φ(p) = p sin(1/(p + eps))``, so ``O(x) = Σ_n v_n · p(n) sin(1/(p(n) + eps))``.
+
+    The reciprocal inside the sine makes ``φ`` oscillate ever faster as ``p -> 0``: the argument
+    sweeps from ``1/eps`` down to ``~0`` over ``p in [0, inf)``, so across a Fock distribution's
+    typical spread of probabilities the sine goes through many full periods.  The ``p`` prefactor
+    damps the amplitude, giving ``|φ(p)| <= p`` and hence ``|O| <= 1`` with no normalisation
+    needed, and making ``φ(0) = 0`` exactly (no singularity: ``eps > 0`` keeps the argument
+    finite, and the prefactor kills the term anyway).
+
+    By a wide margin the hardest family here to estimate from samples, which is its purpose:
+    ``φ'(p) = sin(1/(p+eps)) - p cos(1/(p+eps))/(p+eps)^2`` reaches ~``1/eps`` near ``p ~ eps``.
+    Measured at ``m=6, k=3, eps=1e-3``, the score recomputed from a 100-shot empirical ``p`` is
+    *uncorrelated* with its exact value (``r = -0.07``, against ``0.82`` for ``p log p``) and is
+    still only at ``r = 0.89`` after 100k shots -- so an ``osc`` dataset should be generated with
+    ``nsample = 0``.  It nevertheless stays a real (if rough) function of the input, because the
+    ``p`` prefactor damps exactly the fast-oscillating small-``p`` terms; see :mod:`.oscillatory`
+    for the numbers and for why ``eps`` is not a monotone dial.
+
+    ``eps`` sets the oscillation scale and genuinely changes the observable, so it belongs to the
+    dataset identity; :data:`~.oscillatory.OSC_EPS` fixes it as a module constant.
+    """
+
+    def __init__(self, score_vec=None, *, eps: float = 1e-3):
+        super().__init__(score_vec)
+        self.eps = float(eps)
+
+    def transform(self, probs: torch.Tensor) -> torch.Tensor:
+        return probs * torch.sin(1.0 / (probs + self.eps))
 
 
 # --- families and the registry ------------------------------------------------------------ #
