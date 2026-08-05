@@ -1,0 +1,21 @@
+{
+  "format_version": 2,
+  "model": "analytical",
+  "m": 6,
+  "k": 3,
+  "n_features": 6,
+  "sample_seed": 42,
+  "model_seed": 42,
+  "spec": {
+    "model": "analytical",
+    "freq": 3,
+    "form": "pairwise_sin"
+  },
+  "hash": "a2003ec3",
+  "size": 2000,
+  "n_outcomes": 2,
+  "n_model_parameters": 0,
+  "exact_available": true,
+  "input_state": null,
+  "readout_modes": []
+}

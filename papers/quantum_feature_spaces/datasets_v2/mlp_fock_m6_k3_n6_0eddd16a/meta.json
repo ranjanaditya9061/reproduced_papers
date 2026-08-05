@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "model": "mlp_fock",
+  "m": 6,
+  "k": 3,
+  "n_features": 6,
+  "sample_seed": 42,
+  "model_seed": 42,
+  "spec": {
+    "model": "mlp_fock",
+    "fourier_order": 3,
+    "encoding": "teacher_fourier_v1",
+    "depth": 2,
+    "hidden_size": 128,
+    "weight_gain": 1.0,
+    "normalisation": "complex_amplitude"
+  },
+  "hash": "0eddd16a",
+  "size": 2000,
+  "n_outcomes": 56,
+  "n_model_parameters": 35328,
+  "exact_available": true,
+  "input_state": null,
+  "readout_modes": []
+}

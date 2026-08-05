@@ -1,0 +1,23 @@
+{
+  "format_version": 2,
+  "model": "mlp",
+  "m": 6,
+  "k": 3,
+  "n_features": 6,
+  "sample_seed": 42,
+  "model_seed": 42,
+  "spec": {
+    "model": "mlp",
+    "fourier_order": 3,
+    "encoding": "teacher_fourier_v1",
+    "hidden_size": 12,
+    "n_layers": 3
+  },
+  "hash": "64db5524",
+  "size": 2000,
+  "n_outcomes": 2,
+  "n_model_parameters": 744,
+  "exact_available": true,
+  "input_state": null,
+  "readout_modes": []
+}

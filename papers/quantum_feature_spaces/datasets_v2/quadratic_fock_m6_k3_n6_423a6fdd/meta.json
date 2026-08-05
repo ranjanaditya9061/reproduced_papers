@@ -1,0 +1,24 @@
+{
+  "format_version": 2,
+  "model": "quadratic_fock",
+  "m": 6,
+  "k": 3,
+  "n_features": 6,
+  "sample_seed": 42,
+  "model_seed": 42,
+  "spec": {
+    "model": "quadratic_fock",
+    "fourier_order": 2,
+    "encoding": "teacher_fourier_v1",
+    "amplitudes": "bilinear_random_complex",
+    "outcome_features": "occupation_moments_1_2",
+    "rank": 1
+  },
+  "hash": "423a6fdd",
+  "size": 2000,
+  "n_outcomes": 56,
+  "n_model_parameters": 90,
+  "exact_available": true,
+  "input_state": null,
+  "readout_modes": []
+}

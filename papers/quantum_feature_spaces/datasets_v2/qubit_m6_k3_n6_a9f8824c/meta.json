@@ -1,0 +1,23 @@
+{
+  "format_version": 2,
+  "model": "qubit",
+  "m": 6,
+  "k": 3,
+  "n_features": 6,
+  "sample_seed": 42,
+  "model_seed": 42,
+  "spec": {
+    "model": "qubit",
+    "embedding": "Vlead-IQP-Wtrail",
+    "depth": 3,
+    "lead": true,
+    "basis": "computational_2^n"
+  },
+  "hash": "a9f8824c",
+  "size": 2000,
+  "n_outcomes": 64,
+  "n_model_parameters": 96,
+  "exact_available": true,
+  "input_state": null,
+  "readout_modes": []
+}
