@@ -1,0 +1,4 @@
+problem: {n_features: 6, m: 6, k: 3}
+model:   {kind: photonic, prep: fock, encoding: phase}
+generation: {size: 8}
+seeds:   {sample_seed: 42, model_seed: 42}

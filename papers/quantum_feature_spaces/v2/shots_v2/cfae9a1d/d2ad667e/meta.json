@@ -1,0 +1,9 @@
+{
+  "block": 10000,
+  "shot_seed": 0,
+  "method": "clifford",
+  "n_blocks": 1,
+  "shots": 10000,
+  "size": 20,
+  "n_observed": 364
+}
