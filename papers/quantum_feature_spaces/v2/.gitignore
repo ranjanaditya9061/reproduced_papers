@@ -1,0 +1,10 @@
+# Generated dataset artifacts from the Generator stage
+# (raw pools, teacher weights, metadata — reproducible from configs + seeds).
+datasets/
+
+# Kernel embeddings / Gram caches from the embedding stage
+# (reproducible from the embedding config + dataset).
+embeddings/
+
+
+img/
