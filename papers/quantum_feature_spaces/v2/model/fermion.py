@@ -85,7 +85,7 @@ import torch
 from circuit.encoding import build_encoding
 from circuit.photonic_circuit import default_input_state, sandwich_unitaries, sandwich_unitary_at
 from .base import DistributionModel
-from ..circuit.fock import fock_keys
+from circuit.fock import fock_keys
 
 if TYPE_CHECKING:
     from config import ExperimentConfig

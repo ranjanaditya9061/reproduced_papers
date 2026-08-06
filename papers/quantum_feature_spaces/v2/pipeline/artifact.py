@@ -1,30 +1,35 @@
-"""The on-disk artifact, keyed on the **input and the circuit only**.
+"""Identity, layout, and the one writer of ``meta.json``.
 
-Layout, one directory per logical dataset::
+One directory per circuit, one subdirectory per branch::
 
-    datasets_v2/<model>_m<m>_k<k>_n<n_features>_<hash>/
-    |-- dist.npz      keys (n_out, n_modes) int16
-    |                 probs (N, n_out) float32          <- THE artifact
-    |                 probs_at_zero (n_out,) float32     <- q, so xent is re-scorable
-    |-- circuit.pt    the model's state_dict (W1/W2, theta, W_re/W_im, ...)
-    `-- meta.json     provenance + input_state + circuit_spec
+    datasets_v2/<circuit_hash>/
+    |-- exact/                    dist.npz  (keys, probs, probs_at_zero)
+    |   |                         circuit.pt
+    |   `-- meta.json
+    `-- counts/<shot_tag>/        shots.npz (keys, counts)
+        `-- meta.json
 
-**The observable appears nowhere.**  That is the point of this module.  In the legacy pipeline
-``Generator/artifact.py::_hash_fields`` folded ``TEACHERS[...].hash_spec(cfg)`` into the hash, and
-every Fock teacher's ``hash_spec`` returned ``{"observable": ...}`` -- so ``parity`` and ``osc`` on
-an *identical* circuit with *identical* inputs produced two separate directories and two
-independent boson-sampling runs.  Here the distribution is the artifact and the readout is a cheap
-downstream stage (:mod:`v2.pipeline.score`), so one simulation serves every observable.
+Both branches live under the **same** circuit directory because they are siblings of one generating
+process: perceval implements them with disjoint backends (``CliffordClifford2017`` samples and
+exposes no ``all_prob``; ``SLOS``/``Naive`` expose ``all_prob`` and never sample), and at large
+``(m, k)`` the exact distribution cannot be computed at all -- so shots are not a readout of the
+distribution, but they *are* the same circuit on the same input pool.  ``<shot_tag>`` sits one level
+down because a circuit has one exact distribution but many shot realisations.
 
-:func:`circuit_hash` **enforces** that: if a model's ``circuit_spec`` contains an observable-ish key it
-raises, because that is the one mistake that would silently reintroduce the coupling.
+**One meta writer.**  :func:`save_meta` is the only function anywhere that writes ``meta.json``, and
+both branches call it, so both carry the same circuit-identity block (hash, model, geometry, spec,
+``input_state``, ``readout_modes``) and differ only in the ``**extra`` each passes.  The shots store
+used to write its own ad-hoc meta with none of that, which meant a counts directory could not say
+which circuit produced it.
 
-``size`` is deliberately excluded from the hash, so growing a pool keeps the same directory;
-``meta.json["size"]`` records the current length.
+**The observable appears nowhere.**  :func:`circuit_hash` covers the input and the circuit only, so
+one simulation serves every readout; :func:`_check_spec` raises if a model tries to smuggle an
+observable into its ``circuit_spec``, because that is the one mistake that silently reintroduces the
+coupling (in the legacy pipeline ``parity`` and ``osc`` on an identical circuit produced two
+directories and two independent boson-sampling runs).
 
-Two fields exist purely so that every observable is re-scorable offline, which the legacy format
-could not manage: ``probs_at_zero`` (the ``q`` that ``xent`` scores against) and ``input_state``
-(which ``single_output`` marks).  Both are functions of the circuit alone, so they belong here.
+Quantities you EXTEND stay out of the hash and live in ``meta.json`` -- ``size`` for rows,
+``n_blocks`` for shots -- so growing either keeps the same directory instead of redrawing from zero.
 """
 
 from __future__ import annotations
@@ -35,14 +40,17 @@ from pathlib import Path
 
 import torch
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
+
+EXACT_DIR = "exact"
+COUNTS_DIR = "counts"
 
 DIST_FILENAME = "dist.npz"
+SHOTS_FILENAME = "shots.npz"
 CIRCUIT_FILENAME = "circuit.pt"
 META_FILENAME = "meta.json"
 
-#: Keys that must never appear in a ``circuit_spec``.  A readout is not part of a dataset's
-#: identity; see the module docstring.
+#: Keys that must never appear in a ``circuit_spec``.  A readout is not part of a dataset's identity.
 _FORBIDDEN_SPEC_KEYS = ("observable", "observables", "readout_observable", "score", "soft")
 
 
@@ -51,12 +59,11 @@ def _check_spec(spec: dict, model_name: str) -> dict:
     bad = sorted(set(spec) & set(_FORBIDDEN_SPEC_KEYS))
     if bad:
         raise ValueError(
-            f"model {model_name!r} put {bad} in circuit_spec(). The distribution artifact must "
-            "depend on the INPUT and the CIRCUIT only -- an observable is a readout applied "
-            "afterwards and cached by v2.pipeline.score. Including it here would make the same "
-            "circuit simulate once per readout, which is exactly what v2 exists to fix.\n"
-            "(Note 'readout' itself IS allowed: fermion uses it for det-vs-Perm, which is a "
-            "property of the circuit's physics, not a choice of measurement.)"
+            f"model {model_name!r} put {bad} in circuit_spec(). The artifact must depend on the "
+            "INPUT and the CIRCUIT only -- an observable is a readout applied afterwards, and "
+            "including it here would make the same circuit simulate once per readout.\n"
+            "('readout' itself IS allowed: fermion uses it for det-vs-Perm, a property of the "
+            "circuit's physics rather than a choice of measurement.)"
         )
     return spec
 
@@ -64,23 +71,8 @@ def _check_spec(spec: dict, model_name: str) -> dict:
 def hash_fields(cfg, model) -> dict:
     """The identity fields: input + circuit, and nothing else.
 
-    * input -- ``n_features``, ``sample_seed``, and ``size`` only implicitly (excluded, see above)
-    * circuit -- ``model`` kind, ``m``, ``k``, ``model_seed``, and the model's own
-      ``circuit_spec()`` (prep, encoding, per-family knobs)
-
-    **No shot fields.**  An earlier version hashed ``nsample``, on the argument that it changes the
-    stored distribution so two shot budgets are two datasets.  That is true of what is *stored* but
-    wrong about identity, and it cost three things: a 20k and a 30k budget landed in different
-    directories, so the 30k run re-ran the exact simulation (measured 76% of the work, bit-identical
-    output) *and* redrew from shot zero *and* produced a draw that was not even an extension of the
-    20k one.
-
-    The right rule is the one this module already applies to ``size``: a quantity you EXTEND belongs
-    in ``meta.json``, not in the hash.  Shot blocks are nested and additive
-    (:mod:`v2.pipeline.shots`), so growing the budget keeps the same store, exactly as growing the
-    pool keeps the same directory.  Which *realisation* and how it is partitioned do change the
-    data, so ``shot_seed`` and ``BLOCK`` are hashed -- into the SHOT identity
-    (:func:`v2.pipeline.shots.shot_hash`), never into this one, which stays input + circuit only.
+    Excludes ``size`` and the shot budget (both extendable, both recorded in ``meta.json``) and
+    every readout.  So one hash names one *generating process*, and both branches hang off it.
     """
     return {
         "format_version": FORMAT_VERSION,
@@ -95,45 +87,38 @@ def hash_fields(cfg, model) -> dict:
 
 
 def circuit_hash(cfg, model) -> str:
-    """8-char content hash over input + circuit fields.
-
-    Excludes ``size``, the shot budget, and every readout -- so one hash names one *generating
-    process*, and both branches (exact distribution and shots) hang off it as siblings.
-    """
+    """8-char content hash over the input + circuit fields."""
     blob = json.dumps(hash_fields(cfg, model), sort_keys=True, default=str).encode()
     return hashlib.sha256(blob).hexdigest()[:8]
 
 
-def artifact_dirname(cfg, model) -> str:
-    p = cfg.problem
-    return f"{cfg.model.kind}_m{p.m}_k{p.k}_n{p.n_features}_{circuit_hash(cfg, model)}"
+def circuit_path(cfg, model, root: str | Path = "datasets_v2") -> Path:
+    """``<root>/<circuit_hash>`` -- the directory both branches share."""
+    return Path(root) / circuit_hash(cfg, model)
 
 
-def artifact_path(cfg, model, out_root: str | Path = "datasets_v2") -> Path:
-    return Path(out_root) / artifact_dirname(cfg, model)
+def exact_path(cfg, model, root: str | Path = "datasets_v2") -> Path:
+    """``<root>/<circuit_hash>/exact`` -- the exact-distribution branch."""
+    return circuit_path(cfg, model, root) / EXACT_DIR
 
 
-def save_meta(path: str | Path, cfg, model, *, size: int, n_out: int,
-              exact_available: bool = True) -> Path:
-    """Write ``meta.json``; returns the path."""
+def save_meta(path: str | Path, cfg, model, **extra) -> Path:
+    """Write ``meta.json``: the shared circuit identity plus this branch's ``extra`` fields.
+
+    ``input_state`` and ``readout_modes`` are carried on both branches so every observable stays
+    re-scorable offline -- both are functions of the circuit alone, and the legacy format stored
+    neither, so ``single_output`` could not be re-scored at all.
+    """
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     state = model.input_state()
     meta = {
         **hash_fields(cfg, model),
         "hash": circuit_hash(cfg, model),
-        "size": int(size),
-        "n_outcomes": int(n_out),
         "n_model_parameters": int(model.n_model_parameters()),
-        # Whether dist.npz carries an exact `probs`.  False in the regime where the outcome basis
-        # is too large to enumerate, which is what gates analysis A and B -- both differentiate the
-        # exact p, so neither can run from shots alone.
-        "exact_available": bool(exact_available),
-        # Circuit context that makes every observable offline-re-scorable.  The legacy .npz stored
-        # neither, so `single_output` could not be re-scored at all and `xent` needed a
-        # matched-seed teacher rebuilt by hand.
         "input_state": None if state is None else [int(v) for v in state],
         "readout_modes": [int(v) for v in model.readout_modes()],
+        **extra,
     }
     (path / META_FILENAME).write_text(json.dumps(meta, indent=2))
     return path

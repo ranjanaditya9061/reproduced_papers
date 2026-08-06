@@ -66,7 +66,7 @@ import torch.nn as nn
 
 from .base import DistributionModel
 from .features import TEACHER_FOURIER_VERSION, fourier_dim, fourier_features
-from ..circuit.fock import fock_keys, n_fock
+from circuit.fock import fock_keys, n_fock
 
 if TYPE_CHECKING:
     from config import ExperimentConfig

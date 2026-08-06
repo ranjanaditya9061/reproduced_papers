@@ -26,8 +26,6 @@ back to finite differences there, which the metrics module states explicitly rat
 
 from __future__ import annotations
 
-from collections import Counter
-
 import torch
 
 from circuit.encoding import build_encoding
@@ -60,9 +58,14 @@ class PhotonicModel(DistributionModel):
         """
         return getattr(self.prep, "name", None) == "fock"
 
-    def shot_counts(self, X, *, shots: int | None = None, blocks=None, rows=None,
-                    shot_seed: int = 0) -> list[dict]:
-        """One ``{occupation tuple: count}`` per requested row, from **direct** sampling.
+    def shot_counts(self, X, *, shots: int, offset: int = 0, rows=None,
+                    shot_seed: int = 0) -> list[list[tuple]]:
+        """The **shot sequence** per requested row -- occupation tuples in draw order.
+
+        Named ``shot_counts`` for the abstract declaration in :mod:`v2.model.base`, but it returns
+        sequences, not counts: the order is what lets a stored draw be cropped to a smaller budget
+        exactly (:func:`~v2.pipeline.shots.load_shots`) instead of subsampled.  Aggregate with
+        :func:`~v2.pipeline.shots.to_counts` where counts are actually wanted.
 
         Goes through ``CliffordClifford2017``, which samples the interferometer *without forming a
         distribution* -- so this never calls :meth:`probs`, and never enumerates the outcome basis.
@@ -71,13 +74,14 @@ class PhotonicModel(DistributionModel):
         ``S`` shots touches at most ``S`` of them, against a basis of ``C(m+k-1, k)`` --
         ``20_030_010`` at ``m=20, k=10``, which no dense count vector can hold.
 
-        ``X`` is the full pool; ``rows`` selects which row indices to draw and ``blocks`` which block
-        indices, both defaulting to everything.  The return has one dict per *requested* row, in the
-        order requested -- so a row extension is a list concatenation and a block extension is
-        :func:`~v2.pipeline.shots.merge_shots`.
+        ``X`` is the full pool and ``rows`` selects which row indices to draw, defaulting to all.
+        ``shots`` is how many **new** shots to draw and ``offset`` how many are already stored: the
+        stream is seeded on ``offset``, so ``draw(10k, offset=0) + draw(20k, offset=10k)`` extends a
+        10k store to 30k without touching or reproducing the first 10k.
 
-        ``exqalibur`` is seeded once per block, and the rows of a block are drawn from that one
-        stream, so each block is sampled independently.
+        One ``set_seed`` per call, with the rows drawn from that one stream -- so a draw is
+        reproducible as a whole, but which shots a row gets depends on how many rows precede it.
+        That is a deliberate trade for ``backend.samples(shots)`` in bulk over per-row reseeding.
         """
         if not self.supports_shots:
             raise NotImplementedError(
@@ -89,33 +93,24 @@ class PhotonicModel(DistributionModel):
         from perceval.backends import BACKEND_LIST
 
         from circuit.photonic_circuit import build_sandwich_circuit, default_input_state
-        from pipeline.shots import BLOCK, block_seed, n_blocks_for
+        from pipeline.shots import offset_seed
 
-        if blocks is None:
-            if shots is None:
-                raise ValueError("pass either shots= or blocks=")
-            blocks = range(n_blocks_for(shots))
-        blocks = list(blocks)
         pool = X.detach().cpu().numpy()
         row_idx = list(range(pool.shape[0])) if rows is None else [int(r) for r in rows]
         state = pcvl.BasicState([int(v) for v in
                                 (self.input_state() or default_input_state(self.m, self.k))])
 
-        counters = [Counter() for _ in row_idx]
+        seqs = []
         backend = BACKEND_LIST["CliffordClifford2017"]()
-        for b in blocks:
-            xq.set_seed(block_seed(shot_seed, b))
-            for slot, i in enumerate(row_idx):
-                # The circuit is the only per-row state; the backend is reused across rows.
-                backend.set_circuit(build_sandwich_circuit(
-                    self.m, self.n_features, self.seed, self.encoding,
-                    x=np.asarray(pool[i], dtype=float)))
-                backend.set_input_state(state)
-                for s, n in Counter(backend.samples(BLOCK)).items():
-                    key = tuple(int(v) for v in s)
-                    counters[slot][key] = counters[slot].get(key, 0) + n
-                print(slot, counters[slot])
-        return counters
+        xq.set_seed(offset_seed(shot_seed, offset))
+        for i in row_idx:
+            # The circuit is the only per-row state; the backend is reused across rows.
+            backend.set_circuit(build_sandwich_circuit(
+                self.m, self.n_features, self.seed, self.encoding,
+                x=np.asarray(pool[i], dtype=float)))
+            backend.set_input_state(state)
+            seqs.append([tuple(int(v) for v in s) for s in backend.samples(int(shots))])
+        return seqs
 
     def _resolve_keys_len(self) -> int:
         """Outcome count, when the prep can state it up front (``fock`` can; the spin preps cannot)."""
@@ -123,7 +118,7 @@ class PhotonicModel(DistributionModel):
         if keys is None:
             # A spin prep discovers its basis from perceval per row, so size the chunk on the
             # nominal Fock dimension over the prep's mode count as an upper-bound proxy.
-            from .fock import n_fock
+            from circuit.fock import n_fock
 
             return n_fock(self.prep.outcome_modes(self.m), self.k + 1)
         self._keys = keys

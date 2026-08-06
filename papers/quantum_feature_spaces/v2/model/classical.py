@@ -25,7 +25,7 @@ import torch.nn as nn
 
 from .base import DistributionModel
 from .features import TEACHER_FOURIER_VERSION, fourier_dim, fourier_features
-from ..circuit.fock import binary_keys
+from circuit.fock import binary_keys
 
 if TYPE_CHECKING:
     from config import ExperimentConfig

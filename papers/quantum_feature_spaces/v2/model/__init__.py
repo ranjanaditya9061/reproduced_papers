@@ -33,7 +33,7 @@ on a 2-outcome basis ``parity`` returns the signed score exactly, so no model ne
 from __future__ import annotations
 
 from .base import MODELS, DistributionModel, build_model
-from .fock import binary_keys, fock_keys, n_fock
+from circuit.fock import binary_keys, fock_keys, n_fock
 from .features import TEACHER_FOURIER_VERSION, fourier_features
 from .sampler import sample_X
 

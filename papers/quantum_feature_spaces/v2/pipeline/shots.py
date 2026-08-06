@@ -1,52 +1,43 @@
-"""The shots branch: one ``{outcome_key: count}`` dict per row, drawn in additive blocks.
+"""The counts branch: ``<root>/<circuit_hash>/counts/<method>_s<shot_seed>/``.
 
-    shots_v2/<circuit_hash>/<shot_hash>/counts.npz     ragged per-row counts
-                                        meta.json      n_blocks  <- the EXTENDABLE number
+    shots.npz     keys  (n_observed, n_modes) int16    sorted union of the outcomes seen
+                  seq   (N, S)                uint16   one entry per shot, IN DRAW ORDER
+    meta.json     the shared circuit identity + shot_seed / method / shots / size / n_observed
 
-**The representation is a list of dicts.**  ``S`` shots touch at most ``S`` outcomes while the basis
-is ``C(m+k-1, k)`` (``20_030_010`` at ``m=20, k=10``), so a row is a mapping over what it actually
-observed and nothing is ever sized by the full basis.  The ``(N, n_observed)`` matrix only appears at
-the scoring boundary, in :func:`to_sparse`, where an observable needs aligned columns.
+**The shot sequence, not aggregated counts.**  Storing ``{key: count}`` per row throws away the
+order the shots came in, and with it the ability to ask for a *smaller* budget: from a 40k store the
+only route back to 10k is a hypergeometric subsample, which is a different random draw from the one
+a real 10k run produced.  Recording the sequence makes a smaller budget ``seq[:, :n]`` -- a true
+prefix of the recorded draw, no sampling anywhere.  Counts are one :func:`to_counts` away at the
+scoring boundary, so nothing is lost by not storing them.
 
-**Counts, not probs.**  Integers are what make blocks additive: extending a 20k draw to 30k is
-``Counter(row) + Counter(new)``, exact and with no round-off.  :func:`to_sparse` normalises, so probs
-exist everywhere they are wanted without being the stored form.
+``seq`` holds *indices* into ``keys`` rather than occupation tuples, so a shot costs 2 bytes and the
+outcome basis is never materialised: the key table is the number of **observed** outcomes, against
+``C(m+k-1, k)`` for the full basis -- ``20_030_010`` at ``m=20, k=10``.  The cost of the format is
+that it is ``N x S``: 20 rows x 40k shots is 800k entries, but 2000 rows x 100k shots is 2e8, so the
+budget is now a real storage decision rather than a free parameter.
 
-**A sibling of the exact distribution, not a readout of it.**  perceval implements the two with
-disjoint backends -- ``CliffordClifford2017`` samples and exposes no ``all_prob``, ``SLOS``/``Naive``
-expose ``all_prob`` and never sample -- and at large ``(m, k)`` the exact distribution cannot be
-computed at all.  So shots cannot be *defined* as a downstream stage of the full distribution the way
-an observable can.  What the branches share is the circuit and the input pool, which is exactly what
-:func:`v2.pipeline.artifact.circuit_hash` covers.
+**Seeded on the shot offset.**  :func:`offset_seed` keys ``exqalibur`` on *how many shots are already
+saved* -- nothing stored means offset 0, 10k stored means offset 10_000.  Extending to 30k seeds at
+10_000 and draws only the 20k new shots, which are appended; the stored prefix is never rewritten, so
+the 10k answer stays bit-identical after you grow.  Both directions work and there is nothing to
+quantise, which is why ``BLOCK`` and its four helper functions are gone and ``generation.shots`` is
+now used literally instead of being rounded up.
 
-**What is hashed.**  ``BLOCK``, ``shot_seed`` and ``method`` go into :func:`shot_hash`, because each
-changes the draws.  ``n_blocks`` does **not**: it is the quantity you extend, so it lives in
-``meta.json``, exactly as ``size`` does for the row pool.  Raising ``generation.shots`` therefore
-adds blocks to the same store instead of landing in a new directory and redrawing from shot zero.
-
-**One seed per block.**  ``exqalibur`` is seeded once per block, so the draws within a block depend
-on how the rows are traversed; a block is reproducible as a whole, an individual row is not.  That is
-a deliberate trade for ``backend.samples(BLOCK)`` in bulk over per-sample draws.
+**Rows share a stream within one draw call**, so which shots a given row gets depends on how many
+rows precede it.  A draw is reproducible as a whole and a *shot* extension is exact; a **row**
+extension is not bit-stable, which is the one thing this scheme does not fix.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
-import math
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import torch
 
-#: Shots per block.  **Part of the shot identity**: changing it repartitions the draws, so it is
-#: hashed rather than documented.  10k is small enough for fine budget steps and large enough that
-#: the per-block overhead is negligible.
-BLOCK = 10_000
-
-COUNTS_FILENAME = "counts.npz"
-SHOT_META_FILENAME = "meta.json"
+from .artifact import COUNTS_DIR, SHOTS_FILENAME, circuit_path, load_meta, save_meta
 
 #: How the shots were produced.  ``"clifford"`` samples the interferometer directly -- no
 #: distribution is ever formed, which is what makes this branch a sibling of the exact one.  A
@@ -56,147 +47,143 @@ SHOT_META_FILENAME = "meta.json"
 METHODS = ("clifford",)
 
 
-def n_blocks_for(shots: int) -> int:
-    """Blocks needed to cover ``shots``, rounding **up**: ``45_000 -> 5`` blocks (``50_000``)."""
-    return int(math.ceil(max(int(shots), 0) / BLOCK))
+def offset_seed(shot_seed: int, offset: int) -> int:
+    """32-bit ``exqalibur`` seed for the draw that starts at shot ``offset``.
 
-
-def realised_shots(n_blocks: int) -> int:
-    return int(n_blocks) * BLOCK
-
-
-def block_seed(shot_seed: int, block: int) -> int:
-    """32-bit ``exqalibur`` seed for one block.
-
-    Hash-derived rather than ``base + block`` so the shot stream never aliases the circuit's weight
+    Hash-derived rather than ``base + offset`` so the shot stream never aliases the circuit's weight
     stream -- with an additive offset, ``noise(model_seed=42)`` collided with ``weights(model_seed=55)``.
-    Folded to 32 bits here because that is what ``exqalibur.set_seed`` takes.
+    Folded to 32 bits because that is what ``exqalibur.set_seed`` takes.
     """
-    blob = f"{int(shot_seed)}:shot:{int(block)}".encode()
+    blob = f"{int(shot_seed)}:shot:{int(offset)}".encode()
     return int.from_bytes(hashlib.sha256(blob).digest()[:4], "little")
 
 
-# --- identity -------------------------------------------------------------------------------- #
-
-
 def shot_spec(cfg, *, method: str = "clifford") -> dict:
-    """Identity fields of a shot *realisation*.  Note ``n_blocks`` is deliberately absent."""
+    """Identity fields of a shot *realisation*.  The budget is deliberately absent -- you extend it."""
     if method not in METHODS:
         raise ValueError(f"unknown shot method {method!r}; choose from {list(METHODS)}")
-    return {"block": BLOCK, "shot_seed": int(cfg.seeds.shot_seed), "method": method}
+    return {"shot_seed": int(cfg.seeds.shot_seed), "method": method}
 
 
-def shot_hash(cfg, *, method: str = "clifford") -> str:
-    blob = json.dumps(shot_spec(cfg, method=method), sort_keys=True).encode()
-    return hashlib.sha256(blob).hexdigest()[:8]
+def shot_tag(cfg, *, method: str = "clifford") -> str:
+    """``<method>_s<shot_seed>`` -- the realisation's directory name.
+
+    Spelled out rather than hashed: the circuit needs a digest because its ``spec`` is an arbitrary
+    dict, but a realisation is two scalars, so the tag just contains them.  ``shot_seed`` is the
+    config seed, **not** what exqalibur is seeded with -- that is :func:`offset_seed`.
+    """
+    spec = shot_spec(cfg, method=method)
+    return f"{spec['method']}_s{spec['shot_seed']}"
 
 
-def shots_path(cfg, model, *, method: str = "clifford",
-               shots_root: str | Path = "shots_v2") -> Path:
-    from .artifact import circuit_hash
-    return Path(shots_root) / circuit_hash(cfg, model) / shot_hash(cfg, method=method)
+def shots_path(cfg, model, *, method: str = "clifford", root: str | Path = "datasets") -> Path:
+    """``<root>/<circuit_hash>/counts/<shot_tag>`` -- beside the exact branch, same circuit."""
+    return circuit_path(cfg, model, root) / COUNTS_DIR / shot_tag(cfg, method=method)
 
 
-# --- the rows --------------------------------------------------------------------------------- #
+def shot_source_tag(shot_meta: dict) -> str:
+    """``<method>_s<shot_seed>_n<shots>`` -- names the *labels* a draw produces, for the score cache.
+
+    The realisation **and** the budget, because both change the labels: 10k-shot ``parity`` is not
+    40k-shot ``parity``, so they cannot share a cache entry.  Takes ``meta`` rather than ``cfg``
+    because the scorer has only the loaded store -- and lives here, beside :func:`shot_tag`, so the
+    naming is not re-derived by hand in :mod:`v2.pipeline.score`.
+
+    Uses the *returned* ``meta["shots"]``, which :func:`load_shots` sets to the cropped width -- so a
+    crop to 10k caches under ``_n10000`` even when the store holds 40k.
+    """
+    return f"{shot_meta['method']}_s{int(shot_meta['shot_seed'])}_n{int(shot_meta['shots'])}"
+
+
+# --- the in-memory form ------------------------------------------------------------------------- #
 #
-# A draw is `list[dict[tuple[int, ...], int]]`: one mapping per row, occupation tuple -> count.
-# There is no wrapper class -- a list of dicts already supports everything the branch needs
-# (`+` extends blocks, `+` on the lists extends rows, `len` is the row count).
+# `list[list[tuple[int, ...]]]`: one list of occupation tuples per row, in draw order.  Plain lists,
+# so both extensions are concatenation -- `a + b` per row grows the budget, `seqs + new` grows the
+# pool -- and no wrapper class is needed.
 
 
-def merge_shots(a: list[dict], b: list[dict]) -> list[dict]:
-    """Add ``b``'s counts into ``a``'s, row by row -- how the shot budget extends.
+def to_index(seqs: list[list[tuple]]):
+    """``(keys, seq)``: raw outcome tuples as a sorted key table plus an ``(N, S)`` index array.
 
-    Rows past the end of either side are carried through, so this also tolerates a ragged pair.
-    Counts stay integers, so a smaller budget stays a prefix of a larger one.
+    Every row must have the same number of shots; a ragged draw is a bug in the caller, not
+    something to pad over.
     """
-    out = []
-    for i in range(max(len(a), len(b))):
-        lhs = Counter(a[i]) if i < len(a) else Counter()
-        lhs.update(b[i] if i < len(b) else {})
-        out.append(dict(lhs))
-    return out
-
-
-def observed_keys(rows: list[dict]) -> tuple:
-    """Sorted union of the keys any row observed.  Sorted so the column order is deterministic."""
-    seen: set = set()
-    for row in rows:
-        seen.update(row)
-    return tuple(sorted(seen))
-
-
-def total_shots(rows: list[dict]) -> int:
-    """Shots in the first row -- the per-row budget (every row gets the same number)."""
-    return int(sum(rows[0].values())) if rows else 0
-
-
-def to_sparse(rows: list[dict], keys: tuple | None = None):
-    """``(keys, probs)``: the per-row dicts as an aligned ``(N, len(keys))`` float32 matrix.
-
-    The one place the matrix form is built, because an observable needs a score vector aligned to
-    columns.  ``keys`` defaults to the observed union, so the width is the number of *observed*
-    outcomes and never ``C(m+k-1, k)``; pass it explicitly to align onto a declared basis.
-    """
-    keys = observed_keys(rows) if keys is None else tuple(keys)
+    widths = {len(row) for row in seqs}
+    if len(widths) > 1:
+        raise ValueError(f"rows have differing shot counts {sorted(widths)}; every row gets the same "
+                         "budget, so this means a draw was assembled wrongly")
+    keys = tuple(sorted({key for row in seqs for key in row}))
     col = {key: i for i, key in enumerate(keys)}
-    counts = torch.zeros(len(rows), len(keys), dtype=torch.float64)
-    for i, row in enumerate(rows):
-        for key, n in row.items():
-            counts[i, col[key]] = float(n)
-    probs = counts / counts.sum(dim=1, keepdim=True).clamp(min=1)
-    return keys, probs.to(torch.float32)
+    dtype = np.uint16 if len(keys) < np.iinfo(np.uint16).max else np.int32
+    seq = np.asarray([[col[key] for key in row] for row in seqs], dtype=dtype)
+    return keys, seq.reshape(len(seqs), widths.pop() if widths else 0)
 
 
-def score_sparse(name: str, ctx, rows: list[dict]) -> torch.Tensor:
-    """Score ``name`` from the observed outcomes alone -- the finite-sample readout.
-
-    Equivalent to scoring the dense empirical distribution, to float round-off, but never builds a
-    table over the unobserved outcomes.  Every implemented observable agrees with its full-basis
-    value on such a subset, because an unobserved outcome contributes nothing -- see
-    :func:`v2.observable.base.observable_on_keys` for the one shape that would not.
-    """
-    from observable import observable_on_keys
-
-    keys, probs = to_sparse(rows)
-    return observable_on_keys(name, ctx, keys).score(probs)
+def to_seqs(keys: tuple, seq: np.ndarray) -> list[list[tuple]]:
+    """Inverse of :func:`to_index` -- back to raw tuples, which is what extension concatenates."""
+    return [[keys[j] for j in row] for row in seq.tolist()]
 
 
-# --- store ------------------------------------------------------------------------------------ #
-#
-# Ragged dicts go to disk in the flat CSR-ish triple (indptr, keys, counts) -- so the file tracks the
-# number of observed outcomes, never the basis size, and there is no padding to a common width.
+def to_counts(keys: tuple, seq: np.ndarray) -> torch.Tensor:
+    """``(N, n_keys)`` int64 counts -- the aggregate form scoring wants, built at the boundary."""
+    counts = np.zeros((seq.shape[0], len(keys)), dtype=np.int64)
+    for i, row in enumerate(seq):
+        counts[i] = np.bincount(row, minlength=len(keys))
+    return torch.from_numpy(counts)
 
 
-def save_shots(path: str | Path, rows: list[dict], spec: dict, *, n_blocks: int) -> Path:
+# --- store ---------------------------------------------------------------------------------------- #
+
+
+def save_shots(path: str | Path, seqs: list[list[tuple]], cfg, model, *,
+               method: str = "clifford") -> Path:
+    """Write ``shots.npz`` and ``meta.json`` together, so the store is never half-described."""
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    flat_keys = [key for row in rows for key in row]
-    n_modes = len(flat_keys[0]) if flat_keys else 0
+    keys, seq = to_index(seqs)
     np.savez_compressed(
-        path / COUNTS_FILENAME,
-        indptr=np.cumsum([0] + [len(row) for row in rows]).astype(np.int64),
-        keys=np.asarray(flat_keys, dtype=np.int16).reshape(len(flat_keys), n_modes),
-        counts=np.asarray([n for row in rows for n in row.values()], dtype=np.int32),
+        path / SHOTS_FILENAME,
+        keys=(np.asarray([[int(c) for c in key] for key in keys], dtype=np.int16) if keys
+              else np.zeros((0, 0), dtype=np.int16)),
+        seq=seq,
     )
-    (path / SHOT_META_FILENAME).write_text(json.dumps(
-        {**spec, "n_blocks": int(n_blocks), "shots": realised_shots(n_blocks),
-         "size": len(rows), "n_observed": len(observed_keys(rows))}, indent=2))
+    save_meta(path, cfg, model, **shot_spec(cfg, method=method), shots=int(seq.shape[1]),
+              size=int(seq.shape[0]), n_observed=len(keys))
     return path
 
 
-def load_shots(path: str | Path):
-    """``(rows, meta)`` -- one ``{key: count}`` per row, and ``n_blocks``."""
-    path = Path(path)
-    with np.load(path / COUNTS_FILENAME) as z:
-        indptr, keys, counts = z["indptr"], z["keys"], z["counts"]
-    rows = [{tuple(int(c) for c in keys[j]): int(counts[j]) for j in range(indptr[i], indptr[i + 1])}
-            for i in range(len(indptr) - 1)]
-    return rows, json.loads((path / SHOT_META_FILENAME).read_text())
+def load_shot_probs(path: str | Path, num_shots: int | None = None):
+    """``(keys, probs, meta)`` -- the store as the ``(N, n_keys)`` float32 matrix scoring wants.
 
-
-def load_shot_probs(path: str | Path):
-    """``(keys, probs, meta)`` -- the store as the aligned matrix scoring wants."""
-    rows, meta = load_shots(path)
-    keys, probs = to_sparse(rows)
+    The empirical distribution over the first ``num_shots`` shots of each row.  Every row carries the
+    same budget, so the normaliser is ``meta["shots"]`` rather than a per-row sum.
+    """
+    keys, seq, meta = load_shots(path, num_shots)
+    shots = int(meta["shots"]) 
+    if num_shots:
+        shots = num_shots
+    probs = to_counts(keys, seq).to(torch.float32) / shots
     return keys, probs, meta
+
+
+def load_shots(path: str | Path, num_shots: int | None = None):
+    """``(keys, seq, meta)``.  ``num_shots`` crops to that many shots per row; ``None`` is everything.
+
+    The crop is a prefix of the recorded draw, so it *is* the first ``num_shots`` shots -- not a
+    resample of the stored ones.  ``meta["shots"]`` is set to what was returned, so normalising with
+    it stays correct after a crop.
+    """
+    path = Path(path)
+    with np.load(path / SHOTS_FILENAME) as z:
+        keys = tuple(tuple(int(c) for c in row) for row in z["keys"])
+        seq = z["seq"]
+
+    if num_shots is not None:
+        if int(num_shots) > seq.shape[1]:
+            raise ValueError(f"asked for {int(num_shots)} shots but {path} stores {seq.shape[1]}; "
+                             "raise generation.shots and re-run generate to draw the rest")
+        seq = seq[:, :int(num_shots)]
+
+    meta = load_meta(path)
+    meta["shots"] = int(seq.shape[1])
+    return keys, seq, meta
