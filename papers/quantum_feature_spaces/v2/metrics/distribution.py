@@ -54,10 +54,12 @@ import math
 import torch
 from torch.func import jacrev
 
-#: Outcomes with ``p <= tol`` are treated as off-support and **masked**, not clamped.  For
-#: ``fermion`` at ``flavours=1``, ``p_n`` is identically 0 in ``x`` on bunched outcomes (a repeated
-#: column kills the determinant), so ``(d_i p)^2 / p`` there is a genuine ``0/0``.  Clamping would
-#: return the right number while hiding that the two models have different support sizes.
+#: Outcomes with ``p <= tol`` are treated as off-support and **masked**, not clamped, since
+#: ``(d_i p)^2 / p`` at ``p = 0`` is a genuine ``0/0`` and clamping would return the right number
+#: while hiding a support mismatch.  The motivating case was strict free fermions, where a repeated
+#: column kills the determinant and ``p_n`` is identically 0 in ``x`` on the whole bunched sector;
+#: ``fermion`` now has full support by construction (see :mod:`v2.model.fermion`), but its bunched
+#: outcomes still reach ``1e-8``-ish, and the shots path still produces never-observed outcomes.
 SUPPORT_TOL = 1e-12
 
 

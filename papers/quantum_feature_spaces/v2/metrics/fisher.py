@@ -65,7 +65,8 @@ import torch
 EPS = 1e-2
 
 #: Outcomes with ``p <= tol`` are **masked, not clamped**.  ``(d_i p)^2 / p`` is a genuine ``0/0``
-#: there -- for ``fermion`` at ``flavours=1`` whole bunched outcomes are identically zero in ``x``.
+#: there -- the motivating case was strict free fermions, whose whole bunched sector is identically
+#: zero in ``x``, still reachable via :meth:`v2.model.fermion.FermionModel.collision_free_probs`.
 #: On the shots path this is also what drops never-observed outcomes.
 SUPPORT_TOL = 1e-12
 

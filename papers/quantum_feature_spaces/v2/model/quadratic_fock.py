@@ -31,8 +31,9 @@ model is ``W_re, W_im``.
 
 1. The legacy docstring reported ``O(m^3)`` (840 at ``m=6`` against the circuit's 72).  That was an
    artifact of ``n_features = m - 1``, which made ``d_x = O(m)`` multiply ``d_phi = O(m^2)``.  With
-   ``n_features`` a fixed study invariant (:data:`v2.config.N_FEATURES`), ``d_x`` is a **constant**
-   and the count is ``O(m^2)`` -- the circuit's scaling -- with no change to the model at all.
+   ``n_features`` held fixed across a comparison (``problem.n_features``, independent of ``m``),
+   ``d_x`` is a **constant** and the count is ``O(m^2)`` -- the circuit's scaling -- with no change
+   to the model at all.
 2. Same scaling is not the same count: full-rank at ``n_features=6, order=2`` is
    ``2 * 24 * 21 = 1008`` against ``71``.  So ``W = A B^T`` is optionally **low-rank**, giving
    ``2r(d_x + d_phi)`` parameters with ``r`` the single dial.  ``r`` is ``O(1)`` while

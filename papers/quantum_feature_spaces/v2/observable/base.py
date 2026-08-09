@@ -562,8 +562,8 @@ def observable_on_keys(name: str, ctx: ObservableContext, keys) -> Observable:
     """Build ``name`` against an arbitrary outcome basis -- the finite-sample entry point.
 
     Every family builds its per-outcome tables from ``ctx.keys``, so restricting the basis to the
-    outcomes actually observed is just a different context.  Verified on ``fermion`` at
-    ``flavours=1``, whose 36 structurally-zero outcomes give a natural partial basis: all eleven
+    outcomes actually observed is just a different context.  Verified on the fermion model's
+    collision-free sector, whose 36 absent outcomes give a natural partial basis: all eleven
     families tested agree with the full-basis score to ``<= 4.8e-7`` (float32 round-off).
 
     That works because an unobserved outcome contributes nothing to any implemented shape --

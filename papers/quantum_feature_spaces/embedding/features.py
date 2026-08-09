@@ -260,7 +260,8 @@ class QubitProjectedEmbedding(Embedding):
 
     def __init__(self, n_features: int, depth: int, seed: int, lead: bool = True):
         self.n = n_features
-        self.fm = QubitFeatureMap(n_features, depth=depth, seed=seed, lead=lead)
+        self.fm = QubitFeatureMap(n_features, n_features=n_features, depth=depth, seed=seed,
+                                  lead=lead)
 
     def features(self, X: torch.Tensor) -> torch.Tensor:
         return projected_features(self.fm(X), self.n)

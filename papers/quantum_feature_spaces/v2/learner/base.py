@@ -17,8 +17,10 @@ given ``x``, the ideal model's log-likelihood is ``+inf``, and no finite KL exis
 valid proper score but is dominated by ``sigma^2_train`` -- i.e. by the label's scale.
 
 Measured, which is why this is stated rather than assumed: across the paired arms the label
-variances differ by up to ``4.5e12`` (``bunching`` is structurally *constant* on the ``det`` arm,
-since free fermions at ``flavours=1`` put exactly zero mass on bunched outcomes), and the paired
+variances differ by up to ``4.5e12`` (measured when the ``det`` arm was strict free fermions, where
+``bunching`` is structurally *constant* because the bunched sector carries exactly zero mass -- the
+current readout has full support, so that extreme is now reached only via
+:meth:`v2.model.fermion.FermionModel.collision_free_probs`, but the spread remains large), and the paired
 ``log_likelihood`` difference there is ``-12.8`` while the ``R^2`` difference is ``+0.24``.  The two
 disagree in sign because one renormalises by label variance and the other does not.
 

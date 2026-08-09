@@ -26,11 +26,13 @@ Four stages, each with one responsibility:
 
 ### 1.1 The one invariant that shapes everything: `n_features` is fixed
 
-`v2.config.N_FEATURES = 6`, enforced at load. **Not a knob.** Every complexity measure in §3–4
-is denominated in it — the input Fisher matrix is `n_features × n_features`, `r_eff ∈ [0, n_f]`,
-`exp(H) ∈ [1, n_f]`, and the description cost `½ Σᵢ log(1 + λᵢ/ε²)` has `n_f` terms. Vary it and
-you conflate "more input dimensions" with "harder map", which is the same objection that rules out
-a weight-space Fisher matrix. Results at two values are two non-comparable studies.
+`problem.n_features` is required per config (no `m - 1` fallback), and `v2.config.check_commensurable`
+rejects any grid or sweep that mixes values. **Not a knob within a comparison.** Every complexity
+measure in §3–4 is denominated in it — the input Fisher matrix is `n_features × n_features`,
+`r_eff ∈ [0, n_f]`, `exp(H) ∈ [1, n_f]`, and the description cost `½ Σᵢ log(1 + λᵢ/ε²)` has `n_f`
+terms. Vary it and you conflate "more input dimensions" with "harder map", which is the same
+objection that rules out a weight-space Fisher matrix. Results at two values are two non-comparable
+studies — which is why the check is on the grid rather than on a global constant.
 
 What it buys: **the `(m, k)` sweep becomes well-posed.** At fixed `n_f` the circuit grows while `F`
 stays `6×6`, so spectra are stackable across sizes *and* across model families. The legacy default
@@ -162,8 +164,10 @@ Fᵢⱼ(x)  =  Σ_{n ∈ supp(p)} (1/pₙ) (∂pₙ/∂xᵢ)(∂pₙ/∂xⱼ)
 resolvable singular-value ratio of `1e-7` becomes an eigenvalue ratio of `1e-14`, at the edge of
 double-precision round-off.
 
-Sum over the **support only**; do not clamp `p` and divide. For `fermion` at `flavours=1`, `pₙ ≡ 0`
-identically in `x` on bunched outcomes, so those terms are a genuine `0/0` and must be *masked*.
+Sum over the **support only**; do not clamp `p` and divide. Where `pₙ ≡ 0` identically in `x` those
+terms are a genuine `0/0` and must be *masked* — the motivating case being strict free fermions on
+the bunched sector (`FermionModel.collision_free_probs`), and, on the shots path, never-observed
+outcomes.
 
 Three consequences of choosing `x` over the weights, all load-bearing:
 
@@ -545,48 +549,80 @@ at `m=6`), so the low-rank factorisation gives `r` as the matching dial:
 
 ---
 
-## 6. The fermion model: what "flavoured" actually required
+## 6. The fermion model: matching support without losing the determinant
 
 `p_fermion(n) = |det(U_{s,n})|²` on the **same** circuit — same `W₁,W₂`, same seed, same input
 state, same basis, same scoring code. The canonical classical/quantum line: a permanent is `#P`-hard
 while a determinant is `O(k³)`.
 
+**Which index picks rows is fixed by the physics, not a convention.** On the circuit matrix
+`M = W₂D(x)W₁`, the **input state picks columns and the outcome picks rows**: the submatrix is
+`M[T, S]` with `S` the input's occupied modes and `T` the outcome's. Equivalently, on
+`U = Mᵀ` — what `sandwich_unitary_at` returns, and what the code indexes — the input picks rows and the
+outcome picks columns, since `U[S,T] = M[T,S]ᵀ`. The `.T` *is* the convention, which is why it must not
+be dropped: `U[T,S]ᵀ = Uᵀ[S,T]`, so swapping the roles evaluates on the transposed unitary and gives a
+different distribution (measured `|det|²` of `0.0585` vs `0.0011` on one `U`, `S`, `T`). What *is* free
+is transposing the submatrix once selected, since `Perm` and `det` are transpose-invariant — which is
+why `det(U[S,T]) = det(M[T,S])` and the two readings agree. The merlin agreement below is the check
+that this is not off by a transpose.
+
+The phase-power construction inherits the same fixing: `col_p` acts on `U[S, j]`, the amplitudes into
+outcome mode `j` indexed by the `k` input modes, because it is the *outcome* mode that repeats.
+
 Strict free fermions put **exactly zero** mass on bunched outcomes (a repeated column kills a
 determinant), leaving support at `C(m,k)` — 20 of 56 at `m=6,k=3`. A naive comparison against the
 boson model then conflates *support size* with *matrix function*.
 
-**The subtlety a first implementation got wrong.** The interferometer is flavour-blind, so the lifted
-unitary is `U ⊗ I_r` — *flavour-diagonal*, hence **flavour is conserved**. Lifting alone changes
-nothing: with every input photon in flavour 0, any bunched outcome needs a photon in another flavour,
-which is unreachable, so the determinant still vanishes and `r > 1` merely reproduces the `r = 1`
-physics inside flavour 0. *(Diagnosed empirically: `n_allowed` grew from 20 → 50 while bunched mass
-stayed exactly 0.)*
+**What was tried first, and why it was abandoned.** Giving each mode `r` internal states (spinful
+fermions) and summing over flavour-conserving assignments does open the bunched sector, but the
+interferometer is flavour-blind, so the lifted unitary `U ⊗ I_r` is flavour-diagonal and the `k×k`
+determinant **block-factorises** into blocks of size `k/r`. At `r = k` every block is `1×1`: no
+determinant survives at all, and the model reduces to
+`p(n) = Perm(|U|²)/∏ⱼnⱼ!` — the classical distinguishable-particle distribution. Precisely the
+setting with full support was the setting with zero determinant content, and the two goals were in
+direct opposition. (The `216` assignments measured at `m=6,k=3,r=3` are `6³`: all maps from 3
+labelled particles to 6 modes, which is the tell.) Retired; `model.flavours` is rejected.
 
-Two things are required:
-
-1. input photons **distributed across flavours** (photon `j` takes flavour `j mod r`), so two
-   photons of different flavour can share a spatial mode;
-2. a **sum over flavour-conserving assignments**, since only the *spatial* occupation is observed:
+**What replaced it.** The `p`-th copy of a repeated column is modified rather than duplicated:
 
 ```
-p(n)  =  Σ_assignments  Π_f |det(U[S_f, T_f])|²
+col_p(c) = (c/|c|)^p · |c|^(1 + s(1/p − 1)),     s = k/m
 ```
 
-`S_f` = input modes carrying flavour `f`, `T_f` = output modes assigned to it. The product form is
-exactly *because* `U ⊗ I_r` is flavour-diagonal: the `k×k` determinant block-factorises, so the
-lifted matrix is never needed — only the spatial `U`.
+Integer power on the **phase**, fractional on the **modulus**. The split is load-bearing:
 
-Measured at `m=6, k=3` (input `[1,0,1,0,1,0]`):
+- the phase power breaks the degeneracy — holding it at 1 leaves both columns with identical
+  entrywise phases, hence near-proportional (`cond ≈ 26` vs `≈ 5`), and bunched mass collapses to 0.07;
+- it must be an **integer**: `arg` is defined mod `2π`, so a fractional phase power is multivalued and
+  jumps by `2π/p` when an entry of `U` crosses the branch cut. That flips *one entry*, and `|det|²` is
+  invariant only under a *whole-column* phase — measured `0.318 → 0.0038` across `|Δx| = 3.6e-9`, with
+  the finite difference then diverging as `1/h`. Integer powers come around and are exactly continuous;
+- the modulus power sets bunched mass. Since `|Uᵢⱼ| < 1`, smaller exponent *enhances* bunching — the
+  boson direction. `s = 0` undershoots, `s = 1` overshoots.
 
-| r | reachable / 56 | assignments | mean bunched mass |
-|---|---|---|---|
-| 1 | 20 (= `C(6,3)`) | 20 | 0.000000 (exactly) |
-| 2 | 50 | 90 | 0.317 |
-| 3 | 56 (all) | 216 | 0.403 |
+`s = k/m` (the filling fraction) is why: boson bunched mass falls as modes grow plentiful relative to
+photons, and fixed `s` is nearly flat in `m` so cannot track it. Error in mean bunched mass against
+the boson model, over `m = 6..12` at `k = 3, 4`:
 
-The 6 outcomes missing at `r=2` are the triply-occupied ones: three photons in one mode need three
-distinct flavours. At `r = k` support is complete. So the gap **narrows** with `r` rather than
-closing at `r=2`, and `n_reachable` reports the truth so the shared-support comparison stays honest.
+| | `s = 0` | `s = 0.5` | `s = 1` | `s = k/m` |
+|---|---|---|---|---|
+| mean \|err\| | 18.0% | 9.5% | 31.4% | **1.8%** |
+| worst case | −25.4% | +22.2% | +67.9% | **−5.5%** |
+
+No free parameter. (`s = 1/2` looks good only at `k/m = 1/2`; fitting `s` per config matches exactly
+but defines the model by its comparator, and the objective is flat near the optimum anyway.) No
+`1/∏ⱼnⱼ!` factor is applied — invisible on the collision-free sector, underived for the bunched one,
+and imposing it pushes the rule's error to 32.9%.
+
+**What this buys and what it costs.** Full `C(m+k−1,k)` support from one `O(k³)` determinant, matched
+to the boson model on support *and* bunched mass, differentiable, no flavour bookkeeping. But no
+quantum state has this amplitude — an elementwise power of an orbital is not an orbital — so the
+bunched sector does **not** carry the `Perm`/`det` hardness framing.
+
+The collision-free sector does, and is untouched: every mode has `c = 1`, so `col₁(c) = c` *exactly*.
+`FermionModel.collision_free_probs` is `|det U[S,T]|²` on the shared `C(m,k)` support with no
+approximation — **run the headline `Perm`-vs-`det` claim there**, and read the full-support readout as
+the support-matched comparator.
 
 **`|Perm|²` is computed in pure torch, not through merlin** (`boson_probs_reference`), from the
 *same* `sandwich_unitary_at` the determinant path uses — so `Perm` vs `det` is a one-line swap with

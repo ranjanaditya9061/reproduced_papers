@@ -1,6 +1,6 @@
 """Distribution models: ``X -> probs`` over a labelled outcome basis, and nothing else.
 
-    from v2.model import build_model, sample_X
+    from model import build_model, sample_X
 
     model = build_model(cfg)                       # picks cfg.model.kind
     X     = sample_X(n, cfg.problem.n_features, cfg.seeds.sample_seed)

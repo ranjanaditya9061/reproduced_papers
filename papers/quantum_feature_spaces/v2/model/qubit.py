@@ -13,10 +13,16 @@ Why the lead matters: in the fidelity kernel ``|<phi(x)|phi(x')>|^2`` the *trail
 ``W1`` survives in the photonic case.  So both platforms get a seed-dependent kernel from their
 leading unitary.  ``lead=False`` drops ``V`` and recovers the plain fixed-IQP (Huang) kernel.
 
-``n_qubits = n_features``, so the outcome basis is the ``2^n`` computational states -- a *different*
-basis from the Fock models, which is why a cross-platform comparison goes through scores (and
-through the input Fisher matrix, which is ``n_features x n_features`` on every model) rather than
-through ``p`` entry-by-entry.
+``n_qubits`` is set by ``m``, decoupled from ``n_features`` -- the qubit analogue of photonic's
+``m`` (modes) vs ``n_features`` (encoded phases): ``U_phi(x)`` acts on the first ``n_features`` of
+the ``m`` qubits, and the remaining ``m - n_features`` are held at the encoding's fixed point
+(``x_i = pi``, see :meth:`QubitFeatureMap._iqp_diag`) so they carry no ``x``-dependent phase at
+that layer -- mirroring ``circuit/encoding.py``'s ``PhaseEncoding``, which puts ``x_i`` on mode
+``i`` for ``i < n_features`` and leaves modes ``n_features..m-1`` at identity phase.  Needs
+``n_features <= m``.  The outcome basis is the ``2^m`` computational states -- a *different* basis
+from the Fock models, which is why a cross-platform comparison goes through scores (and through
+the input Fisher matrix, which is ``n_features x n_features`` on every model) rather than through
+``p`` entry-by-entry.
 
 The gate primitives are pure torch and differentiable, so :mod:`v2.metrics` takes exact
 input-Jacobians through this model.
@@ -96,18 +102,30 @@ def _variational(state: torch.Tensor, theta: torch.Tensor, n: int) -> torch.Tens
 
 
 class QubitFeatureMap(nn.Module):
-    """``X (N, n) -> embedding states ``(N, 2^n)`` complex.
+    """``X (N, n_features) -> embedding states ``(N, 2^n_qubits)`` complex.
 
     Both unitaries' weights are seeded buffers drawn from one ``seed`` (lead then trail, fixed
-    order), so the embedding is fully determined by ``(n_qubits, depth, seed, lead)`` and
-    round-trips through ``state_dict``.  ``lead=False`` skips ``V_lead`` but still *draws* its
+    order), so the embedding is fully determined by ``(n_qubits, n_features, depth, seed, lead)``
+    and round-trips through ``state_dict``.  ``lead=False`` skips ``V_lead`` but still *draws* its
     weights, so ``theta_trail`` is identical with or without the lead.
+
+    ``n_features <= n_qubits``: :meth:`_iqp_diag` encodes ``x`` on the first ``n_features`` qubits
+    and pads the rest to the encoding's fixed point (see there), so the unencoded qubits carry no
+    ``x``-dependent phase at that layer -- though ``V_lead``/``W_trail`` still entangle them with
+    the encoded qubits, which is the point of raising ``n_qubits`` at fixed ``n_features``.
     """
 
-    def __init__(self, n_qubits: int, depth: int, seed: int, lead: bool = True):
+    def __init__(self, n_qubits: int, n_features: int, depth: int, seed: int, lead: bool = True):
         super().__init__()
         n = int(n_qubits)
+        if int(n_features) > n:
+            raise ValueError(
+                f"qubit feature map encodes one qubit per feature, so it needs "
+                f"n_features <= n_qubits (got n_features={n_features}, n_qubits={n}). Raise "
+                f"n_qubits (m), or lower n_features."
+            )
         self.n_qubits = n
+        self.n_features = int(n_features)
         self.depth = int(depth)
         self.seed = int(seed)
         self.lead = bool(lead)
@@ -121,6 +139,15 @@ class QubitFeatureMap(nn.Module):
         self.register_buffer("theta_trail", 2 * math.pi * torch.rand(size))
 
     def _iqp_diag(self, x: torch.Tensor) -> torch.Tensor:
+        """``x`` arrives at ``n_features`` width; padded here to ``n_qubits`` at the fixed point
+        ``x_i = pi``, which is where ``diff = pi - x`` vanishes -- the unique padding value that
+        makes the unencoded qubits' diagonal phase constant across every one of their bit patterns
+        (an entrywise-``0`` pad does not: ``diff_i = pi`` there is nonzero, so a padded qubit's
+        fixed ``Z_i`` sign would still shape a real, outcome-dependent phase).
+        """
+        if self.n_features < self.n_qubits:
+            pad = x.new_full((x.shape[0], self.n_qubits - self.n_features), math.pi)
+            x = torch.cat([x, pad], dim=1)
         phi_single = x @ self.signs.T
         diff = math.pi - x
         diff_outer = (diff.unsqueeze(-1) * diff.unsqueeze(-2)) * self.pair_mask
@@ -144,8 +171,9 @@ class QubitFeatureMap(nn.Module):
 class QubitModel(DistributionModel):
     """``X -> probs``: the IQP sandwich's computational-basis distribution ``|amplitude|^2``.
 
-    ``k`` is the variational depth of *each* block, and ``m`` is unused (the qubit count is
-    ``n_features``) -- kept in the signature so the config shape is uniform across models.
+    ``k`` is the variational depth of *each* block; ``m`` is the qubit count, decoupled from
+    ``n_features`` (see the module docstring) -- ``m == n_features`` reproduces the legacy
+    behaviour exactly, and ``m > n_features`` grows the circuit at fixed input dimension.
     """
 
     name = "qubit"
@@ -153,8 +181,9 @@ class QubitModel(DistributionModel):
     def __init__(self, *, m: int, k: int, n_features: int, seed: int = 42,
                  lead: bool = True):
         super().__init__(m=m, k=k, n_features=n_features, seed=seed)
-        self.n_qubits = int(n_features)
-        self.feature_map = QubitFeatureMap(self.n_qubits, depth=k, seed=seed, lead=lead)
+        self.n_qubits = int(m)
+        self.feature_map = QubitFeatureMap(self.n_qubits, n_features=self.n_features, depth=k,
+                                           seed=seed, lead=lead)
         self._keys = [tuple((z >> i) & 1 for i in range(self.n_qubits))
                       for z in range(2 ** self.n_qubits)]
         self._autosize_batch(2 ** self.n_qubits)
@@ -181,10 +210,12 @@ class QubitModel(DistributionModel):
 
     def circuit_spec(self) -> dict:
         # `embedding` marks the V_lead -> IQP -> W_trail structure, so datasets made by an older
-        # IQP-only map get a distinct identity rather than colliding.
+        # IQP-only map get a distinct identity rather than colliding.  `n_qubits` is included so
+        # two datasets differing only in m (same n_features, same seed) do not collide: m sets the
+        # statevector width and is otherwise absent from hash_fields.
         return {"model": self.name, "embedding": "Vlead-IQP-Wtrail",
-                "depth": self.feature_map.depth, "lead": self.feature_map.lead,
-                "basis": "computational_2^n"}
+                "n_qubits": self.n_qubits, "depth": self.feature_map.depth,
+                "lead": self.feature_map.lead, "basis": "computational_2^n"}
 
     @classmethod
     def from_config(cls, cfg: "ExperimentConfig") -> "QubitModel":
@@ -193,6 +224,12 @@ class QubitModel(DistributionModel):
 
     @classmethod
     def validate_config(cls, cfg: "ExperimentConfig") -> None:
-        if cfg.problem.n_features > 20:
-            raise ValueError(f"qubit statevector is 2^n_features = 2^{cfg.problem.n_features} "
-                             "wide; that will not fit")
+        if cfg.problem.n_features > cfg.problem.m:
+            raise ValueError(
+                f"qubit feature map encodes one qubit per feature, so it needs "
+                f"n_features <= m (got n_features={cfg.problem.n_features}, m={cfg.problem.m}). "
+                f"Raise m, or lower n_features."
+            )
+        if cfg.problem.m > 20:
+            raise ValueError(f"qubit statevector is 2^m = 2^{cfg.problem.m} wide; that will not "
+                             "fit")

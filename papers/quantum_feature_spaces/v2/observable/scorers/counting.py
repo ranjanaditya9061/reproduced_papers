@@ -9,7 +9,7 @@ plain :class:`Expectation` under its own name, the ``BASE_SCORERS`` table so the
 
 from __future__ import annotations
 
-from ..base import key_scorer
+from observable.base import key_scorer
 
 
 def parity_modes(m: int) -> tuple[int, ...]:

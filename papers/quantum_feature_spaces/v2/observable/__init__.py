@@ -1,6 +1,6 @@
 """Observables: ``outcome distribution -> score``.
 
-    from v2.observable import ObservableContext, resolve_observable
+    from observable import ObservableContext, resolve_observable
 
     ctx    = ObservableContext(m=6, k=3, keys=model.outcome_keys(), seed=42)
     obs    = resolve_observable("prod_parity_consecutive", ctx)   # build tables over the basis

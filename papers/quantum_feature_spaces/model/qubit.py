@@ -104,19 +104,31 @@ def _variational(state: torch.Tensor, theta: torch.Tensor, n: int) -> torch.Tens
 
 
 class QubitFeatureMap(nn.Module):
-    """Maps ``X (N, n)`` -> embedding states ``(N, 2^n)`` complex.
+    """Maps ``X (N, n_features)`` -> embedding states ``(N, 2^n_qubits)`` complex.
 
     ``|phi(x)> = W_trail . IQP(x) . V_lead . |0^n>``.  Both unitaries' weights are
     seeded buffers drawn from a single ``seed`` (lead then trail, fixed order), so
-    the embedding is fully determined by ``(n_qubits, depth, seed, lead)`` and
-    round-trips through ``state_dict``.  ``lead=False`` skips ``V_lead`` (but draws
+    the embedding is fully determined by ``(n_qubits, n_features, depth, seed, lead)``
+    and round-trips through ``state_dict``.  ``lead=False`` skips ``V_lead`` (but draws
     its weights anyway, so ``theta_trail`` is identical with or without the lead).
+
+    ``n_features <= n_qubits``: :meth:`_iqp_diag` encodes ``x`` on the first
+    ``n_features`` qubits and pads the rest to the encoding's fixed point (see
+    there), so the unencoded qubits carry no ``x``-dependent phase at that layer --
+    though ``V_lead``/``W_trail`` still entangle them with the encoded qubits.
     """
 
-    def __init__(self, n_qubits: int, depth: int, seed: int, lead: bool = True):
+    def __init__(self, n_qubits: int, n_features: int, depth: int, seed: int, lead: bool = True):
         super().__init__()
         n = n_qubits
+        if int(n_features) > n:
+            raise ValueError(
+                f"qubit feature map encodes one qubit per feature, so it needs "
+                f"n_features <= n_qubits (got n_features={n_features}, n_qubits={n}). Raise "
+                f"n_qubits, or lower n_features."
+            )
         self.n_qubits = n
+        self.n_features = int(n_features)
         self.depth = int(depth)
         self.seed = int(seed)
         self.lead = bool(lead)
@@ -133,6 +145,15 @@ class QubitFeatureMap(nn.Module):
         self.register_buffer("theta_trail", 2 * math.pi * torch.rand(size))
 
     def _iqp_diag(self, x: torch.Tensor) -> torch.Tensor:
+        """``x`` arrives at ``n_features`` width; padded here to ``n_qubits`` at the fixed point
+        ``x_i = pi``, which is where ``diff = pi - x`` vanishes -- the unique padding value that
+        makes the unencoded qubits' diagonal phase constant across every one of their bit patterns
+        (an entrywise-``0`` pad does not: ``diff_i = pi`` there is nonzero, so a padded qubit's
+        fixed ``Z_i`` sign would still shape a real, outcome-dependent phase).
+        """
+        if self.n_features < self.n_qubits:
+            pad = x.new_full((x.shape[0], self.n_qubits - self.n_features), math.pi)
+            x = torch.cat([x, pad], dim=1)
         phi_single = x @ self.signs.T
         diff = math.pi - x
         diff_outer = (diff.unsqueeze(-1) * diff.unsqueeze(-2)) * self.pair_mask
@@ -159,15 +180,14 @@ class QubitTeacher(Teacher):
 
     name = "qubit_quantum"
 
-    def __init__(self, n_features: int, k: int, seed: int, nsample: int = 0):
+    def __init__(self, m: int, n_features: int, k: int, seed: int, nsample: int = 0):
         super().__init__(n_features)
-        n = n_features
-        self.n_qubits = n
+        self.n_qubits = m
         self.nsample = int(nsample)
         self._noise_seed = seed + 13
-        self.feature_map = QubitFeatureMap(n, depth=k, seed=seed, lead=True)
+        self.feature_map = QubitFeatureMap(m, n_features=n_features, depth=k, seed=seed, lead=True)
         self.register_buffer("parity_signs",
-                             (1 - 2 * (_popcount(torch.arange(2 ** n)) % 2)).float())
+                             (1 - 2 * (_popcount(torch.arange(2 ** m)) % 2)).float())
 
     def embed(self, X: torch.Tensor) -> torch.Tensor:
         """The teacher's embedding states ``(N, 2^n)`` (shared with the kernels)."""
@@ -185,7 +205,7 @@ class QubitTeacher(Teacher):
 
     @classmethod
     def from_config(cls, cfg: "ExperimentConfig") -> "QubitTeacher":
-        return cls(n_features=cfg.resolved_n_features, k=cfg.problem.k,
+        return cls(m = cfg.problem.m, n_features=cfg.resolved_n_features, k=cfg.problem.k,
                    seed=cfg.seeds.teacher_seed, nsample=cfg.generation.nsample)
 
     @classmethod

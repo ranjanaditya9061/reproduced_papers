@@ -30,7 +30,7 @@ import re
 import numpy as np
 import torch
 
-from ..base import (Expectation, Observable, ObservableContext, ObservableFamily, as_vec,
+from observable.base import (Expectation, Observable, ObservableContext, ObservableFamily, as_vec,
                     base_score_vec, register)
 from .counting import require_even_m
 

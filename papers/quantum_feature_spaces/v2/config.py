@@ -13,18 +13,23 @@ saved distribution, so it belongs to the scoring stage (:mod:`v2.pipeline.score`
 learner config -- never to the data config, whose identity must not move when the readout
 changes.  This is the single most important difference from ``Generator/config.py``.
 
-**``n_features`` is a study invariant, not a knob.**  Every complexity measure in
-:mod:`v2.metrics` is denominated in it: the input Fisher matrix is ``n_features x n_features``,
-``r_eff`` lies in ``[0, n_features]``, and the description cost
-``(1/2) sum_i log(1 + lambda_i/eps^2)`` has ``n_features`` terms.  Vary it and you conflate
-"more input dimensions" with "harder map", which is exactly the objection that rules out a
-weight-space FIM.  So :data:`N_FEATURES` is fixed once for the whole study and every config
-must match it; a mismatch is a load error naming the invariant.
+**``n_features`` is required, and must be held fixed across any one comparison.**  Every
+complexity measure in :mod:`v2.metrics` is denominated in it: the input Fisher matrix is
+``n_features x n_features``, ``r_eff`` lies in ``[0, n_features]``, and the description cost
+``(1/2) sum_i log(1 + lambda_i/eps^2)`` has ``n_features`` terms.  Vary it *within* a comparison
+and you conflate "more input dimensions" with "harder map", which is exactly the objection that
+rules out a weight-space FIM.
 
-What that buys: at fixed ``n_features`` the ``(m, k)`` sweep leaves the FIM at
-``6 x 6`` while the circuit grows, so spectra stay stackable across sizes *and* across model
-families.  The legacy default ``n_features = m - 1`` coupled the two, so every change of
-circuit size silently changed the FIM's dimension and no such comparison was possible.
+So it is carried per config rather than as a module-level constant -- a study is free to choose its
+own input size -- and :func:`check_commensurable` is what enforces that a grid or sweep does not mix
+sizes.  The value itself is not validated against anything global; the only geometry constraint is
+the encoding's own (a phase encoding needs one mode per feature, a dense one need not), applied in
+:meth:`ExperimentConfig.validate`.
+
+What that buys: at fixed ``n_features`` the ``(m, k)`` sweep leaves the FIM at one size while the
+circuit grows, so spectra stay stackable across sizes *and* across model families.  The legacy
+default ``n_features = m - 1`` coupled the two, so every change of circuit size silently changed the
+FIM's dimension and no such comparison was possible; there is no such fallback here.
 
 There is also no ``prepare`` section: margin filtering and class balancing are a diagnostic
 applied downstream, never a load-time transform.
@@ -37,11 +42,6 @@ from pathlib import Path
 
 import yaml
 
-#: The fixed input dimension for the entire study.  See the module docstring: this is an
-#: invariant, not a parameter.  Changing it invalidates every cross-model and cross-``(m, k)``
-#: comparison in :mod:`v2.metrics`, because it is the dimension those comparisons are
-#: denominated in -- a different value is a different, non-comparable study, not an extension.
-
 #: Peak bytes allowed for one artifact's ``probs`` matrix before generation refuses to run.
 #: ``probs`` is ``(N, n_outcomes)`` float32, so this grows as ``C(m+k-1, k)``: at ``N = 10k``,
 #: ``n_fock = 2002`` is 80 MB, ``12376`` is 495 MB and ``77520`` is 3.1 GB.  The guard errors
@@ -51,7 +51,7 @@ DEFAULT_MAX_DIST_BYTES = 2 * 1024 ** 3
 
 @dataclass
 class ProblemConfig:
-    """Problem geometry.  ``n_features`` is required and validated against :data:`N_FEATURES`."""
+    """Problem geometry.  ``n_features`` is required -- there is no ``m - 1`` fallback."""
 
     n_features: int
     m: int = 6
@@ -80,10 +80,17 @@ class ModelConfig:
     gate_kind: str | None = None      # spin_magic: "t" | "rz" | "u3" | "u3_x"
 
     # --- kind="fermion" ----------------------------------------------------------------- #
-    #: Internal states per mode.  ``1`` is strict free fermions (bunched outcomes exactly 0 by
-    #: Pauli exclusion); ``r >= 2`` allows occupations up to ``r``, which is what makes the
-    #: boson/determinant Fisher comparison apples-to-apples rather than partly a comparison of
-    #: support sizes.
+    #: Modulus exponent of the phase-power columns, the dial that sets how much mass the bunched
+    #: sector carries.  ``None`` is the ``k/m`` rule, which matches the boson model's bunched mass
+    #: to ~2% with no free parameter -- so the boson/determinant Fisher comparison is controlled on
+    #: support *and* bunching rather than being partly a comparison of support sizes.  See
+    #: :mod:`v2.model.fermion`.
+    bunching_s: float | None = None
+
+    #: Retired.  The flavoured-fermion readout degenerated to ``Perm(|U|^2)`` -- the classical
+    #: distinguishable-particle distribution, with no determinant left -- at ``flavours = k``, since
+    #: every flavour block is then ``1 x 1``.  Kept only so old configs fail with an explanation
+    #: rather than a missing-key error; anything other than ``1`` is rejected.
     flavours: int = 1
 
     # --- kind="ebm_fock" ---------------------------------------------------------------- #
@@ -141,7 +148,7 @@ class ExperimentConfig:
 
     @property
     def n_features(self) -> int:
-        """The input dimension.  Always :data:`N_FEATURES`; no ``m - 1`` fallback exists."""
+        """The input dimension, straight from the config; no ``m - 1`` fallback exists."""
         return self.problem.n_features
 
     def validate(self) -> None:
@@ -230,10 +237,9 @@ def load_config(path: str | Path) -> ExperimentConfig:
 def check_commensurable(cfgs) -> None:
     """Raise unless every config in a comparison shares the input size (and so is comparable).
 
-    Called by the grid / sweep loaders.  Individually each config already had to match
-    :data:`N_FEATURES` at load, so this is a second belt against a stale artifact or a
-    hand-built config entering a grid -- the failure mode that would silently produce
-    incomparable spectra.
+    Called by the grid / sweep loaders.  Since ``n_features`` is carried per config and checked
+    against nothing global at load, this is the *only* thing standing between a stale artifact or a
+    hand-built config and a grid of incomparable spectra -- so it is load-bearing, not a second belt.
     """
     sizes = {int(c.problem.n_features) for c in cfgs}
     if len(sizes) > 1:

@@ -14,15 +14,16 @@ left untouched and keep working.  Three structural changes drive the rewrite:
    nothing else; the four Fock teachers' duplicated batching / shot-sampling / capture code
    lives once on :class:`v2.model.base.DistributionModel`, and the seven ``spoqc*`` modules
    collapse into one state-prep registry.
-3. **The input size is a study invariant** (:data:`v2.config.N_FEATURES`).  Every complexity
+3. **The input size is fixed across a comparison**, carried per config as
+   ``problem.n_features`` and enforced by :func:`v2.config.check_commensurable`.  Every complexity
    measure in :mod:`v2.metrics` is denominated in it -- the input Fisher matrix is
-   ``n_features x n_features`` -- so varying it would make nothing comparable.  Fixing it is
-   also what makes the ``(m, k)`` sweep well-posed: the circuit grows while the FIM stays the
-   same size, which the old ``n_features = m - 1`` coupling made impossible.
+   ``n_features x n_features`` -- so mixing sizes in one grid would make nothing comparable.
+   Holding it fixed is also what makes the ``(m, k)`` sweep well-posed: the circuit grows while the
+   FIM stays the same size, which the old ``n_features = m - 1`` coupling made impossible.
 
 Layout::
 
-    config.py       the ExperimentConfig and the N_FEATURES invariant
+    config.py       the ExperimentConfig, and check_commensurable over a grid
     circuit/        circuit + state-prep + encoding builders (shared)
     model/          FROZEN distribution models:  X -> (N, n_outcomes) probs
     observable/     distribution -> score, in three functional shapes
@@ -34,6 +35,6 @@ Layout::
 
 from __future__ import annotations
 
-from .config import N_FEATURES, ExperimentConfig, load_config
+from .config import ExperimentConfig, check_commensurable, load_config
 
-__all__ = ["N_FEATURES", "ExperimentConfig", "load_config"]
+__all__ = ["ExperimentConfig", "check_commensurable", "load_config"]

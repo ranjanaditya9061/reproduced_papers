@@ -48,7 +48,7 @@ from itertools import combinations
 
 import numpy as np
 
-from ..base import Expectation, Observable, ObservableContext, ObservableFamily, register
+from observable.base import Expectation, Observable, ObservableContext, ObservableFamily, register
 
 #: Named presets for :func:`parse_prod_parity` (``lo<t>`` is a family, any ``t < m``).
 PROD_PARITY_PRESETS = ("full", "top", "lo<t>")

@@ -22,7 +22,7 @@ import re
 
 import numpy as np
 
-from ..base import (Expectation, Observable, ObservableContext, ObservableFamily, base_score_vec,
+from observable.base import (Expectation, Observable, ObservableContext, ObservableFamily, base_score_vec,
                     register)
 
 #: Base scorers usable under ``connected_<base>``.  ``maxcc`` is the graph reading; the rest are
