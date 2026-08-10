@@ -76,8 +76,22 @@ class ModelConfig:
     cx_pairs: list | None = None      # spin entanglers, e.g. [[0,1],[1,2]]
     angle_levels: int | None = None   # discretise the rx/ry twists
     rz_angles: str | None = None      # None | "prime"
+    #: spin: depth of the seeded rotate-then-entangle block (H->Rx->[Rz]->Ry, then cx_pairs),
+    #: each layer independently seeded rather than replaying the same angles.  None/1 = the legacy
+    #: single-round circuit.  See v2.circuit.prep.SpinPrep / v2.circuit.spin.spin_state.
+    layers: int | None = None
     t_var: int | None = None          # spin_magic: number of injected gap gates
     gate_kind: str | None = None      # spin_magic: "t" | "rz" | "u3" | "u3_x"
+    #: spin_magic: per-gap gate pattern -- "linear" (H every gap, default) | "ghz" (H at gap 0
+    #: only) | "linear_u3" (H + an unconditional Haar U3 every gap).  Orthogonal to gate_kind/
+    #: t_var's sparser magic-gate injection; the two compose.  See v2.circuit.prep.SpinMagicPrep.
+    structure: str | None = None
+    #: spin: puts x on the spin once, before any layer (rx(x[2q]), ry(x[2q+1]) per qubit on
+    #: |0...0>).  spin_magic: same idea but per-gap and overriding gate_kind's legacy "_rxry"/
+    #: "_rxry_iface" suffix when set.  encode_circuit (spin_magic only) puts x in the
+    #: interferometer as well (False -> the encoding sees x=0, i.e. the identity).
+    encode_on_spin: bool | None = None
+    encode_circuit: bool | None = None
 
     # --- kind="fermion" ----------------------------------------------------------------- #
     #: Modulus exponent of the phase-power columns, the dial that sets how much mass the bunched

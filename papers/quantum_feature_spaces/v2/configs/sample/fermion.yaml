@@ -1,5 +1,5 @@
 problem: {n_features: 5, m: 6, k: 3}
-model:   {kind: photonic, prep: spin_magic, encoding: phase}
-generation: {size: 2000}
+model:   {kind: fermion, encoding: phase}
+generation: {size: 32}
 split:   {test_fraction: 0.2, split_seed: 0}
 seeds:   {sample_seed: 42, model_seed: 42}

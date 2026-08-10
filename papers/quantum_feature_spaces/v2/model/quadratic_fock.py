@@ -99,8 +99,17 @@ def occupation_features(keys, m: int) -> np.ndarray:
     inter-mode *correlations* rather than being a structureless product distribution.
     """
     occ = np.asarray([[int(key[i]) for i in range(m)] for key in keys], dtype=np.float64)
+    print(occ)
     iu, ju = np.triu_indices(m, k=1)
-    return np.concatenate([occ, occ[:, iu] * occ[:, ju]], axis=1)
+    print(iu)
+    print(occ[:, iu])
+    print(ju)
+    print(occ[:, ju])
+    print(occ[:, iu] * occ[:, ju])
+    val = np.concatenate([occ, occ[:, iu] * occ[:, ju]], axis=1)
+    print(val)
+    exit()
+    return val
 
 
 def matched_rank(m: int, d_x: int, d_phi: int) -> int:

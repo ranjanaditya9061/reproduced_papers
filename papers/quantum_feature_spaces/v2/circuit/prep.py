@@ -136,50 +136,74 @@ class FockPrep(StatePrep):
 class SpinPrep(StatePrep):
     """Dual-rail photons emitted by ``k`` spin qubits (``perceval_spoqc``).
 
-    Per qubit ``|0> -> H -> Rx(a) (-> Rz) -> Ry(b)``, optionally entangled by a CX chain, then
-    emitted dual-rail into modes ``(2q, 2q+1)``.  The spin prep is built in numpy on the initial
-    source state (:func:`v2.circuit.spin.spin_state`) because spoqc has no two-qubit processor
-    gate and a CX on ``|0...0>`` is the identity.
+    ``layers`` rounds of, per qubit, ``H -> Rx(a) (-> Rz) -> Ry(b)``, then one CX chain per round,
+    then emitted dual-rail into modes ``(2q, 2q+1)``.  The spin prep is built in numpy on the
+    initial source state (:func:`v2.circuit.spin.spin_state`) because spoqc has no two-qubit
+    processor gate and a CX on ``|0...0>`` is the identity.
 
     Absorbs three legacy classes as parameters: ``cx_pairs`` (``spoqc``), ``angle_levels``
     (``spoqc_low``, which drew the twists from ``+-0.1 .. +-0.1*levels`` instead of uniformly)
     and ``rz_angles="prime"`` (``spoqc_prime``, an extra ``Rz`` at increasing-prime radians
     between Rx and Ry).
+
+    Two more knobs, both new:
+
+    * ``layers`` -- depth of the seeded rotate-then-entangle block (default ``1``, the legacy
+      single-round circuit).  Each layer draws its own ``rx``/``ry``/``rz`` from the same seeded
+      stream rather than replaying layer 1's angles, so depth is genuine, not a repeated no-op --
+      see :func:`v2.circuit.spin.spin_state`.
+    * ``encode_on_spin`` -- when set, ``rx(x[2q]), ry(x[2q+1])`` (indices mod ``n_features``) are
+      applied **once**, per qubit, on ``|0...0>`` before the first layer -- not per layer, since
+      this carries ``x`` itself rather than a fixed seeded weight (see ``spin_state``'s docstring
+      for why repeating it would inject copies of the same feature instead of adding depth).
     """
 
     name = "spin"
     is_batched = False
 
-    def __init__(self, *, cx_pairs=None, angle_levels=None, rz_angles=None):
+    def __init__(self, *, cx_pairs=None, angle_levels=None, rz_angles=None, layers=None,
+                 encode_on_spin=False):
         self.cx_pairs_raw = cx_pairs
         self.angle_levels = None if angle_levels is None else int(angle_levels)
         self.rz_angles = rz_angles
+        self.layers = 1 if layers is None else int(layers)
+        self.encode_on_spin = bool(encode_on_spin)
         if rz_angles not in (None, "prime"):
             raise ValueError(f"rz_angles must be None or 'prime' (got {rz_angles!r})")
 
     @classmethod
     def from_config(cls, cfg) -> "SpinPrep":
         m = cfg.model
-        return cls(cx_pairs=m.cx_pairs, angle_levels=m.angle_levels, rz_angles=m.rz_angles)
+        return cls(cx_pairs=m.cx_pairs, angle_levels=m.angle_levels, rz_angles=m.rz_angles,
+                   layers=getattr(m, "layers", None),
+                   encode_on_spin=bool(getattr(m, "encode_on_spin", False)))
 
     def validate(self, *, m: int, k: int) -> None:
         if m % 2:
             raise ValueError("prep 'spin' emits dual-rail photons -> requires even m")
         if 2 * k > m:
             raise ValueError(f"need 2*k <= m for dual-rail emission (k={k}, m={m})")
+        if self.layers < 1:
+            raise ValueError(f"layers must be >= 1 (got {self.layers})")
         _spin.normalize_cx_pairs(self.cx_pairs_raw, k)
 
     def _angles(self, k: int, seed: int):
         rng = np.random.default_rng(int(seed))
+        shape = (self.layers, k)
         if self.angle_levels is None:
-            rx = rng.uniform(0.0, 2 * np.pi, size=k)
-            ry = rng.uniform(0.0, 2 * np.pi, size=k)
+            rx = rng.uniform(0.0, 2 * np.pi, size=shape)
+            ry = rng.uniform(0.0, 2 * np.pi, size=shape)
         else:
-            rx = _spin.discrete_angles(rng, k, self.angle_levels)
-            ry = _spin.discrete_angles(rng, k, self.angle_levels)
+            rx = np.stack([_spin.discrete_angles(rng, k, self.angle_levels)
+                          for _ in range(self.layers)])
+            ry = np.stack([_spin.discrete_angles(rng, k, self.angle_levels)
+                          for _ in range(self.layers)])
         rz = None
         if self.rz_angles == "prime":
-            rz = np.asarray(_spin.first_primes(k), dtype=float)
+            # One fixed round of increasing primes, broadcast identically to every layer -- the
+            # primes are a fixed reference sequence (spoqc_prime), not something to redraw per
+            # layer the way the seeded rx/ry twists are.
+            rz = np.tile(np.asarray(_spin.first_primes(k), dtype=float), (self.layers, 1))
         return rx, ry, rz
 
     def probs(self, X, *, m, k, n_features, seed, encoding, n_jobs=1):
@@ -189,7 +213,8 @@ class SpinPrep(StatePrep):
         pairs = _spin.normalize_cx_pairs(self.cx_pairs_raw, k)
         enc_name = getattr(encoding, "name", encoding)
         rows = X.detach().cpu().numpy()
-        tasks = [(row, m, k, n_features, int(seed), rx, ry, pairs, rz, enc_name)
+        tasks = [(row, m, k, n_features, int(seed), rx, ry, pairs, rz, self.layers,
+                  self.encode_on_spin, enc_name)
                  for row in rows]
         results = _spin.parallel_row_map(_spin_row_worker, tasks, n_jobs)
         keys, probs = _align_rows(results, n_modes=m)
@@ -211,17 +236,56 @@ class SpinPrep(StatePrep):
             spec["angle_levels"] = self.angle_levels
         if self.rz_angles is not None:
             spec["rz_angles"] = self.rz_angles
+        if self.layers != 1:
+            spec["layers"] = self.layers
+        if self.encode_on_spin:
+            spec["encode_on_spin"] = self.encode_on_spin
         return spec
 
 
 class SpinMagicPrep(StatePrep):
-    """Emitter-train cluster state with a non-Clifford gate injected into ``t_var`` gaps.
+    """Emitter-train cluster state, optionally with a non-Clifford gate injected into ``t_var``
+    gaps.
 
-    One spin emits ``k`` data photons dual-rail plus a readout photon; a "magic" gate in gap
-    ``j < t_var`` makes the teleported interferometer input non-stabilizer.  Absorbs the four
-    legacy ``spoqc_magic*`` classes as ``gate_kind`` (``"t"`` | ``"rz"`` | ``"u3"`` | ``"u3_x"``,
-    optionally ``_m``/``_s`` angle-scaled, optionally ``_rxry[_iface]`` to move the data encoding
-    onto the spin) -- see :func:`v2.circuit.spin.apply_gap_gate`.
+    One spin emits ``k`` data photons dual-rail plus a readout photon.  Two independent axes:
+
+    * ``structure`` -- the per-gap gate pattern applied to the spin *before every* emission:
+
+      =============  ============================================================================
+      ``structure``  per-gap gate(s), ``j = 0 .. k-1``
+      =============  ============================================================================
+      ``linear``     ``H``                                     (default; legacy behaviour)
+      ``ghz``        ``H`` at ``j == 0`` only; nothing at ``j > 0``
+      ``linear_u3``  ``H`` then a Haar-random ``U3``, unconditionally, every gap
+      =============  ============================================================================
+
+      ``linear`` reproduces a linear cluster state (the qubit is re-superposed every gap);
+      ``ghz`` never re-superposes after the first gap, so the emissions instead inherit
+      correlation from the shared spin the way a GHZ state's branches do; ``linear_u3`` adds a
+      fixed Haar-random single-qubit rotation to every gap on top of the cluster structure,
+      independent of whether a magic gate is also injected.
+
+    * ``gate_kind``/``t_var`` -- an *additional*, sparser non-Clifford gate injected into the
+      first ``t_var`` gaps on top of whichever ``structure`` is chosen; absorbs the four legacy
+      ``spoqc_magic*`` classes as before (``"t"`` | ``"rz"`` | ``"u3"`` | ``"u3_x"``, optionally
+      ``_m``/``_s`` angle-scaled) -- see :func:`v2.circuit.spin.apply_gap_gate`.  ``t_var=0``
+      (or a ``structure`` that already injects its own ``U3``) makes this axis inert, so
+      ``linear_u3`` is not a special case of the gate-injection machinery -- it is orthogonal to
+      it, and the two compose (both may fire in the same gap).
+
+    Data encoding is two more independent flags, replacing the legacy ``gate_kind`` suffix
+    parsing (``_rxry``, ``_rxry_iface``) with explicit booleans -- the suffix form still works,
+    for configs that set it, but ``encode_on_spin``/``encode_circuit`` take precedence when given:
+
+    * ``encode_on_spin`` -- ``rx(x[2j]), ry(x[2j+1])`` (indices mod ``n_features``) on the spin
+      after the gap's structural gate(s), before that gap's emission.  Composes with every
+      ``structure``: on ``ghz`` a data-carrying gap after the first has no preceding ``H``, so
+      the two features rotate a state that was not just re-superposed (the "just rx/ry" case);
+      on ``linear``/``linear_u3`` every gap is re-superposed first (the "H + rx/ry" case).
+    * ``encode_circuit`` -- whether ``x`` reaches the interferometer at all.  ``False`` zeroes
+      ``x`` before :func:`~v2.circuit.photonic_circuit.build_sandwich_circuit`, so the encoding
+      becomes the identity there (a fixed Haar scrambler with no data), leaving ``x`` reaching
+      the outcome only through ``encode_on_spin``, if that is also set.
 
     The outcome basis spans ``m + 2`` modes: the two extra are the readout pair, reported by
     :meth:`readout_modes`.  **The ``mu = 0`` post-selection is NOT applied here** -- it stays in
@@ -235,17 +299,38 @@ class SpinMagicPrep(StatePrep):
     #: gates injected when ``t_var`` is unset
     DEFAULT_T_VAR = 1
     DEFAULT_GATE_KIND = "t"
+    DEFAULT_STRUCTURE = "linear"
+    STRUCTURES = ("linear", "ghz", "linear_u3")
 
-    def __init__(self, *, t_var=None, gate_kind=None):
+    def __init__(self, *, t_var=None, gate_kind=None, structure=None,
+                 encode_on_spin=None, encode_circuit=None):
         self.t_var = t_var
         self.gate_kind = self.DEFAULT_GATE_KIND if gate_kind is None else str(gate_kind)
+        self.structure = self.DEFAULT_STRUCTURE if structure is None else str(structure)
+        #: ``None`` means "read it from gate_kind's legacy suffix" (see :meth:`_resolved_encoding`);
+        #: an explicit ``True``/``False`` here always wins, so old configs keep working unchanged
+        #: while new code sets these directly instead of encoding them into the ``gate_kind`` string.
+        self.encode_on_spin = encode_on_spin
+        self.encode_circuit = encode_circuit
 
     @classmethod
     def from_config(cls, cfg) -> "SpinMagicPrep":
-        return cls(t_var=cfg.model.t_var, gate_kind=cfg.model.gate_kind)
+        return cls(t_var=cfg.model.t_var, gate_kind=cfg.model.gate_kind,
+                   structure=getattr(cfg.model, "structure", None),
+                   encode_on_spin=getattr(cfg.model, "encode_on_spin", None),
+                   encode_circuit=getattr(cfg.model, "encode_circuit", None))
 
     def resolved_t_var(self, k: int) -> int:
         return self.DEFAULT_T_VAR if self.t_var is None else int(self.t_var)
+
+    def _resolved_encoding(self):
+        """``(encode_on_spin, encode_circuit)``, explicit flags winning over the legacy
+        ``gate_kind`` suffix (``_rxry`` -> spin only, ``_rxry_iface`` -> spin and circuit, no
+        suffix -> circuit only)."""
+        _, suffix_qubit, suffix_iface = _spin.parse_gate_kind(self.gate_kind)
+        on_spin = suffix_qubit if self.encode_on_spin is None else bool(self.encode_on_spin)
+        on_circuit = suffix_iface if self.encode_circuit is None else bool(self.encode_circuit)
+        return on_spin, on_circuit
 
     def validate(self, *, m: int, k: int) -> None:
         if m % 2:
@@ -258,6 +343,8 @@ class SpinMagicPrep(StatePrep):
         t = self.resolved_t_var(k)
         if not 0 <= t <= k:
             raise ValueError(f"t_var must be in [0, k] = [0, {k}] (got {t})")
+        if self.structure not in self.STRUCTURES:
+            raise ValueError(f"structure must be one of {self.STRUCTURES} (got {self.structure!r})")
         _spin.parse_gate_kind(self.gate_kind)
 
     def outcome_modes(self, m: int) -> int:
@@ -277,14 +364,26 @@ class SpinMagicPrep(StatePrep):
             return [float(p) for p in _spin.first_primes(k)]
         return _spin.haar_su2_angles(rng, k)
 
+    def _structure_u3_params(self, k: int, seed: int):
+        """Per-gap Haar ``U3`` angles for ``structure='linear_u3'``, seeded independently of the
+        ``gate_kind`` magic-gate draw (a different, offset seed) so the two axes' random draws
+        never collide even when both are Haar ``U3``."""
+        if self.structure != "linear_u3":
+            return None
+        rng = np.random.default_rng(int(seed) + 1_000_003)      # offset: distinct from _gate_params
+        return _spin.haar_su2_angles(rng, k)
+
     def probs(self, X, *, m, k, n_features, seed, encoding, n_jobs=1):
         import torch
 
         t_var = self.resolved_t_var(k)
         params = self._gate_params(k, seed)
+        structure_params = self._structure_u3_params(k, seed)
+        encode_on_spin, encode_circuit = self._resolved_encoding()
         enc_name = getattr(encoding, "name", encoding)
         rows = X.detach().cpu().numpy()
-        tasks = [(row, m, k, t_var, n_features, int(seed), self.gate_kind, params, enc_name)
+        tasks = [(row, m, k, t_var, n_features, int(seed), self.gate_kind, params,
+                  self.structure, structure_params, encode_on_spin, encode_circuit, enc_name)
                  for row in rows]
         results = _spin.parallel_row_map(_magic_row_worker, tasks, n_jobs)
         keys, probs = _align_rows(results, n_modes=m + 2)
@@ -295,8 +394,10 @@ class SpinMagicPrep(StatePrep):
         return getattr(self, "_keys", None)
 
     def spec(self) -> dict:
-        return {"prep": self.name, "gate_kind": self.gate_kind,
-                "t_var": self.t_var, "gadget": "emitter_train_readout_pair"}
+        encode_on_spin, encode_circuit = self._resolved_encoding()
+        return {"prep": self.name, "gate_kind": self.gate_kind, "t_var": self.t_var,
+                "structure": self.structure, "encode_on_spin": encode_on_spin,
+                "encode_circuit": encode_circuit, "gadget": "emitter_train_readout_pair"}
 
 
 # --- picklable process-pool workers -------------------------------------------------------- #
@@ -306,14 +407,23 @@ class SpinMagicPrep(StatePrep):
 
 def _spin_row_worker(task):
     """One row of :class:`SpinPrep`: build the processor, return its full distribution."""
-    row, m, k, n_features, seed, rx, ry, pairs, rz, enc_name = task
+    row, m, k, n_features, seed, rx, ry, pairs, rz, layers, encode_on_spin, enc_name = task
     from perceval import Detector
     from perceval_spoqc import HybridProcessor
 
     from .photonic_circuit import build_sandwich_circuit
 
+    data_angles = None
+    if encode_on_spin:
+        # (k, 2): rx(x[2q]), ry(x[2q+1]) per qubit, indices mod n_features -- same convention as
+        # SpinMagicPrep's encode_on_spin (see its module docstring).
+        data_angles = np.array(
+            [[float(row[(2 * q) % n_features]), float(row[(2 * q + 1) % n_features])]
+             for q in range(k)])
+
     p = HybridProcessor(num_sources=k, num_modes=m)
-    p.with_initial_source_state(_spin.spin_state(k, rx, ry, pairs, rz=rz))
+    p.with_initial_source_state(
+        _spin.spin_state(k, rx, ry, pairs, rz=rz, layers=layers, data_angles=data_angles))
     for q in range(k):
         p.emit(q, into=(2 * q, 2 * q + 1))
     p.add(0, build_sandwich_circuit(m, n_features, seed, enc_name, x=row))
@@ -323,14 +433,23 @@ def _spin_row_worker(task):
 
 
 def _magic_row_worker(task):
-    """One row of :class:`SpinMagicPrep`: emitter train + gap gate + readout pair."""
-    row, m, k, t_var, n_features, seed, gate_kind, params, enc_name = task
+    """One row of :class:`SpinMagicPrep`: emitter train + gap gate(s) + readout pair.
+
+    Three independent per-gap ingredients, each optional and composable: the ``structure`` gate
+    (``H``, ``ghz``'s first-gap-only ``H``, or ``H`` + unconditional Haar ``U3``), the sparser
+    ``gate_kind`` magic gate (``j < t_var`` only), and the data-on-spin ``rx``/``ry`` pair.  Order
+    within a gap is structure, then data, then magic gate, then emission -- so a magic gate always
+    acts on whatever the structure/data steps just prepared, matching the legacy ``spoqc_magic*``
+    order (``H`` then data then gate) with ``structure``'s extra ``U3`` slotted in next to ``H``.
+    """
+    (row, m, k, t_var, n_features, seed, gate_kind, params, structure, structure_params,
+     encode_on_spin, encode_circuit, enc_name) = task
     from perceval import Detector
     from perceval_spoqc import HybridProcessor
 
     from .photonic_circuit import build_sandwich_circuit
 
-    magic_kind, encode_qubit, encode_iface = _spin.parse_gate_kind(gate_kind)
+    magic_kind, _, _ = _spin.parse_gate_kind(gate_kind)
     r0, r1 = m, m + 1
     p = HybridProcessor(num_sources=1, num_modes=m + 2, num_records=m + 2,
                         allow_carry_over=True)
@@ -338,8 +457,17 @@ def _magic_row_worker(task):
     p.with_initial_source_state(np.outer(zero, zero.conj()))
 
     for j in range(k):
-        p.gate.h(0)
-        if encode_qubit:                                  # data on the spin: 2 features per gap
+        if structure == "ghz":
+            if j == 0:
+                p.gate.h(0)
+        else:                                              # "linear" and "linear_u3" both re-H
+            p.gate.h(0)
+        if structure == "linear_u3":
+            theta, phi, lam = structure_params[j]           # ZYZ Euler, as in apply_gap_gate's u3
+            p.gate.rz(0, float(lam))
+            p.gate.ry(0, float(theta))
+            p.gate.rz(0, float(phi))
+        if encode_on_spin:                                 # data on the spin: 2 features per gap
             p.gate.rx(0, float(row[(2 * j) % n_features]))
             p.gate.ry(0, float(row[(2 * j + 1) % n_features]))
         if j < t_var:
@@ -351,8 +479,8 @@ def _magic_row_worker(task):
     p.add(r1, Detector(), record=r1)
 
     # A zeroed x leaves the Haar scrambler but puts no data in the interferometer, which is the
-    # qubit-only (``*_rxry``) case; PS(0) is the identity.
-    iface_x = row if encode_iface else np.zeros_like(np.asarray(row, dtype=float))
+    # circuit-encoding-off case; PS(0) is the identity.
+    iface_x = row if encode_circuit else np.zeros_like(np.asarray(row, dtype=float))
     p.add(0, build_sandwich_circuit(m, n_features, seed, enc_name, x=iface_x))
     for md in range(m):
         p.add(md, Detector(), record=md)

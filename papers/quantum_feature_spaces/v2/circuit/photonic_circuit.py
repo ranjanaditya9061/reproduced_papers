@@ -100,18 +100,32 @@ def sandwich_unitary_at(W1, W2, X: torch.Tensor, n_features: int,
                         encoding: Encoding | str = "phase") -> torch.Tensor:
     """``(N, m, m)`` complex ``U(x) = (W2 D(x) W1)^T`` for a batch of inputs.
 
-    ``D(x)`` is the encoding as a diagonal.  Transposing folds in as ``U = W1^T D W2^T`` (``D``
-    is diagonal); the transpose is perceval/merlin's convention.
+    ``D(x)`` is the encoding's contribution -- a diagonal for encodings like ``phase``, or a full
+    dense unitary for encodings that mix modes (``bs``, ``bs_phase``).  Transposing folds in as
+    ``U = W1^T D W2^T``; the transpose is perceval/merlin's convention.
 
-    **Differentiable in ``X``** -- ``torch.exp(1j * x)`` inside the encoding's ``phases`` and a
-    plain ``einsum`` here -- which is what lets :mod:`v2.metrics` take exact input-Jacobians
-    without any parametric re-implementation of the circuit.
+    Tries :meth:`Encoding.phases` first (the cheap ``O(m)``-per-row diagonal path) and falls back
+    to :meth:`Encoding.unitary` (the general ``O(m^2)``-per-row path) when the encoding does not
+    implement the former -- every shipped encoding implements exactly one, so this dispatch always
+    resolves to the right cost for that encoding rather than needing a flag.
+
+    **Differentiable in ``X``** for every encoding -- ``torch.exp(1j * x)`` / ``torch.cos``,
+    ``torch.sin`` inside the encoding and plain ``einsum`` here -- which is what lets
+    :mod:`v2.metrics` take exact input-Jacobians without any parametric re-implementation of the
+    circuit.
     """
     enc = build_encoding(encoding) if isinstance(encoding, str) else encoding
     m = W1.shape[0]
     A = torch.as_tensor(np.ascontiguousarray(W1.T), dtype=torch.complex64)
     B = torch.as_tensor(np.ascontiguousarray(W2.T), dtype=torch.complex64)
-    ph = enc.phases(X, m=m, n_features=n_features)
+    try:
+        ph = enc.phases(X, m=m, n_features=n_features)
+    except NotImplementedError:
+        # General case: U(x) = (W2 D(x) W1)^T = W1^T D(x)^T W2^T.  D is diagonal in the phases()
+        # branch above, where D^T = D collapses this to the einsum below; a mixing encoding's D is
+        # not symmetric in general, so the transpose is not optional here.
+        D = enc.unitary(X, m=m, n_features=n_features)                # (N, m, m)
+        return torch.einsum("il,nlp,pj->nij", A, D.transpose(-1, -2), B)
     return torch.einsum("il,nl,lj->nij", A, ph, B)
 
 

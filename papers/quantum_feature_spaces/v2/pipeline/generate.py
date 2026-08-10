@@ -47,13 +47,30 @@ from .distribution import check_size, load_dist, save_dist
 from .shots import load_shots, save_shots, shots_path, to_seqs
 
 
+def _resolve_n_outcomes(model, X: torch.Tensor) -> int:
+    """``model.n_outcomes``, simulating a single row first if the prep needs one to discover its
+    basis (``spin``/``spin_magic`` -- see ``model.photonic.PhotonicModel.outcome_keys``).
+
+    One row is enough: :meth:`~circuit.prep.StatePrep.outcome_keys` only needs *a* backend result
+    to read the basis off of, and it is cheap relative to the full-size call this guards --
+    exactly the reverse of calling :meth:`~model.base.DistributionModel.probs` on the whole pool
+    just to size the pre-flight check that is supposed to run *before* that call.
+    """
+    try:
+        return model.n_outcomes
+    except RuntimeError:
+        model.probs(X[:1])
+        return model.n_outcomes
+
+
 def generate_exact(cfg: ExperimentConfig, *, root: str | Path = "datasets",
                    force: bool = False) -> Path:
     """Create, reuse or row-extend the exact branch; return its directory."""
     model = build_model(cfg)
     path = exact_path(cfg, model, root)
     target = int(cfg.generation.size)
-    n_out = model.n_outcomes
+    X = sample_X(target, cfg.problem.n_features, cfg.seeds.sample_seed)
+    n_out = _resolve_n_outcomes(model, X)
     check_size(target, n_out, cfg.generation.max_dist_bytes, m=cfg.problem.m, k=cfg.problem.k)
 
     have, cached = 0, None
@@ -65,7 +82,6 @@ def generate_exact(cfg: ExperimentConfig, *, root: str | Path = "datasets",
         cached = load_dist(path).probs
         print(f"[exact] row-extending {have} -> {target}")
 
-    X = sample_X(target, cfg.problem.n_features, cfg.seeds.sample_seed)
     probs = model.probs(X[have:])                       # exact, always; chunked internally
     if cached is not None:
         probs = torch.cat([cached, probs], dim=0)

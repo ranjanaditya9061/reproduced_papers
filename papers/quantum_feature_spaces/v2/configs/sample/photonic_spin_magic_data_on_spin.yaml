@@ -1,0 +1,6 @@
+problem: {n_features: 5, m: 6, k: 3}
+model:   {kind: photonic, prep: spin_magic, encoding: phase, structure: ghz, t_var: 0,
+          encode_on_spin: true, encode_circuit: false}
+generation: {size: 8}
+split:   {test_fraction: 0.2, split_seed: 0}
+seeds:   {sample_seed: 42, model_seed: 42}

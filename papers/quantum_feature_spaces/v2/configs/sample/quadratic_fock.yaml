@@ -1,0 +1,5 @@
+problem: {n_features: 3, m: 4, k: 3}
+model:   {kind: quadratic_fock, encoding: phase, param_matched: true}
+generation: {size: 32}
+split:   {test_fraction: 0.2, split_seed: 0}
+seeds:   {sample_seed: 42, model_seed: 42}

@@ -68,26 +68,67 @@ def apply_cx(state, control: int, target: int, n_qubits: int | None = None):
     return U @ state @ U.conj().T
 
 
-def spin_state(n_q, rx, ry, cx_pairs, rz=None):
-    """Joint source density matrix: per qubit ``H -> Rx (-> Rz) -> Ry``, then the CX chain.
+def spin_state(n_q, rx, ry, cx_pairs, rz=None, layers=1, data_angles=None):
+    """Joint source density matrix: an optional one-shot data encoding, then ``layers`` rounds of
+    (per-qubit ``H -> Rx (-> Rz) -> Ry``, then the CX chain).
+
+    ``rx``/``ry``/``rz`` are ``(layers, n_q)`` -- a fresh seeded draw per layer, not the same
+    angles replayed, so ``layers`` genuinely deepens the circuit rather than repeating a gate that
+    would partly cancel (``H`` applied twice in a row is its own inverse, so if the second layer's
+    rotations were held at the first layer's values, ``H -> Rx -> Ry -> H -> Rx -> Ry`` would not
+    reduce to a no-op, but the ``H``s would still be doing less work than two independently-seeded
+    layers).  ``layers=1`` reproduces the legacy single-round circuit exactly, so ``rx``/``ry`` may
+    also be passed as plain ``(n_q,)`` arrays for that case (see :func:`_broadcast_layer_angles`).
+
+    ``data_angles``, when given, is ``(n_q, 2)`` -- per-qubit ``(rx, ry)`` data angles applied
+    **once**, on ``|0...0>``, before the first layer.  Not per-layer like the seeded twists: this
+    carries ``x`` itself, so repeating it ``layers`` times would inject ``layers`` copies of the
+    same feature into the state rather than deepening the circuit around a single encoding -- the
+    seeded ``rx``/``ry``/``rz`` are the part meant to vary with depth, ``x`` is not.
 
     ``rz`` (per-qubit angles, or ``None``) goes **between Rx and Ry** so the following Ry rotates
     its phase into the rail populations.  A *trailing* Rz is a complete no-op: dual-rail emission
     correlates each spin's Z-basis with its photon's rail, so tracing the unmeasured spins always
     leaves the photons in a classical mixture over Fock states (only ``|amplitude|^2`` survives),
-    and CX is a Z-basis permutation, so it cannot rescue a pure phase.
+    and CX is a Z-basis permutation, so it cannot rescue a pure phase -- true of the *last* layer's
+    entangler only; an earlier layer's CX is not trailing and still acts on a complex amplitude,
+    since a later layer's ``Rx``/``Ry`` follows it.
     """
+    rx = _broadcast_layer_angles(rx, layers, n_q)
+    ry = _broadcast_layer_angles(ry, layers, n_q)
+    rz = None if rz is None else _broadcast_layer_angles(rz, layers, n_q)
+
     psi = np.zeros(2 ** n_q, dtype=complex)
     psi[0] = 1.0                                            # |0...0>
-    for q in range(n_q):
-        psi = apply_1q(psi, q, _H, n_q)                      # |0> -> |+>
-        psi = apply_1q(psi, q, _rx(float(rx[q])), n_q)       # seeded twists -> Gamma != I/2
-        if rz is not None:
-            psi = apply_1q(psi, q, _rz(float(rz[q])), n_q)
-        psi = apply_1q(psi, q, _ry(float(ry[q])), n_q)
-    for c, t in cx_pairs:
-        psi = apply_cx(psi, c, t, n_q)                        # entangler on a real superposition
+    if data_angles is not None:
+        da = np.asarray(data_angles, dtype=float)
+        if da.shape != (n_q, 2):
+            raise ValueError(f"data_angles must be ({n_q}, 2), got {da.shape}")
+        for q in range(n_q):
+            psi = apply_1q(psi, q, _rx(float(da[q, 0])), n_q)
+            psi = apply_1q(psi, q, _ry(float(da[q, 1])), n_q)
+    for layer in range(layers):
+        for q in range(n_q):
+            psi = apply_1q(psi, q, _H, n_q)                  # |0> -> |+>
+            psi = apply_1q(psi, q, _rx(float(rx[layer, q])), n_q)   # seeded twists -> Gamma != I/2
+            if rz is not None:
+                psi = apply_1q(psi, q, _rz(float(rz[layer, q])), n_q)
+            psi = apply_1q(psi, q, _ry(float(ry[layer, q])), n_q)
+        for c, t in cx_pairs:
+            psi = apply_cx(psi, c, t, n_q)                    # entangler on a real superposition
     return np.outer(psi, psi.conj())
+
+
+def _broadcast_layer_angles(angles, layers: int, n_q: int) -> np.ndarray:
+    """``(layers, n_q)``, accepting a plain ``(n_q,)`` array at ``layers == 1`` unchanged."""
+    a = np.asarray(angles, dtype=float)
+    if a.ndim == 1:
+        if layers != 1:
+            raise ValueError(f"angles are (n_q,) but layers={layers}; draw (layers, n_q) angles")
+        return a.reshape(1, n_q)
+    if a.shape != (layers, n_q):
+        raise ValueError(f"angles must be ({layers}, {n_q}), got {a.shape}")
+    return a
 
 
 def normalize_cx_pairs(cx_pairs, k: int):
