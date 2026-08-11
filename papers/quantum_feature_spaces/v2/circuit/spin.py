@@ -132,7 +132,14 @@ def _broadcast_layer_angles(angles, layers: int, n_q: int) -> np.ndarray:
 
 
 def normalize_cx_pairs(cx_pairs, k: int):
-    """Validate and normalise ``cx_pairs`` to a list of ``(control, target)`` int tuples."""
+    """Validate and normalise ``cx_pairs`` to a list of ``(control, target)`` int tuples.
+
+    ``cx_pairs="chain"`` expands to the linear ladder ``[(0,1), (1,2), ..., (k-2,k-1)]`` at
+    whatever ``k`` the config actually has, so a config can ask for "the ladder" without the
+    caller pre-computing a ``k``-sized pair list by hand.
+    """
+    if cx_pairs == "chain":
+        return [(i, i + 1) for i in range(k - 1)]
     pairs = []
     for pair in (cx_pairs or []):
         c, t = int(pair[0]), int(pair[1])

@@ -2,7 +2,7 @@
 
 One directory per circuit, one subdirectory per branch::
 
-    datasets_v2/<circuit_hash>/
+    datasets/<circuit_hash>/
     |-- exact/                    dist.npz  (keys, probs, probs_at_zero)
     |   |                         circuit.pt
     |   `-- meta.json
@@ -92,12 +92,12 @@ def circuit_hash(cfg, model) -> str:
     return hashlib.sha256(blob).hexdigest()[:8]
 
 
-def circuit_path(cfg, model, root: str | Path = "datasets_v2") -> Path:
+def circuit_path(cfg, model, root: str | Path = "datasets") -> Path:
     """``<root>/<circuit_hash>`` -- the directory both branches share."""
     return Path(root) / circuit_hash(cfg, model)
 
 
-def exact_path(cfg, model, root: str | Path = "datasets_v2") -> Path:
+def exact_path(cfg, model, root: str | Path = "datasets") -> Path:
     """``<root>/<circuit_hash>/exact`` -- the exact-distribution branch."""
     return circuit_path(cfg, model, root) / EXACT_DIR
 

@@ -1,6 +1,6 @@
 """Analysis B -- how much of the distribution's input-information a readout captures.
 
-    python -m v2.metrics.observable --config v2/configs/photonic.yaml --all-observables
+    python -m metrics.observable --config configs/photonic.yaml --all-observables
 
 Same differentiation target as analysis A (the input ``x``), all exact from the shared score
 matrix and the registry's influence functions.  Nothing here samples.
@@ -396,7 +396,7 @@ def main(argv=None) -> None:
     ap.add_argument("--n-x", type=int, default=48)
     ap.add_argument("--delta", type=float, default=0.1)
     ap.add_argument("--shots", type=int, default=None)
-    ap.add_argument("--out-root", default="datasets_v2")
+    ap.add_argument("--out-root", default="datasets")
     ap.add_argument("--graph-density", type=float, default=0.5)
     args = ap.parse_args(argv)
 

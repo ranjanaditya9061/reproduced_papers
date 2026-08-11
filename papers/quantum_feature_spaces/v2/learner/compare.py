@@ -1,6 +1,6 @@
 """The paired ``perm``-vs-``det`` protocol, with the decision logic in code rather than in prose.
 
-    python -m v2.learner.compare --perm v2/configs/photonic.yaml --det v2/configs/fermion.yaml \
+    python -m learner.compare --perm configs/photonic.yaml --det configs/fermion.yaml \
         --observables parity ent osc --learner ridge
 
 **Why this file exists.**  A ``perm``-arm failure on its own is confounded by architecture and
@@ -30,7 +30,7 @@ observable pool into a selection half and a confirmation half, and only the conf
 numbers may be quoted as a result.
 
 **What a separation here would and would not mean.**  This is a learnability comparison of two
-labelling functions.  Per :mod:`v2.metrics.distribution`, it is *not* evidence about the
+labelling functions.  Per :mod:`metrics.distribution`, it is *not* evidence about the
 ``Perm``/``det`` complexity separation: the boson family is indexed by ``O(m^2)`` numbers and is
 maximally compressible even though each ``p(n)`` is ``#P``-hard.
 """
@@ -42,19 +42,19 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    __package__ = "v2.learner"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "learner"
 
 import torch
 
 from config import load_config
 from model import build_model
-from pipeline.artifact import artifact_path
+from pipeline.artifact import exact_path
 from pipeline.distribution import load_dist
 from pipeline.score import load_soft
 from pipeline.split import split_indices
 from .base import build_learner, evaluate
-from . import embedding, nn  # noqa: F401  -- registration side effects
+from . import embedding, kernel, nn  # noqa: F401  -- registration side effects
 
 #: Held-out ``R^2`` above which an arm counts as "succeeds".  A threshold has to be fixed *before*
 #: looking at the numbers for the decision table to mean anything; 0.5 is the repo's existing
@@ -63,18 +63,17 @@ SUCCESS_R2 = 0.5
 
 
 def run_arm(cfg_path: str | Path, observable: str, *, learner: str, hparams: dict,
-            out_root: str = "datasets_v2", scores_root: str = "scores_v2",
+            out_root: str = "datasets", scores_root: str = "scores",
             n_train: int | None = None, graph_density: float = 0.5) -> dict:
     """Fit one arm and return its held-out statistics.  Split indices depend only on the pool size,
     so both arms see identical rows by construction."""
     cfg = load_config(cfg_path)
-    path = artifact_path(cfg, build_model(cfg), out_root)
+    path = exact_path(cfg, build_model(cfg), out_root)
     if not path.exists():
-        raise SystemExit(f"no artifact at {path}; run v2.pipeline.generate --config {cfg_path}")
+        raise SystemExit(f"no artifact at {path}; run pipeline.generate --config {cfg_path}")
 
     dist = load_dist(path)
-    soft = load_soft(path, observable, scores_root=scores_root, dist=dist,
-                     graph_density=graph_density)
+    soft = load_soft(path, observable, scores_root=scores_root, graph_density=graph_density)
     tr, te = split_indices(len(dist), test_fraction=cfg.split.test_fraction,
                            split_seed=cfg.split.split_seed)
     if n_train:
@@ -118,11 +117,13 @@ def verdict(det_r2: float, perm_r2: float, threshold: float = SUCCESS_R2) -> str
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Paired perm-vs-det learner comparison")
-    ap.add_argument("--perm", default="v2/configs/photonic.yaml", help="the |Perm|^2 arm")
-    ap.add_argument("--det", default="v2/configs/fermion.yaml", help="the |det|^2 control arm")
+    ap.add_argument("--perm", default="configs/photonic.yaml", help="the |Perm|^2 arm")
+    ap.add_argument("--det", default="configs/fermion.yaml", help="the |det|^2 control arm")
     ap.add_argument("--observables", nargs="+", default=["parity", "majority", "ent", "osc"])
-    ap.add_argument("--learner", default="ridge")
-    ap.add_argument("--basis", default="fourier")
+    ap.add_argument("--learner", default="ridge", choices=["ridge", "svr", "mlp"],
+                    help="ridge=embedding-based, svr=kernel-based, mlp=nn-based")
+    ap.add_argument("--basis", default=None, help="ridge/svr feature map; unset keeps each "
+                    "learner's own default (fourier for ridge, raw for svr -- the clean kernel arm)")
     ap.add_argument("--order", type=int, default=3)
     ap.add_argument("--alpha", type=float, default=1e-3)
     ap.add_argument("--n-train", type=int, default=None)
@@ -131,8 +132,12 @@ def main(argv=None) -> None:
                     help="split the observable pool into selection / confirmation halves")
     args = ap.parse_args(argv)
 
-    hparams = ({"basis": args.basis, "order": args.order, "alpha": args.alpha}
-               if args.learner in ("ridge", "svr") else {})
+    if args.learner in ("ridge", "svr"):
+        hparams = {"order": args.order, "alpha": args.alpha}
+        if args.basis is not None:
+            hparams["basis"] = args.basis
+    else:
+        hparams = {}
     if args.learner == "svr":
         hparams.pop("alpha", None)
 
@@ -144,7 +149,7 @@ def main(argv=None) -> None:
           f"learner={args.learner} {hparams}")
     print(f"Success threshold fixed in advance: held-out R^2 >= {SUCCESS_R2}")
     print("Verdicts use R^2: with noiseless labels the Gaussian logL is dominated by label scale "
-          "(see v2.learner.base).\nPromote logL to primary only at generation.shots > 0.\n")
+          "(see learner.base).\nPromote logL to primary only at generation.shots > 0.\n")
 
     for label, names in halves:
         if not names:

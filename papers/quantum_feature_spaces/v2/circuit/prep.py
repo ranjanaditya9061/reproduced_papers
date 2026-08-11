@@ -162,12 +162,21 @@ class SpinPrep(StatePrep):
     is_batched = False
 
     def __init__(self, *, cx_pairs=None, angle_levels=None, rz_angles=None, layers=None,
-                 encode_on_spin=False):
+                 encode_on_spin=False, encode_circuit=True):
         self.cx_pairs_raw = cx_pairs
         self.angle_levels = None if angle_levels is None else int(angle_levels)
         self.rz_angles = rz_angles
         self.layers = 1 if layers is None else int(layers)
         self.encode_on_spin = bool(encode_on_spin)
+        #: Whether ``x`` reaches the interferometer at all.  ``True`` is the legacy/default
+        #: behaviour (every existing ``spin`` dataset was generated this way); ``False`` zeroes
+        #: ``x`` before :func:`~circuit.photonic_circuit.build_sandwich_circuit`, mirroring
+        #: :class:`SpinMagicPrep`'s knob of the same name, so ``x`` reaches the outcome only
+        #: through ``encode_on_spin`` (if that is also set).
+        self.encode_circuit = bool(encode_circuit)
+        #: Set by :meth:`validate` once ``k`` is known -- see there for why ``spec()`` reads
+        #: this instead of re-resolving ``cx_pairs_raw`` itself.
+        self._resolved_pairs: list[tuple[int, int]] | None = None
         if rz_angles not in (None, "prime"):
             raise ValueError(f"rz_angles must be None or 'prime' (got {rz_angles!r})")
 
@@ -176,7 +185,8 @@ class SpinPrep(StatePrep):
         m = cfg.model
         return cls(cx_pairs=m.cx_pairs, angle_levels=m.angle_levels, rz_angles=m.rz_angles,
                    layers=getattr(m, "layers", None),
-                   encode_on_spin=bool(getattr(m, "encode_on_spin", False)))
+                   encode_on_spin=bool(getattr(m, "encode_on_spin", False)),
+                   encode_circuit=bool(getattr(m, "encode_circuit", None) is not False))
 
     def validate(self, *, m: int, k: int) -> None:
         if m % 2:
@@ -185,7 +195,11 @@ class SpinPrep(StatePrep):
             raise ValueError(f"need 2*k <= m for dual-rail emission (k={k}, m={m})")
         if self.layers < 1:
             raise ValueError(f"layers must be >= 1 (got {self.layers})")
-        _spin.normalize_cx_pairs(self.cx_pairs_raw, k)
+        # Resolved here (k is always known by this point -- build_prep validates immediately
+        # after construction) and cached, so spec() can report the concrete pairs a "chain"
+        # request resolved to rather than the literal string, and two "chain" configs at
+        # different k hash apart.
+        self._resolved_pairs = _spin.normalize_cx_pairs(self.cx_pairs_raw, k)
 
     def _angles(self, k: int, seed: int):
         rng = np.random.default_rng(int(seed))
@@ -214,7 +228,7 @@ class SpinPrep(StatePrep):
         enc_name = getattr(encoding, "name", encoding)
         rows = X.detach().cpu().numpy()
         tasks = [(row, m, k, n_features, int(seed), rx, ry, pairs, rz, self.layers,
-                  self.encode_on_spin, enc_name)
+                  self.encode_on_spin, self.encode_circuit, enc_name)
                  for row in rows]
         results = _spin.parallel_row_map(_spin_row_worker, tasks, n_jobs)
         keys, probs = _align_rows(results, n_modes=m)
@@ -226,10 +240,12 @@ class SpinPrep(StatePrep):
 
     def spec(self) -> dict:
         # Knobs are added only when set, so a config that leaves them at their defaults hashes
-        # the same as one written before the knob existed.  Pairs are already validated by
-        # `validate`, so this only canonicalises them to lists of ints.
+        # the same as one written before the knob existed.  Reads the pairs `validate` already
+        # resolved (never re-derives from cx_pairs_raw here), so "chain" hashes as the concrete
+        # ladder it resolved to -- two "chain" configs at different k hash apart, and the hash
+        # reflects the actual circuit rather than the shorthand that produced it.
         spec = {"prep": self.name, "source": "H_Rx_Ry_seeded"}
-        pairs = [[int(a), int(b)] for a, b in (self.cx_pairs_raw or [])]
+        pairs = [[int(a), int(b)] for a, b in (self._resolved_pairs or [])]
         if pairs:
             spec["cx_pairs"] = pairs
         if self.angle_levels is not None:
@@ -240,6 +256,8 @@ class SpinPrep(StatePrep):
             spec["layers"] = self.layers
         if self.encode_on_spin:
             spec["encode_on_spin"] = self.encode_on_spin
+        if not self.encode_circuit:
+            spec["encode_circuit"] = self.encode_circuit
         return spec
 
 
@@ -407,7 +425,8 @@ class SpinMagicPrep(StatePrep):
 
 def _spin_row_worker(task):
     """One row of :class:`SpinPrep`: build the processor, return its full distribution."""
-    row, m, k, n_features, seed, rx, ry, pairs, rz, layers, encode_on_spin, enc_name = task
+    (row, m, k, n_features, seed, rx, ry, pairs, rz, layers, encode_on_spin, encode_circuit,
+     enc_name) = task
     from perceval import Detector
     from perceval_spoqc import HybridProcessor
 
@@ -426,7 +445,10 @@ def _spin_row_worker(task):
         _spin.spin_state(k, rx, ry, pairs, rz=rz, layers=layers, data_angles=data_angles))
     for q in range(k):
         p.emit(q, into=(2 * q, 2 * q + 1))
-    p.add(0, build_sandwich_circuit(m, n_features, seed, enc_name, x=row))
+    # A zeroed x leaves the Haar scrambler but puts no data in the interferometer -- the
+    # circuit-encoding-off case, matching SpinMagicPrep's identical iface_x branch.
+    iface_x = row if encode_circuit else np.zeros_like(np.asarray(row, dtype=float))
+    p.add(0, build_sandwich_circuit(m, n_features, seed, enc_name, x=iface_x))
     for mode in range(m):
         p.add(mode, Detector())
     return _spin.full_distribution(p, m)

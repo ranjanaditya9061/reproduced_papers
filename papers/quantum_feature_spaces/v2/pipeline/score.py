@@ -31,7 +31,7 @@ from pathlib import Path
 
 if __package__ in (None, ""):                    # allow `python pipeline/score.py`
     import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "pipeline"
 
 import torch
@@ -75,7 +75,7 @@ def load_circuit_hash(dist_path: str | Path) -> str:
 
 
 def score_path(dist_path: str | Path, name: str, ctx: ObservableContext,
-               scores_root: str | Path = "scores_v2", source: str = EXACT_SOURCE) -> Path:
+               scores_root: str | Path = "scores", source: str = EXACT_SOURCE) -> Path:
     return (Path(scores_root) / load_circuit_hash(dist_path) / source
             / f"{observable_spec_hash(name, ctx)}.pt")
 

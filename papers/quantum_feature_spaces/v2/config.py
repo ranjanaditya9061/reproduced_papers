@@ -88,8 +88,10 @@ class ModelConfig:
     structure: str | None = None
     #: spin: puts x on the spin once, before any layer (rx(x[2q]), ry(x[2q+1]) per qubit on
     #: |0...0>).  spin_magic: same idea but per-gap and overriding gate_kind's legacy "_rxry"/
-    #: "_rxry_iface" suffix when set.  encode_circuit (spin_magic only) puts x in the
-    #: interferometer as well (False -> the encoding sees x=0, i.e. the identity).
+    #: "_rxry_iface" suffix when set.  encode_circuit (spin AND spin_magic) puts x in the
+    #: interferometer as well (False -> the encoding sees x=0, i.e. the identity); spin's default
+    #: is True (the legacy/only behaviour before this flag existed), spin_magic's default follows
+    #: its gate_kind suffix unless set explicitly -- see v2.circuit.prep.SpinPrep/SpinMagicPrep.
     encode_on_spin: bool | None = None
     encode_circuit: bool | None = None
 

@@ -15,16 +15,17 @@ import math
 import pytest
 import torch
 
-from v2.config import ExperimentConfig, ModelConfig, ProblemConfig
-from v2.pipeline.artifact import load_meta
-from v2.metrics.distribution import (conditional_sqrt_jacobian, finite_difference_jacobian,
+from config import ExperimentConfig, ModelConfig, ProblemConfig
+from pipeline.artifact import load_meta
+from metrics.distribution import (conditional_sqrt_jacobian, finite_difference_jacobian,
                                      fisher_spectrum, input_fisher, phase_eigenvalue,
                                      probs_and_jacobian, project_physical, shared_support,
                                      spectrum_from_jacobian, sqrt_jacobian)
-from v2.metrics.observable import (ade_summaries, efficiency, eta, fisher_at, influence_terms,
+from metrics.observable import (ade_summaries, efficiency, eta, fisher_at, influence_terms,
                                    project_vec, rho2_per_direction)
-from v2.model import MODELS, build_model, sample_X
-from v2.observable import ObservableContext, resolve_observable
+from model import MODELS, build_model, sample_X
+from model.fermion import occupied_modes
+from observable import ObservableContext, resolve_observable
 
 OBSERVABLES = ["parity", "majority", "n_first", "bunching", "xent_parity", "single_output",
                "sq_parity", "pairprod", "ent", "ent_parity", "osc", "osc_parity",
@@ -53,56 +54,56 @@ def setup():
 
 def test_artifact_is_observable_independent(tmp_path):
     """Two observables on one circuit -> ONE dataset directory, TWO score files."""
-    from v2.pipeline.generate import generate_exact
-    from v2.pipeline.score import EXACT_SOURCE, load_soft
+    from pipeline.generate import generate_exact
+    from pipeline.score import EXACT_SOURCE, load_soft
 
     cfg = cfg_for()
     cfg.generation.size = 16
-    path = generate_exact(cfg, out_root=tmp_path / "datasets_v2")
-    scores = tmp_path / "scores_v2"
+    path = generate_exact(cfg, root=tmp_path / "datasets")
+    scores = tmp_path / "scores"
     for name in ("parity", "ent"):
         load_soft(path, name, scores_root=scores)
 
-    assert len(list((tmp_path / "datasets_v2").iterdir())) == 1
-    assert len(list((scores / path.name.split("_")[-1] / EXACT_SOURCE).glob("*.pt"))) == 2
+    assert len(list((tmp_path / "datasets").iterdir())) == 1
+    assert len(list((scores / path.parent.name / EXACT_SOURCE).glob("*.pt"))) == 2
 
 
 def test_shot_budget_is_not_part_of_the_circuit_identity(tmp_path):
-    """The fix for the costliest defect: 20k and 30k must share ONE directory and ONE simulation.
+    """The fix for the costliest defect: 10k and 20k must share ONE directory and ONE simulation.
 
     Previously ``nsample`` was hashed, so they were separate artifacts -- the second re-ran the exact
     simulation (76% of the work, bit-identical output), redrew from shot zero, and still did not
     produce an extension of the first.
     """
-    from v2.pipeline.artifact import artifact_path
-    from v2.pipeline.generate import generate_exact, generate_shots
-    from v2.pipeline.shots import BLOCK, load_shots
+    from pipeline.artifact import exact_path
+    from pipeline.generate import generate_exact, generate_shots
+    from pipeline.shots import load_shots
 
-    out_root, shots_root = tmp_path / "datasets_v2", tmp_path / "shots_v2"
+    root = tmp_path / "datasets"
     cfg = cfg_for()
     cfg.generation.size = 16
-    generate_exact(cfg, out_root=out_root)
-    exact_dir = artifact_path(cfg, build_model(cfg), out_root)
+    generate_exact(cfg, root=root)
+    exact_dir = exact_path(cfg, build_model(cfg), root)
 
-    cfg.generation.shots = 2 * BLOCK
-    p2 = generate_shots(cfg, shots_root=shots_root)
-    s2, m2 = load_shots(p2)
+    cfg.generation.shots = 10_000
+    p2 = generate_shots(cfg, root=root)
+    keys2, seq2, m2 = load_shots(p2)
 
-    cfg.generation.shots = 3 * BLOCK
-    p3 = generate_shots(cfg, shots_root=shots_root)
-    s3, m3 = load_shots(p3)
+    cfg.generation.shots = 15_000
+    p3 = generate_shots(cfg, root=root)
+    keys3, seq3, m3 = load_shots(p3)
 
-    assert p2 == p3                                        # same store: n_blocks is NOT hashed
-    assert (m2["n_blocks"], m3["n_blocks"]) == (2, 3)
-    assert sum(s2[0].values()) == 2 * BLOCK
-    assert sum(s3[0].values()) == 3 * BLOCK                # exactly one block added
-    # nested BY CONSTRUCTION: the stored counts are kept and added to, not redrawn, so every count
-    # in the smaller budget survives in the larger one without the draw being reproducible.
-    for a, b in zip(s2, s3):
-        assert all(b.get(key, 0) >= n for key, n in a.items())
+    assert p2 == p3                                        # same store: the budget is NOT hashed
+    assert (m2["shots"], m3["shots"]) == (10_000, 15_000)
+    assert seq2.shape[1] == 10_000
+    assert seq3.shape[1] == 15_000
+    # nested BY CONSTRUCTION: 10k is a true prefix of 15k -- the stored draw is extended, not redrawn.
+    row0 = [keys2[j] for j in seq2[0]]
+    row0_prefix_of_15k = [keys3[j] for j in seq3[0][:10_000]]
+    assert row0 == row0_prefix_of_15k
     # and the exact branch was simulated once, for both budgets
-    assert len(list((tmp_path / "datasets_v2").iterdir())) == 1
-    assert exact_dir.name.endswith(load_meta(exact_dir)["hash"])
+    assert len(list(root.iterdir())) == 1
+    assert exact_dir.parent.name == load_meta(exact_dir)["hash"]
 
 
 def test_shot_draw_never_builds_the_distribution():
@@ -117,53 +118,48 @@ def test_shot_draw_never_builds_the_distribution():
     original = type(model).probs
     type(model).probs = lambda self, *a, **k: (calls.append(1), original(self, *a, **k))[1]
     try:
-        model.shot_counts(sample_X(2, 6, 42), blocks=[0], shot_seed=0)
+        model.shot_counts(sample_X(2, 6, 42), shots=1_000, shot_seed=0)
     finally:
         type(model).probs = original
     assert calls == []
 
 
-def test_shot_draw_returns_one_dict_per_requested_row():
+def test_shot_draw_returns_one_sequence_per_requested_row():
     """The row contract: ``rows=`` picks which rows to draw and the result is aligned to *it*.
 
     Not padded out to the pool with empty rows -- that is what makes a pool extension a plain list
     concatenation in ``generate_shots``, with no index bookkeeping.
     """
-    from v2.pipeline.shots import BLOCK
-
     model = build_model(cfg_for())
     X = sample_X(6, 6, 42)
-    whole = model.shot_counts(X, blocks=[0], shot_seed=0)
+    whole = model.shot_counts(X, shots=1_000, shot_seed=0)
     assert len(whole) == 6
-    assert all(sum(row.values()) == BLOCK for row in whole)
+    assert all(len(row) == 1_000 for row in whole)
     # keys are plain occupation tuples over m modes conserving k photons, discovered from the draw
     assert all(len(key) == 6 and sum(key) == 3 for row in whole for key in row)
 
-    subset = model.shot_counts(X, blocks=[0], rows=[3, 5], shot_seed=0)
+    subset = model.shot_counts(X, shots=1_000, rows=[3, 5], shot_seed=0)
     assert len(subset) == 2
-    assert all(sum(row.values()) == BLOCK for row in subset)
+    assert all(len(row) == 1_000 for row in subset)
 
 
-def test_shot_blocks_are_additive():
-    """Integer counts, so extending a budget is ``Counter`` addition and 10k stays a prefix of 20k.
+def test_shot_draws_are_additive_via_offset():
+    """A draw at ``offset=S`` extends -- not redraws -- a stored draw of ``S`` shots.
 
-    Only the arithmetic is asserted, not bit-equality against a single two-block draw: exqalibur is
-    seeded once per block and ``backend.samples`` draws in bulk, so a redraw is not reproducible.
-    Extension does not need it to be -- the stored counts are kept and added to, never recomputed.
+    Only the fact of extension is asserted, not bit-equality against a single combined draw:
+    exqalibur is seeded on the offset (:func:`pipeline.shots.offset_seed`), so a fresh two-part draw
+    at offsets ``0`` and ``S`` need not equal a single ``2S``-shot draw from offset 0 -- the contract
+    is that appending the tail to the head reproduces exactly what :func:`generate_shots` stores.
     """
-    from v2.pipeline.shots import BLOCK, merge_shots
-
     model = build_model(cfg_for())
     X = sample_X(4, 6, 42)
-    b0 = model.shot_counts(X, blocks=[0], shot_seed=0)
-    b1 = model.shot_counts(X, blocks=[1], shot_seed=0)
-    merged = merge_shots(b0, b1)
+    head = model.shot_counts(X, shots=1_000, shot_seed=0)
+    tail = model.shot_counts(X, shots=1_000, offset=1_000, shot_seed=0)
+    merged = [h + t for h, t in zip(head, tail)]
 
-    assert all(isinstance(n, int) for row in merged for n in row.values())
-    assert all(sum(row.values()) == 2 * BLOCK for row in merged)
-    for row, a, b in zip(merged, b0, b1):
-        assert set(row) == set(a) | set(b)                  # a new block may hit unseen outcomes
-        assert all(row[key] == a.get(key, 0) + b.get(key, 0) for key in row)
+    assert all(len(row) == 2_000 for row in merged)
+    for row, h in zip(merged, head):
+        assert row[:1_000] == h                              # the head survives as an exact prefix
 
 
 def test_shot_seed_gives_independent_realisations_at_a_fixed_circuit():
@@ -171,7 +167,7 @@ def test_shot_seed_gives_independent_realisations_at_a_fixed_circuit():
     circuit.  Error bars on the SNR -> R^2 ceiling need exactly this."""
     model = build_model(cfg_for())
     X = sample_X(2, 6, 42)
-    draws = [model.shot_counts(X, blocks=[0], shot_seed=s) for s in range(3)]
+    draws = [model.shot_counts(X, shots=1_000, shot_seed=s) for s in range(3)]
     assert draws[0] != draws[1] and draws[1] != draws[2]
 
 
@@ -181,18 +177,23 @@ def test_clifford_sampling_converges_to_the_exact_distribution():
     Total-variation distance falls as ``1/sqrt(S)`` -- measured 0.0255 / 0.0118 / 0.0060 at
     10k / 40k / 160k shots.
     """
+    from pipeline.shots import to_counts
+
     model = build_model(cfg_for())
     model.forward_batch = 0
     X = sample_X(2, 6, 42)
     exact = model.probs(X).double()
     index = {tuple(int(c) for c in key): i for i, key in enumerate(model.outcome_keys())}
     tvs = []
-    for nb in (1, 4):
-        rows = model.shot_counts(X, blocks=range(nb), shot_seed=0)
+    for shots in (10_000, 40_000):
+        rows = model.shot_counts(X, shots=shots, shot_seed=0)
+        keys = tuple(sorted({key for row in rows for key in row}))
+        col = {key: i for i, key in enumerate(keys)}
+        seq = torch.tensor([[col[key] for key in row] for row in rows])
+        counts = to_counts(keys, seq.numpy()).double()
         emp = torch.zeros_like(exact)
-        for i, row in enumerate(rows):                      # align onto the exact basis to compare
-            for key, n in row.items():
-                emp[i, index[key]] = float(n)
+        for j, key in enumerate(keys):
+            emp[:, index[key]] = counts[:, j]
         emp = emp / emp.sum(1, keepdim=True)
         assert torch.allclose(emp.sum(1), torch.ones(2, dtype=torch.float64), atol=1e-6)
         tvs.append(float(0.5 * (emp - exact).abs().sum(1).mean()))
@@ -202,29 +203,30 @@ def test_clifford_sampling_converges_to_the_exact_distribution():
 
 def test_noisy_scores_do_not_share_a_cache_key_with_exact(tmp_path):
     """One file standing for several label sets is the original bug in a new place."""
-    from v2.pipeline.generate import generate_exact, generate_shots
-    from v2.pipeline.score import EXACT_SOURCE, load_soft, score_path
-    from v2.pipeline.shots import BLOCK
+    from pipeline.generate import generate_exact, generate_shots
+    from pipeline.score import EXACT_SOURCE, load_soft, score_path
 
-    roots = {"out_root": tmp_path / "datasets_v2", "shots_root": tmp_path / "shots_v2"}
+    root = tmp_path / "datasets"
     cfg = cfg_for()
-    cfg.generation.size, cfg.generation.shots = 16, BLOCK
-    path = generate_exact(cfg, out_root=roots["out_root"])
-    sdir = generate_shots(cfg, shots_root=roots["shots_root"])
-    scores = tmp_path / "scores_v2"
+    cfg.generation.size, cfg.generation.shots = 16, 1_000
+    path = generate_exact(cfg, root=root)
+    sdir = generate_shots(cfg, root=root)
+    scores = tmp_path / "scores"
 
-    from v2.pipeline.distribution import load_dist
-    from v2.pipeline.score import context_for
+    from pipeline.distribution import load_dist
+    from pipeline.score import context_for
 
     exact = load_soft(path, "parity", scores_root=scores)
     noisy = load_soft(path, "parity", scores_root=scores, shots_dir=sdir)
     assert not torch.equal(exact, noisy)
-    assert score_path(path, "parity", context_for(load_dist(path)), scores, EXACT_SOURCE).exists()
+    dist = load_dist(path)
+    ctx = context_for(dist.meta, dist.keys, dist.probs_at_zero.numpy())
+    assert score_path(path, "parity", ctx, scores, EXACT_SOURCE).exists()
     assert len(list(scores.rglob("*.pt"))) == 2             # two sources, two files
 
 
 def test_circuit_spec_rejects_an_observable():
-    from v2.pipeline.artifact import _check_spec
+    from pipeline.artifact import _check_spec
     with pytest.raises(ValueError, match="circuit_spec"):
         _check_spec({"observable": "parity"}, "photonic")
 
@@ -263,8 +265,20 @@ def test_parameter_counts_scale_as_2m2_minus_1():
 
 
 def test_n_features_is_a_study_invariant():
-    with pytest.raises(ValueError, match="STUDY INVARIANT"):
-        ExperimentConfig(problem=ProblemConfig(n_features=5)).validate()
+    """``n_features`` is required (no ``m - 1`` fallback) and pinned across one comparison.
+
+    :func:`check_commensurable` -- not :meth:`ExperimentConfig.validate` -- is what enforces the
+    invariant: a single config's ``n_features`` is never checked against anything global, only a
+    *comparison* (a grid or sweep) is rejected for mixing sizes, since Fisher spectra are
+    ``n_features x n_features`` and mixing sizes compares different-dimensional objects.
+    """
+    from config import check_commensurable
+
+    ExperimentConfig(problem=ProblemConfig(n_features=5)).validate()   # any single value is fine
+    mismatched = ExperimentConfig(problem=ProblemConfig(n_features=5, m=6, k=3),
+                                  model=ModelConfig(kind="photonic"))
+    with pytest.raises(ValueError, match="different n_features"):
+        check_commensurable([cfg_for(), mismatched])
 
 
 # --- analysis A ---------------------------------------------------------------------------------- #
@@ -317,7 +331,7 @@ def test_global_phase_mode_and_the_projection_invariant():
     projected spectrum is ``n_f - 1`` dimensional at BOTH, which is what makes the sweep stackable."""
     X = sample_X(2, 6, 42)
     for m, k, has_null in [(6, 3, True), (8, 4, False)]:
-        model = build_model(cfg_for("fermion", m, k, flavours=2))
+        model = build_model(cfg_for("fermion", m, k))
         J = sqrt_jacobian(model, X[0], project=False)
         e = spectrum_from_jacobian(J)
         if has_null:
@@ -334,9 +348,12 @@ def test_global_phase_mode_and_the_projection_invariant():
 def test_conditioning_centering_is_exactly_the_rank_one_correction():
     """Omitting the centering overestimates ``F^(C)`` by ``(d log Z_C)(d log Z_C)^T``, exactly."""
     X = sample_X(4, 6, 42)
-    boson, fermi = build_model(cfg_for("photonic")), build_model(cfg_for("fermion", flavours=1))
+    boson, fermi = build_model(cfg_for("photonic")), build_model(cfg_for("fermion"))
     mask = shared_support([boson, fermi], X[:2])
-    assert int(mask.sum()) == math.comb(6, 3)           # 20 of 56: the collision-free sector
+    # The phase-power columns give the determinant readout the FULL basis, so the shared support is
+    # now everything -- that support match is the whole point of the construction, and the reason
+    # this comparison is no longer partly a comparison of support sizes.
+    assert int(mask.sum()) == len(boson.outcome_keys()) == math.comb(6 + 3 - 1, 3)
 
     x = X[0]
     Jc = conditional_sqrt_jacobian(boson, x, mask, project=False, center=True).double()
@@ -350,19 +367,51 @@ def test_conditioning_centering_is_exactly_the_rank_one_correction():
     assert float(resid.abs().max()) < 1e-5 * float(torch.outer(dlogZ, dlogZ).abs().max().clamp(min=1e-12)) + 1e-6
 
 
-def test_fermion_flavours_open_the_bunched_sector():
-    """Exactly 0 bunched mass at ``r=1`` (Pauli), non-negligible at ``r>=2``: the contrast the
-    flavoured mod exists to create, and what makes the shared-support comparison honest."""
+def test_fermion_collision_free_sector_is_exactly_free_fermions():
+    """``col_1(c) == c`` identically, so the phase-power readout CONTAINS the strict ``det`` model.
+
+    This is what lets the ``Perm``-vs-``det`` claim stay honest without any flavour machinery: the
+    bunched sector is a constructed extension, but the collision-free sector is untouched
+    ``|det U[S, T]|^2``.  Checked against an independent determinant, not against itself.
+    """
     X = sample_X(4, 6, 42)
-    keys = build_model(cfg_for("fermion", flavours=1)).outcome_keys()
+    fermi = build_model(cfg_for("fermion"))
+    U = fermi.unitary(X).detach().to(torch.complex128)
+    rows = occupied_modes(fermi.input_state())
+    keys_cf = [k for k, f in zip(fermi.outcome_keys(), fermi.collision_free_mask) if f]
+    assert len(keys_cf) == math.comb(6, 3)
+
+    ref = torch.stack([torch.tensor(
+        [abs(torch.linalg.det(U[n][rows][:, occupied_modes(k)]).item()) ** 2 for k in keys_cf],
+        dtype=torch.float64) for n in range(X.shape[0])])
+    ref = ref / ref.sum(dim=1, keepdim=True)
+    got = fermi.collision_free_probs(X).double()
+    assert float((ref - got).abs().max()) < 1e-6
+
+
+def test_fermion_bunched_mass_tracks_the_boson_model():
+    """``s = k/m`` is calibrated so the det readout matches the boson model's bunched mass.
+
+    The support match alone would still leave the two distributions differing in *where* the mass
+    sits, so this is the second half of making the comparison about the matrix function.  ``s = 0``
+    (moduli untouched) is checked to be materially worse, so the rule is doing work rather than the
+    construction being insensitive to it.
+    """
+    X = sample_X(16, 6, 42)
+    keys = build_model(cfg_for("fermion")).outcome_keys()
     bunched = torch.tensor([max(kk) > 1 for kk in keys])
-    masses = []
-    for r in (1, 2, 3):
-        probs = build_model(cfg_for("fermion", flavours=r)).probs(X)
-        masses.append(float(probs[:, bunched].sum(dim=1).mean()))
-    assert masses[0] < 1e-9
-    assert masses[1] > 0.1
-    assert masses[2] > masses[1]
+
+    fermi = build_model(cfg_for("fermion"))
+    assert fermi.bunching_s == pytest.approx(3 / 6)          # the k/m rule at this config
+    bp = fermi.boson_probs(X)
+    bp = bp / bp.sum(dim=1, keepdim=True)
+    target = float(bp[:, bunched].sum(dim=1).mean())
+
+    rule = float(fermi.probs(X)[:, bunched].sum(dim=1).mean())
+    flat = float(build_model(cfg_for("fermion", bunching_s=0.0))
+                 .probs(X)[:, bunched].sum(dim=1).mean())
+    assert abs(rule - target) / target < 0.10                # measured ~5% at (6, 3)
+    assert abs(flat - target) / target > abs(rule - target) / target
 
 
 # --- analysis B ---------------------------------------------------------------------------------- #
@@ -476,7 +525,7 @@ def test_mispaired_averages_can_exceed_the_bound():
 
 
 def test_verdict_table():
-    from v2.learner.compare import verdict
+    from learner.compare import verdict
     assert verdict(0.9, 0.1) == "INFORMATIVE"
     assert verdict(0.9, 0.9).startswith("no separation")
     assert verdict(0.1, 0.1).startswith("VOID")
@@ -484,7 +533,7 @@ def test_verdict_table():
 
 
 def test_split_is_deterministic_and_partitions_the_pool():
-    from v2.pipeline.split import split_indices
+    from pipeline.split import split_indices
     tr, te = split_indices(100, test_fraction=0.2, split_seed=0)
     tr2, te2 = split_indices(100, test_fraction=0.2, split_seed=0)
     assert torch.equal(tr, tr2) and torch.equal(te, te2)
@@ -505,10 +554,10 @@ def test_only_pure_boson_sampling_supports_shots():
         if kind == "photonic":
             assert model.supports_shots is True
             rows = model.shot_counts(X, shots=10_000)
-            assert all(isinstance(n, int) for row in rows for n in row.values())
-            assert sum(rows[0].values()) == 10_000
+            assert all(isinstance(key, tuple) for row in rows for key in row)
+            assert len(rows[0]) == 10_000
             # sparse by construction: the basis is discovered from the draw, never enumerated
-            assert all(len(row) <= 10_000 for row in rows)
+            assert all(len(set(row)) <= 10_000 for row in rows)
         else:
             assert model.supports_shots is False
             with pytest.raises(NotImplementedError, match="probability-distribution model"):
@@ -523,18 +572,18 @@ def test_only_pure_boson_sampling_supports_shots():
 
 
 def test_generate_refuses_shots_for_distribution_only_models(tmp_path):
-    from v2.pipeline.generate import generate_exact, generate_shots
+    from pipeline.generate import generate_exact, generate_shots
 
     cfg = cfg_for("fermion")
     cfg.generation.size, cfg.generation.shots = 16, 10_000
-    generate_exact(cfg, out_root=tmp_path / "d")
+    generate_exact(cfg, root=tmp_path / "d")
     with pytest.raises(NotImplementedError, match="probability-distribution model"):
-        generate_shots(cfg, shots_root=tmp_path / "s")
+        generate_shots(cfg, root=tmp_path / "d")
 
 
 def test_fd_wrapper_differentiates_any_sampler(setup):
     """One wrapper, two forward evaluations per direction, no autograd required of the model."""
-    from v2.metrics.fd import fd_jacobian, probs_and_fd_jacobian, sampler
+    from metrics.fd import fd_jacobian, probs_and_fd_jacobian, sampler
 
     model, X, _ = setup
     x = X[0]
@@ -565,7 +614,7 @@ def test_fd_on_a_shot_sampler_is_noise_dominated(setup):
     Shot noise on p is ~sqrt(p/S); dividing by 2*eps amplifies it ~50x at eps=1e-2.  Common random
     numbers help (the substream is keyed on (shot_seed, block, row), never on x) but do not rescue it.
     """
-    from v2.metrics.fd import fd_jacobian, sampler
+    from metrics.fd import fd_jacobian, sampler
 
     model, X, _ = setup
     x = X[0]
@@ -583,7 +632,7 @@ def test_fd_on_a_shot_sampler_is_noise_dominated(setup):
 
 def test_key_scorers_are_the_single_source_of_the_dense_tables():
     """The table is derived from the per-key function, so there is no second implementation."""
-    from v2.observable import BASE_SCORERS, KEY_SCORERS
+    from observable import BASE_SCORERS, KEY_SCORERS
 
     assert set(KEY_SCORERS) == set(BASE_SCORERS)
     model = build_model(cfg_for())
@@ -596,30 +645,42 @@ def test_key_scorers_are_the_single_source_of_the_dense_tables():
 def test_score_on_a_partial_basis_equals_the_full_basis(setup):
     """The finite-sample readout: evaluate v on the OBSERVED keys, never over the full basis.
 
-    Exercised on ``fermion(flavours=1)``, whose 36 structurally-zero outcomes give a natural partial
-    basis, and on a real shot draw.  Every implemented shape agrees because an unobserved outcome
-    contributes nothing -- the quadratics are homogeneous in ``p`` and both pointwise transforms
-    vanish at 0.
+    Exercised on the fermion model's **collision-free sector**, whose 36 absent outcomes give a
+    natural partial basis, and on a real shot draw.  Every implemented shape agrees because an
+    unobserved outcome contributes nothing -- the quadratics are homogeneous in ``p`` and both
+    pointwise transforms vanish at 0.
+
+    The sector is used rather than the full readout because the phase-power columns give the latter
+    full support, so it no longer has any structural zeros to exercise this path with.
     """
     import dataclasses
 
-    from v2.observable import observable_on_keys
-    from v2.pipeline.shots import score_sparse, to_sparse
+    from observable import observable_on_keys
+    from pipeline.shots import to_counts, to_index
 
     model, X, _ = setup
-    fermi = build_model(cfg_for("fermion", flavours=1))
+    fermi = build_model(cfg_for("fermion"))
     fermi.forward_batch = 0
-    fp = fermi.probs(X)
     keys_full = tuple(fermi.outcome_keys())
-    hit = (fp > 0).any(0)
+    hit = torch.as_tensor(fermi.collision_free_mask)
+    # The strict free-fermion distribution on the full basis: exactly 0 off the collision-free
+    # sector, which is what makes this a genuine partial basis rather than a thresholded one.
+    fp = torch.zeros(X.shape[0], len(keys_full))
+    fp[:, hit] = fermi.collision_free_probs(X)
     keys_sub = tuple(k for k, t in zip(keys_full, hit.tolist()) if t)
     assert len(keys_sub) == math.comb(6, 3) and len(keys_sub) < len(keys_full)
+    assert float(fp[:, ~hit].abs().max()) == 0.0
 
+    # Reference must be the SAME distribution as `fp`, i.e. zero off the sector -- otherwise a
+    # reference-normalising observable differs between the two bases for reasons this test is not
+    # about (the full readout's probs_at_zero carries bunched mass, which the sub basis drops).
+    ref0 = torch.zeros(1, len(keys_full))
+    ref0[:, hit] = fermi.collision_free_probs(torch.zeros(1, 6))
     ctx = ObservableContext(m=6, k=3, keys=keys_full, seed=42, graph_density=0.5,
                             input_state=fermi.input_state(),
-                            reference_probs=fermi.probs_at_zero().numpy())
+                            reference_probs=ref0[0].numpy())
     ctx_sub = dataclasses.replace(ctx, keys=keys_sub,
-                                  reference_probs=fermi.probs_at_zero().numpy()[hit.numpy()])
+                                  reference_probs=ref0[0].numpy()[hit.numpy()])
     for name in ["parity", "majority", "bunching", "n_first", "prod_parity_consecutive",
                  "connected_maxcc", "single_output", "sq_parity", "pairprod", "ent", "osc",
                  "max_prob"]:
@@ -627,22 +688,27 @@ def test_score_on_a_partial_basis_equals_the_full_basis(setup):
         part = observable_on_keys(name, ctx_sub, keys_sub).score(fp[:, hit])
         assert float((full - part).abs().max()) < 1e-5, name
 
-    # and on an actual shot draw, through the observed-keys view
+    # and on an actual shot draw, through the observed-keys view: the empirical (partial-basis)
+    # score from a real draw should track the exact (full-basis) one for an unbiased Expectation --
+    # documented in pipeline.score.load_soft as corr ~0.76-0.91 at finite shots.
     model.forward_batch = 0
-    p = model.probs(X)
-    mctx = ObservableContext(m=6, k=3, keys=model.outcome_keys(), seed=42, graph_density=0.5,
+    p_exact = model.probs(X)
+    full_keys = model.outcome_keys()
+    mctx = ObservableContext(m=6, k=3, keys=full_keys, seed=42, graph_density=0.5,
                              input_state=model.input_state(),
                              reference_probs=model.probs_at_zero().numpy())
-    rows = model.shot_counts(X, blocks=[0], shot_seed=0)
-    keys, emp = to_sparse(rows)
-    for name in ("parity", "ent", "osc", "max_prob", "pairprod"):
-        a = observable_on_keys(name, mctx, keys).score(emp)
-        assert torch.allclose(a, score_sparse(name, mctx, rows), atol=1e-6), name
+    rows = model.shot_counts(X, shots=50_000, shot_seed=0)
+    keys, seq = to_index(rows)
+    emp = to_counts(keys, seq).float() / seq.shape[1]
+    for name in ("parity", "ent"):
+        exact_score = resolve_observable(name, mctx).score(p_exact)
+        part_score = observable_on_keys(name, mctx, keys).score(emp)
+        assert float((exact_score - part_score).abs().max()) < 0.1, name
 
 
 def test_partial_basis_guard_fires_when_phi_does_not_vanish_at_zero():
     """The one way the partial-basis path could break silently, guarded rather than discovered."""
-    from v2.observable import ProbFunction
+    from observable import ProbFunction
 
     class NonVanishing(ProbFunction):
         def transform(self, probs):
@@ -686,10 +752,10 @@ def test_merlin_perm_matches_the_analytic_permanent_on_the_FISHER_spectrum():
     """
     from torch.func import jacrev
 
-    from v2.circuit.photonic import (default_input_state, sandwich_unitaries,
+    from circuit.photonic_circuit import (default_input_state, sandwich_unitaries,
                                      sandwich_unitary_at)
-    from v2.model.fermion import boson_probs_reference
-    from v2.model.fock import fock_keys
+    from model.fermion import boson_probs_reference
+    from circuit.fock import fock_keys
 
     m, k = 6, 3
     x = sample_X(1, 6, 42)[0]
@@ -732,8 +798,8 @@ def test_combinatorial_fock_basis_matches_merlin_exactly():
     What this test removes is the hedge: the docstring said the order "need not match", which left a
     latent inconsistency.  It matches, and now it has to keep matching.
     """
-    from v2.circuit.photonic import build_quantum_layer
-    from v2.model.fock import fock_keys
+    from circuit.photonic_circuit import build_quantum_layer
+    from circuit.fock import fock_keys
 
     for m, k in [(6, 3), (8, 4)]:
         layer, _ = build_quantum_layer(m, k, 6, 42)
@@ -744,6 +810,6 @@ def test_combinatorial_fock_basis_matches_merlin_exactly():
 
 def test_learner_fourier_map_is_independent_of_the_teacher_map():
     """They must not be one import: sharing let the learner reach the labels' own featurisation."""
-    from v2.learner.embedding import fourier_features as learner_map
-    from v2.model.features import fourier_features as teacher_map
+    from learner.features import fourier_features as learner_map
+    from model.features import fourier_features as teacher_map
     assert learner_map is not teacher_map

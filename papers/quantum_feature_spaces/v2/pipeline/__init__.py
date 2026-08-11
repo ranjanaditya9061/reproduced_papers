@@ -1,8 +1,8 @@
 """Artifacts and stores.  One circuit identity, two sibling branches, cached readouts.
 
-    datasets_v2/<circuit_hash>/exact/                dist.npz + circuit.pt + meta.json
-    datasets_v2/<circuit_hash>/counts/<shot_tag>/    shots.npz (keys, counts) + meta.json
-    scores_v2/<circuit_hash>/<source>/<obs_hash>.pt  soft (N,)
+    datasets/<circuit_hash>/exact/                dist.npz + circuit.pt + meta.json
+    datasets/<circuit_hash>/counts/<shot_tag>/    shots.npz (keys, counts) + meta.json
+    scores/<circuit_hash>/<source>/<obs_hash>.pt  soft (N,)
 
 ``circuit_hash`` covers the **input and the circuit only** -- no shot budget, no readout -- so one
 simulation serves every observable and every shot budget.  The exact distribution and the shots are
@@ -14,7 +14,7 @@ for shots.  Quantities that CHANGE the data name the directory: ``shot_seed`` an
 ``shot_tag``, the observable in the score filename, the label source in ``<source>``.
 
 The two CLI stages (:mod:`.generate`, :mod:`.score`) are deliberately **not** imported here, so
-``python -m v2.pipeline.generate`` does not import that module twice.  Import them by module.
+``python -m pipeline.generate`` does not import that module twice.  Import them by module.
 """
 
 from __future__ import annotations

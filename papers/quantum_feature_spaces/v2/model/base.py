@@ -165,24 +165,25 @@ class DistributionModel(nn.Module):
     #: multinomial wrapper would suggest a scaling route that does not exist.
     supports_shots: bool = False
 
-    def shot_counts(self, X: torch.Tensor, *, shots: int | None = None, blocks=None, rows=None,
-                    shot_seed: int = 0) -> list[dict]:
-        """One ``{outcome key: int count}`` dict per requested row, drawn in
-        :data:`v2.pipeline.shots.BLOCK`-sized blocks.
+    def shot_counts(self, X: torch.Tensor, *, shots: int, offset: int = 0, rows=None,
+                    shot_seed: int = 0) -> list[list[tuple]]:
+        """One **shot sequence** (occupation tuples, in draw order) per requested row.
 
-        **A mapping, not a vector over the declared basis.**  A shot draw observes at most ``shots``
-        outcomes however large the basis is, so returning a dense ``(N, n_outcomes)`` array would
-        reinstate the ``C(m+k-1, k)`` memory wall inside the one code path built to avoid it.  The
-        keys come back with the counts; :meth:`outcome_keys` is not consulted.
+        **A sequence, not a vector over the declared basis.**  A shot draw observes at most
+        ``shots`` outcomes however large the basis is, so returning a dense ``(N, n_outcomes)``
+        array would reinstate the ``C(m+k-1, k)`` memory wall inside the one code path built to
+        avoid it.  :meth:`outcome_keys` is not consulted -- the observed keys come from the draw
+        itself.  Aggregate to counts with :func:`~pipeline.shots.to_counts` where scoring wants
+        them; :func:`~pipeline.shots.to_index` gives the sorted key table plus an index array.
 
-        **Counts, so blocks are additive.**  Integer counts add exactly, which is what lets
-        :func:`~v2.pipeline.shots.merge_shots` grow a shot budget instead of redrawing it;
-        :func:`~v2.pipeline.shots.to_sparse` normalises to probs where scoring wants them.
+        **Order, so a budget is extended not redrawn.**  ``shots`` is how many *new* shots to draw
+        and ``offset`` how many are already stored -- the stream is seeded on ``offset``
+        (:func:`~pipeline.shots.offset_seed`), so ``draw(10k, offset=0) + draw(20k, offset=10k)``
+        extends a 10k store to 30k without touching or reproducing the first 10k.
 
-        ``X`` is always the **full pool**; ``rows`` selects which row indices to draw and ``blocks``
-        which block indices.  Both default to everything, and ``shots`` is the convenience form
-        (rounded up to whole blocks).  The result has one dict per *requested* row, in the order
-        requested -- so extending the pool is a list concatenation.
+        ``X`` is always the **full pool**; ``rows`` selects which row indices to draw, defaulting
+        to all. The result has one sequence per *requested* row, in the order requested -- so
+        extending the pool is a list concatenation.
 
         Implemented only where sampling is the meaningful path; see :attr:`supports_shots`.
         """

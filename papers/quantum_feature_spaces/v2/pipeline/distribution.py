@@ -87,11 +87,48 @@ def save_dist(path: str | Path, cfg, model, probs: torch.Tensor) -> Path:
     return path
 
 
-def load_dist(path: str | Path, *, size: int | None = None) -> Distribution:
+def _readout_zero_select(probs: torch.Tensor, probs_at_zero: torch.Tensor, keys: tuple,
+                         readout: tuple) -> tuple[torch.Tensor, torch.Tensor, tuple]:
+    """Condition ``probs`` on the readout modes reading dual-rail ``0``, renormalise, and drop the
+    readout columns from ``keys``.
+
+    Mirrors :func:`eval.sweep_delta.readout_zero_probs`, but works from a loaded
+    :class:`Distribution`'s stored ``keys``/``readout_modes`` rather than a live model -- both read
+    the same fields (:meth:`model.base.DistributionModel.readout_modes`/``outcome_keys``, persisted
+    into ``meta.json`` by :func:`~pipeline.artifact.save_meta`), so the two are equivalent.  A no-op
+    when ``readout`` is empty (every prep except ``spin_magic*``).
+    """
+    if not readout:
+        return probs, probs_at_zero, keys
+    r0, r1 = readout
+    mask = torch.tensor([int(key[r0]) == 1 and int(key[r1]) == 0 for key in keys])
+    data_keys = tuple(tuple(v for j, v in enumerate(key) if j not in readout)
+                      for key, keep in zip(keys, mask.tolist()) if keep)
+
+    def _select(P: torch.Tensor) -> torch.Tensor:
+        Pc = P[..., mask]
+        totals = Pc.sum(dim=-1, keepdim=True)
+        if bool((totals <= 0).any()):
+            raise ValueError("readout=0 post-selection has zero mass at some x")
+        return Pc / totals
+
+    return _select(probs), _select(probs_at_zero.unsqueeze(0))[0], data_keys
+
+
+def load_dist(path: str | Path, *, size: int | None = None, load_full: bool = False) -> Distribution:
     """Load the exact branch, reconstructing ``X`` from the seed recorded in ``meta.json``.
 
     ``size`` truncates to the first rows of the pool -- the prefix is stable, so this is a genuine
     subsample of the same dataset rather than a different one.
+
+    **``load_full``.**  A prep never post-selects its own readout modes -- ``spin_magic`` saves the
+    full, unselected distribution over its data modes *and* its two readout modes, so any later
+    choice of post-selection is computed offline (see :mod:`circuit.prep`'s module docstring).
+    ``load_full=False`` (the default) applies the ``mu = 0`` readout post-selection here, so a
+    caller gets the *data-mode-only* distribution -- comparable to every other (non-``spin_magic``)
+    arm's -- without knowing which preps carry readout modes at all.  ``load_full=True`` returns the
+    raw stored distribution unchanged, readout modes and all.  A no-op either way when
+    ``readout_modes`` is empty, which is every prep except ``spin_magic*``.
     """
     path = Path(path)
     meta = load_meta(path)
@@ -99,6 +136,10 @@ def load_dist(path: str | Path, *, size: int | None = None) -> Distribution:
         keys = tuple(tuple(int(c) for c in row) for row in z["keys"])
         probs = torch.from_numpy(z["probs"].astype(np.float32))
         probs_at_zero = torch.from_numpy(z["probs_at_zero"].astype(np.float32))
+
+    if not load_full:
+        readout = tuple(int(v) for v in (meta.get("readout_modes") or ()))
+        probs, probs_at_zero, keys = _readout_zero_select(probs, probs_at_zero, keys, readout)
 
     n = probs.shape[0] if size is None else min(int(size), probs.shape[0])
     X = sample_X(int(meta["size"]), int(meta["n_features"]), int(meta["sample_seed"]))

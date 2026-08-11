@@ -1,17 +1,17 @@
 """Plot the Hellinger-distance sweep written by ``eval/sweep_delta.py``.
 
 One figure per circuit size ``m``, ``hellinger_dist_m{m}.png``: one subplot per arm actually
-present in the data (``res["arms"]``, so 2 or 3 depending on the sweep), each showing the **PDF**
-of ``H(p(x0), p(x))`` over the ``n_x`` points drawn in the delta-ball, sharing one x-range so the
-shapes are directly comparable. A KDE is used when SciPy is available (smoother, and the natural
-choice for a density read), falling back to a normalised-histogram density otherwise so no new
-hard dependency is introduced.
+present in the data (``res["arms"]``, so however many arms ``sweep_delta.py`` was run with),
+each showing the **PDF** of ``H(p(x0), p(x))`` over the ``n_x`` points drawn in the delta-ball,
+sharing one x-range so the shapes are directly comparable. A KDE is used when SciPy is available
+(smoother, and the natural choice for a density read), falling back to a normalised-histogram
+density otherwise so no new hard dependency is introduced.
 
 A second figure, ``hellinger_dist_overview.png``, stacks one such row per swept ``m`` so the whole
 sweep is visible at a glance.
 
 Series colours and labels come from ``ARM_STYLE`` (shared in spirit with ``eval/plot_size.py``, so
-the analyses read as one system), extended with a ``qubit`` entry alongside ``photonic``/``fermion``.
+the analyses read as one system) -- one entry per model kind registered in ``sweep_delta.ARMS``.
 """
 
 from __future__ import annotations
@@ -31,10 +31,23 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+#: Colors: the 8 validated categorical slots (see the ``dataviz`` skill's ``references/
+#: palette.md``: blue, orange, aqua, yellow, magenta, green, violet, red -- documented there as
+#: clearing every adjacent-pair CVD/contrast gate in both light and dark mode), plus two
+#: unvalidated extras (brown, gray) since this arm set (10) exceeds the validated set's size.
+#: Each arm still gets its own titled subplot, so color is never the only identity channel.
 ARM_STYLE = {
     "photonic": {"label": "Boson Sampling", "color": "#2a78d6", "marker": "o"},
     "fermion": {"label": "Determinant Based Sampler", "color": "#eb6834", "marker": "s"},
-    "qubit": {"label": "Qubit IQP", "color": "#3fa34d", "marker": "^"},
+    "qubit": {"label": "Qubit IQP", "color": "#1baf7a", "marker": "^"},
+    "mlp_fock": {"label": "MLP (Fock)", "color": "#eda100", "marker": "D"},
+    "quadratic_fock": {"label": "Quadratic (Fock)", "color": "#e87ba4", "marker": "v"},
+    "spin": {"label": "Spin Prep", "color": "#008300", "marker": "P"},
+    "spin_magic_ghz": {"label": "Spin Magic (GHZ)", "color": "#4a3aa7", "marker": "X"},
+    "spin_magic_linear": {"label": "Spin Magic (Linear)", "color": "#e34948", "marker": "*"},
+    "spin_magic_linear_u3": {"label": "Spin Magic (Linear U3)", "color": "#8c5a2b", "marker": "h"},
+    "spin_magic_data_on_spin": {"label": "Spin Magic (Data on Spin)", "color": "#767670",
+                                 "marker": "d"},
 }
 
 #: Every legend: boxed, fully opaque, black border -- so gridlines and fills never show through.
@@ -121,7 +134,7 @@ def fig_overview(res, out: Path):
 def main(argv=None) -> None:
     here = Path(__file__).resolve().parent
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--delta", type=float, default=0.01,
+    ap.add_argument("--delta", type=float, default=0.001,
                      help="ball radius used by sweep_delta.py; selects results/sweep_delta_<delta>.json")
     ap.add_argument("--data", default=None,
                      help="explicit path to a sweep_delta output; overrides --delta")

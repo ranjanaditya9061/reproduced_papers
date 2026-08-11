@@ -30,10 +30,10 @@ autograd to four significant figures at ``m=8, k=4``.  FD on a *shot* sampler is
 **labels**, not for derivatives.  The interface is uniform; the accuracy is not.
 
 :func:`sampler` reuses one ``shot_seed`` across both FD legs, so ``x`` and ``x + delta`` are drawn
-from the *same* substreams -- common random numbers, which the per-row substream design of
-:mod:`v2.pipeline.shots` gives for free (a substream is keyed on ``(shot_seed, block, row)``, never
-on ``x``).  Measured 3.4x better than independent draws, and free.  It does not rescue the
-derivative, only its variance.
+from the *same* substreams -- common random numbers, which :mod:`pipeline.shots`'s seeding gives for
+free (:func:`~pipeline.shots.offset_seed` keys the stream on ``(shot_seed, offset)``, never on
+``x``).  Measured 3.4x better than independent draws, and free.  It does not rescue the derivative,
+only its variance.
 """
 
 from __future__ import annotations
@@ -70,8 +70,8 @@ def sampler(model, *, shots: int = 0, shot_seed: int = 0) -> Callable:
     def fn(x: torch.Tensor) -> torch.Tensor:
         row = model.shot_counts(x.unsqueeze(0), shots=shots, shot_seed=shot_seed)[0]
         dense = torch.zeros(len(index), dtype=torch.float64)
-        for key, n in row.items():
-            dense[index[key]] = float(n)
+        for key in row:
+            dense[index[key]] += 1.0
         return (dense / dense.sum().clamp(min=1)).to(torch.float32)
 
     return fn
