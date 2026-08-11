@@ -36,10 +36,28 @@ kind.  Both need ``n_features <= m - 1`` (one more mode than feature, vs. ``phas
   ``ghz``/``linear_u3`` are two separate, single configs at the default encode case
   (``encode_circuit`` only) -- the ``structure`` and encode-case axes are not crossed, so this is
   5 configs, not the 3x3 product.  ``t_var=0`` throughout (no extra sparse magic-gate injection).
+
+**All spin/spin_magic configs set ``generation.n_jobs = SPIN_N_JOBS``** (both preps build one
+perceval processor per row, so ``n_jobs=1`` -- the config default -- is single-process and slow:
+measured ~0.4s/row for ``spin`` at ``(6, 3)``, i.e. ~65 minutes for one 10k-row config; ~0.16s/row
+at ``n_jobs=6``).  The other kinds stay at the default ``n_jobs=1`` since they are batched (merlin)
+or pure-torch and gain nothing from a row-level process pool.
+
+**``SPIN_N_JOBS`` is derived from the machine's own cores AND memory**, not a fixed constant -- so
+running this script on a different machine (e.g. one with more cores) writes configs sized to
+*that* machine automatically.  Each worker is a separate process building its own perceval
+``HybridProcessor``, so the limiting resource is not always CPU: on a memory-constrained machine,
+spawning ``cpu_count - 1`` of them can thrash or OOM well before every core is doing useful work,
+especially at the larger ``(m, k)`` this matrix eventually reaches.  When ``psutil`` is importable
+the cap is ``min(cpu_count - 1, available_ram / PER_WORKER_RAM_GB)``; without it (``psutil`` is not
+a declared dependency of this repo) it falls back to the CPU-only cap.  Override
+``PER_WORKER_RAM_GB`` if a size in this matrix needs a different per-worker budget than the default
+guess, or edit ``SPIN_N_JOBS`` directly for a fixed value.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -47,6 +65,29 @@ import yaml
 OUT_DIR = Path(__file__).parent / "size_sweep_full"
 N_FEATURES = 5
 SIZE = 10_000
+#: Rough per-worker memory budget for a spin/spin_magic row -- deliberately generous (a single
+#: HybridProcessor at this matrix's sizes is well under this), so the cap only bites on a genuinely
+#: memory-constrained machine rather than second-guessing a normal one.
+PER_WORKER_RAM_GB = 1.5
+
+
+def _spin_n_jobs() -> int:
+    """``cpu_count - 1``, additionally capped by available RAM when ``psutil`` is importable."""
+    cpu_cap = max(1, (os.cpu_count() or 4) - 1)
+    try:
+        import psutil
+        ram_cap = max(1, int(psutil.virtual_memory().available / (PER_WORKER_RAM_GB * 1024 ** 3)))
+        return min(cpu_cap, ram_cap)
+    except ImportError:
+        return cpu_cap
+
+
+#: spin/spin_magic build one perceval processor per row (StatePrep.is_batched = False), so a
+#: single-process run at SIZE=10_000 takes on the order of an hour per config (measured ~0.4s/row
+#: for spin at (6,3)).  generation.n_jobs feeds circuit.spin.parallel_row_map's process pool
+#: directly (model/photonic.py -> SpinPrep.probs/SpinMagicPrep.probs), so this is a real speedup,
+#: not a config no-op.  See _spin_n_jobs for how this number is derived.
+SPIN_N_JOBS = _spin_n_jobs()
 
 #: (m, k) with exact probs -- every model kind runs here.  Start at just (6, 3) to verify the
 #: matrix is right before widening; add (8, 4), (10, 5), (12, 6) once confirmed.
@@ -102,31 +143,33 @@ def configs_for_size(m: int, k: int, *, shots: int = 0) -> list[Path]:
     if shots:
         return paths                            # spin/spin_magic have no shots path -- stop here
 
+    spin_generation = {**generation, "n_jobs": SPIN_N_JOBS}
+
     # Encode-case axis: 3 configs, all at the default layers=1 -- not crossed with the layers
     # axis below, so this is not a 3x2 product.
     for enc_tag, enc_kwargs in ENCODE_CASES:
         model = {"kind": "photonic", "prep": "spin", "encoding": "phase",
                  "cx_pairs": "chain", **enc_kwargs}
-        paths.append(_write(f"spin_{tag}_{enc_tag}_l1", problem, model, generation))
+        paths.append(_write(f"spin_{tag}_{enc_tag}_l1", problem, model, spin_generation))
 
     # Layers axis: one extra config at layers=3, held at the default encode case.
     model = {"kind": "photonic", "prep": "spin", "encoding": "phase",
              "cx_pairs": "chain", "layers": 3, **dict(ENCODE_CASES[0][1])}
-    paths.append(_write(f"spin_{tag}_{ENCODE_CASES[0][0]}_l3", problem, model, generation))
+    paths.append(_write(f"spin_{tag}_{ENCODE_CASES[0][0]}_l3", problem, model, spin_generation))
 
     # Encode-case axis: 3 configs, all at the default structure="linear" -- not crossed with the
     # structure axis below, so this is not a 3x3 product.
     for enc_tag, enc_kwargs in ENCODE_CASES:
         model = {"kind": "photonic", "prep": "spin_magic", "encoding": "phase",
                  "structure": "linear", "t_var": 0, **enc_kwargs}
-        paths.append(_write(f"spin_magic_{tag}_linear_{enc_tag}", problem, model, generation))
+        paths.append(_write(f"spin_magic_{tag}_linear_{enc_tag}", problem, model, spin_generation))
 
     # Structure axis: two extra configs (ghz, linear_u3), held at the default encode case.
     for structure in ("ghz", "linear_u3"):
         model = {"kind": "photonic", "prep": "spin_magic", "encoding": "phase",
                  "structure": structure, "t_var": 0, **dict(ENCODE_CASES[0][1])}
         paths.append(_write(f"spin_magic_{tag}_{structure}_{ENCODE_CASES[0][0]}", problem, model,
-                            generation))
+                            spin_generation))
 
     return paths
 
