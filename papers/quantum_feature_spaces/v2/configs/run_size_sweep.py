@@ -63,19 +63,24 @@ _TEMPLATE_M, _TEMPLATE_K = 6, 3
 _PER_WORKER_RAM_GB = 1.5
 
 
-def _n_jobs_for_size(template_n_jobs: int, m: int, k: int) -> int:
-    """Re-derive ``n_jobs`` for ``(m, k)`` from *live* available RAM, not the value baked into the
-    template at write time -- so a size bump both shrinks the worker count when memory is tight
-    (a bigger circuit needs more per-row state) and grows it back when there is real headroom (a
-    beefier machine, or RAM freed up since the template was written), rather than only ever
-    ratcheting down from whatever ``(6, 3)`` happened to compute.
+#: Preps that actually consume generation.n_jobs (circuit.spin.parallel_row_map's process pool,
+#: via SpinPrep.probs / SpinMagicPrep.probs).  Every other kind is batched (merlin) or pure-torch
+#: and a process pool would be a pure no-op for it -- re-deriving n_jobs there wastes a psutil call
+#: for nothing, so this is what _for_size checks, not the template's numeric n_jobs value (which
+#: is ambiguous: "1" means "this kind ignores it" for those kinds, but for spin/spin_magic it just
+#: means whatever configs/generate_size_sweep.py measured on ITS machine at write time -- treating
+#: that "1" as "leave it alone" was the bug: it silently pinned spin/spin_magic to 1 job forever
+#: even on a machine with cores and RAM to spare).
+_POOLED_PREPS = ("spin", "spin_magic")
 
-    ``template_n_jobs == 1`` is left alone: that is either a kind that never uses the process pool
-    (batched/pure-torch, where this would be a no-op) or a machine already RAM-constrained at the
-    template's own size, and there is nothing to scale from in either case.
+
+def _n_jobs_for_size(m: int, k: int) -> int:
+    """``n_jobs`` for ``(m, k)`` from *live* available RAM and cores, not a value baked into a
+    template at write time -- so a size bump both shrinks the worker count when memory is tight
+    (a bigger circuit needs more per-row state) and grows it when there is real headroom (a beefier
+    machine, or RAM freed up since the template was written).  Falls back to 1 (serial) if
+    ``psutil`` is not installed -- correct, just slow, never silently wrong.
     """
-    if template_n_jobs <= 1:
-        return template_n_jobs
     try:
         import math
         import os
@@ -87,7 +92,7 @@ def _n_jobs_for_size(template_n_jobs: int, m: int, k: int) -> int:
         ram_cap = max(1, int(psutil.virtual_memory().available / (per_worker_gb * 1024 ** 3)))
         return min(cpu_cap, ram_cap)
     except ImportError:
-        return template_n_jobs                          # no psutil -- keep the template's value
+        return 1
 
 
 def _for_size(cfg, m: int, k: int, *, shots: int = 0):
@@ -95,13 +100,15 @@ def _for_size(cfg, m: int, k: int, *, shots: int = 0):
 
     Every knob that depends on ``k`` (``cx_pairs: "chain"``, the prep's own geometry checks) is
     re-resolved from the mutated ``problem.k`` at ``build_prep`` time -- nothing here needs to know
-    which prep it is dealing with.  ``generation.n_jobs`` is re-derived for the new size -- see
-    :func:`_n_jobs_for_size`.
+    which prep it is dealing with.  ``generation.n_jobs`` is re-derived for ``spin``/``spin_magic``
+    (the only preps that use it) from live resources -- see :func:`_n_jobs_for_size`; every other
+    kind keeps the template's value (it is unused there regardless of what it says).
     """
     import copy
     c = copy.deepcopy(cfg)
     c.problem.m, c.problem.k = m, k
-    c.generation.n_jobs = _n_jobs_for_size(c.generation.n_jobs, m, k)
+    if c.model.prep in _POOLED_PREPS:
+        c.generation.n_jobs = _n_jobs_for_size(m, k)
     if shots:
         c.generation.shots = shots
     c.validate()
