@@ -269,6 +269,140 @@ def plot_heatmap(result: dict, *, save_path: str | Path | None = None, show: boo
     return fig
 
 
+def _plot_r2_grid(row_labels: list[str], col_labels: list[str], r2, *,
+                  row_axis: str, col_axis: str, title: str,
+                  save_path: str | Path | None = None, show: bool = False):
+    """Shared cell-text/colour-scale heatmap renderer behind :func:`plot_heatmap`,
+    :func:`plot_variant_observable_grid` and :func:`plot_variant_learner_grid` -- only the axis
+    labels, title and the ``r2`` matrix's orientation differ between the three call sites.
+    """
+    import matplotlib
+    if not show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    r2 = np.asarray(r2, dtype=float)
+    fig, ax = plt.subplots(figsize=(max(6, 0.9 * len(col_labels) + 2),
+                                    max(3, 0.7 * len(row_labels) + 1.5)))
+    masked = np.ma.masked_invalid(r2)
+    cmap = matplotlib.colormaps["RdYlGn"].copy()
+    cmap.set_bad("lightgrey")
+    im = ax.imshow(masked, cmap=cmap, vmin=-0.2, vmax=1.0, aspect="auto")
+
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=45, ha="right")
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels)
+    ax.set_xlabel(col_axis)
+    ax.set_ylabel(row_axis)
+    ax.set_title(title)
+
+    for i in range(len(row_labels)):
+        for j in range(len(col_labels)):
+            v = r2[i][j]
+            text = "n/a" if not np.isfinite(v) else f"{v:.2f}"
+            colour = "black" if not np.isfinite(v) or -0.4 < v < 0.75 else "white"
+            ax.text(j, i, text, ha="center", va="center", color=colour, fontsize=9)
+
+    fig.colorbar(im, ax=ax, label="R^2")
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150)
+    if show:
+        plt.show()
+    return fig
+
+
+#: (variant name, config path) pairs -- the unit both grid sweeps below iterate over instead of
+#: :func:`sweep_heatmap`'s single ``cfg_path``, so a whole folder of circuit-variant configs (e.g.
+#: ``configs/eval/photonic_encoding/*.yaml``) becomes one axis of the grid.
+Variant = tuple[str, "str | Path"]
+
+
+def sweep_variant_observable_grid(variants: list[Variant], observables: list[str],
+                                  learner_name: str = "ridge", *, learner_kwargs: dict | None = None,
+                                  out_root: str = "datasets", scores_root: str = "scores",
+                                  n_train: int | None = None, graph_density: float = 0.5) -> dict:
+    """Fit ``learner_name`` on every ``(variant, observable)`` pair; return the ``R^2`` grid.
+
+    Rows are ``variants`` (circuit configs -- e.g. the encodings in one ``configs/eval/`` subfolder),
+    columns are ``observables``, for one fixed learner -- the mode-A counterpart to
+    :func:`sweep_heatmap`'s learner x observable grid, with the circuit swapped in as the varying
+    axis instead of held fixed.  Same per-cell failure handling as :func:`sweep_heatmap`: a raising
+    cell becomes ``nan`` and is printed, not fatal to the rest of the grid.
+    """
+    import math
+
+    names = [name for name, _ in variants]
+    grid = []
+    for name, cfg_path in variants:
+        row = []
+        for obs in observables:
+            try:
+                res = run_config(cfg_path, obs, learner_name, out_root=out_root,
+                                 scores_root=scores_root, n_train=n_train,
+                                 graph_density=graph_density, **(learner_kwargs or {}))
+                row.append(res["r2"])
+            except Exception as exc:                       # noqa: BLE001 -- one bad cell must not
+                print(f"[auto] {name}/{obs} failed: {exc}")  # abort the rest of the grid
+                row.append(math.nan)
+        grid.append(row)
+
+    return {"variants": names, "observables": list(observables), "learner": learner_name, "r2": grid}
+
+
+def sweep_variant_learner_grid(variants: list[Variant], observable: str, *,
+                               learners: tuple[tuple[str, dict], ...] = DEFAULT_SWEEP_LEARNERS,
+                               out_root: str = "datasets", scores_root: str = "scores",
+                               n_train: int | None = None, graph_density: float = 0.5) -> dict:
+    """Fit every ``learner`` in ``learners`` on every ``variant``, at one fixed ``observable``.
+
+    Rows are ``variants``, columns are ``learners`` -- the mode-B counterpart to
+    :func:`sweep_variant_observable_grid`: same circuit axis, but the varying column is which
+    learner fits it rather than which observable it is scored against.
+    """
+    import math
+
+    names = [name for name, _ in variants]
+    learner_names = [name for name, _ in learners]
+    grid = []
+    for name, cfg_path in variants:
+        row = []
+        for learner_name, kwargs in learners:
+            try:
+                res = run_config(cfg_path, observable, learner_name, out_root=out_root,
+                                 scores_root=scores_root, n_train=n_train,
+                                 graph_density=graph_density, **kwargs)
+                row.append(res["r2"])
+            except Exception as exc:                       # noqa: BLE001 -- see above
+                print(f"[auto] {name}/{learner_name} failed: {exc}")
+                row.append(math.nan)
+        grid.append(row)
+
+    return {"variants": names, "learners": learner_names, "observable": observable, "r2": grid}
+
+
+def plot_variant_observable_grid(result: dict, *, save_path: str | Path | None = None,
+                                 show: bool = False):
+    """``R^2`` heatmap from :func:`sweep_variant_observable_grid`'s output: variants on y,
+    observables on x, one fixed learner named in the title."""
+    return _plot_r2_grid(result["variants"], result["observables"], result["r2"],
+                         row_axis="variant", col_axis="observable",
+                         title=f"Held-out R^2: variant x observable (learner={result['learner']})",
+                         save_path=save_path, show=show)
+
+
+def plot_variant_learner_grid(result: dict, *, save_path: str | Path | None = None,
+                              show: bool = False):
+    """``R^2`` heatmap from :func:`sweep_variant_learner_grid`'s output: variants on y,
+    learners on x, one fixed observable named in the title."""
+    return _plot_r2_grid(result["variants"], result["learners"], result["r2"],
+                         row_axis="variant", col_axis="learner",
+                         title=f"Held-out R^2: variant x learner (observable={result['observable']})",
+                         save_path=save_path, show=show)
+
+
 def main(argv=None) -> None:
     import argparse
 

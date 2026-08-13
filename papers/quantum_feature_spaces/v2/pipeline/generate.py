@@ -42,7 +42,7 @@ import torch
 from config import ExperimentConfig, load_config
 from model import build_model, sample_X
 
-from .artifact import DIST_FILENAME, SHOTS_FILENAME, exact_path, load_meta
+from .artifact import META_FILENAME, exact_path, load_meta
 from .distribution import check_size, load_dist, save_dist
 from .shots import load_shots, save_shots, shots_path, to_seqs
 
@@ -74,7 +74,11 @@ def generate_exact(cfg: ExperimentConfig, *, root: str | Path = "datasets",
     check_size(target, n_out, cfg.generation.max_dist_bytes, m=cfg.problem.m, k=cfg.problem.k)
 
     have, cached = 0, None
-    if not force and (path / DIST_FILENAME).exists():
+    if not force and (path / META_FILENAME).exists():
+        # meta.json is the last file save_dist writes, so its presence is what actually marks a
+        # write complete -- dist.npz alone can exist from a run that was killed between writing it
+        # and writing meta.json, and treating THAT as a cache hit crashes here on the now-missing
+        # meta.json instead of just regenerating.
         have = int(load_meta(path)["size"])
         if have >= target:
             print(f"[exact] cache hit: {path} ({have} rows, {n_out} outcomes)")
@@ -120,7 +124,8 @@ def generate_shots(cfg: ExperimentConfig, *, root: str | Path = "datasets",
     seed = cfg.seeds.shot_seed
 
     seqs, have_shots, have_rows = None, 0, 0
-    if not force and (path / SHOTS_FILENAME).exists():
+    if not force and (path / META_FILENAME).exists():
+        # meta.json is the last file save_shots writes -- see the matching note in generate_exact.
         keys, seq, _ = load_shots(path)
         have_rows, have_shots = seq.shape
         if have_rows >= n_rows and have_shots >= target_shots:
