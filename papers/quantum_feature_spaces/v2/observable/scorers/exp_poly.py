@@ -4,10 +4,14 @@
 
 * ``prod_parity[...]`` -- integer coefficients, score ``(-1)^P(n) in {+1, -1}``.  A product
   generalisation of ``parity`` (which is ``(-1)^{sum n_i}``, all size-1 monomials).
-* ``prod_parity_{consecutive,second,diag}_{pi,random,prime}`` -- a per-monomial *angle*, score
-  ``Re(exp(i P(n))) = cos(P(n)) in [-1, 1]``.  ``_pi`` contains the above as the ``theta = pi``
-  case, since ``cos(pi N) = (-1)^N`` for integer ``N``. ``diag_prime`` is a distinct construction,
-  not a further generalisation of ``_pi``/``_random`` -- see :func:`diag_monomials`.
+* ``prod_parity_{consecutive,second}_{pi,random}`` -- a per-monomial *angle*, score
+  ``Re(exp(i P(n))) = cos(P(n)) in [-1, 1]``.  Contains the above as the ``theta = pi`` case,
+  since ``cos(pi N) = (-1)^N`` for integer ``N``.
+* ``prod_parity_diag_prime_{const,log,sqrt}`` -- a distinct construction, not a further
+  generalisation of the two families above: ``O = Pi_{i=1}^p (-1)^{n_i^2/r_i}`` over the first
+  ``p`` modes, ``r_i`` the ``i``-th prime, ``p`` set by one of three growth laws in ``k`` (see
+  :func:`diag_monomials`/:data:`DIAG_PRIME_P_LAWS`) -- the quadratic number-phase observable from
+  Monbroussou et al. (arXiv:2607.24728), Eq. (G4)/(G8).
 
 **These are expectation values.**  However elaborate the polynomial, the result is ``probs @ v``
 with ``v(n) = (-1)^{P(n)}`` or ``cos(P(n))`` -- a fixed, bounded, diagonal observable.  The
@@ -60,7 +64,8 @@ PROD_PARITY_SECOND = "prod_parity_second"
 
 _PROD_PARITY_RE = re.compile(r"^prod_parity(?:__.+)?$")
 _LO_RE = re.compile(r"^lo(\d+)$")
-_PROD_ANGLE_RE = re.compile(r"^prod_parity_(consecutive|second|diag)_(pi|random|prime)$")
+_PROD_ANGLE_RE = re.compile(r"^prod_parity_(consecutive|second)_(pi|random)$")
+_DIAG_PRIME_RE = re.compile(r"^prod_parity_diag_prime_(const|log|sqrt)$")
 
 
 def is_prod_parity_observable(observable: str) -> bool:
@@ -85,6 +90,11 @@ def is_prod_family(observable: str) -> bool:
 def is_prod_parity_angle(observable: str) -> bool:
     """True for an angle/phase variant (score ``cos(P(n))``)."""
     return bool(_PROD_ANGLE_RE.match(observable))
+
+
+def is_prod_parity_diag_prime(observable: str) -> bool:
+    """True for ``prod_parity_diag_prime_<const|log|sqrt>`` (see :data:`DIAG_PRIME_P_LAWS`)."""
+    return bool(_DIAG_PRIME_RE.match(observable))
 
 
 def parse_prod_segment(seg: str, m: int):
@@ -154,25 +164,60 @@ def second_monomials(m: int):
     return [(i, j) for i in range(m) for j in range(m) if i <= j]
 
 
-def diag_monomials(m: int):
-    """Single-mode square monomials ``(i, i)`` for every mode ``i`` -- ``n_i^2``, none of
-    :func:`second_monomials`'s off-diagonal ``i < j`` pairs.
+#: ``p``-growth laws for :func:`diag_monomials`/``prod_parity_diag_prime_<law>``, keyed to the
+#: three rows of Monbroussou et al. (arXiv:2607.24728)'s Table I / summary figure: constant,
+#: logarithmic, and square-root degree in the photon number ``k``.  ``sqrt`` is the row they
+#: highlight (orange box) as evading both concentration and every classical-simulation technique
+#: they tried; ``const``/``log`` are the two *other* rows for the SAME observable family, both
+#: already classically simulable via Simulation Technique 3 -- included so a result on ``sqrt``
+#: can be compared against a same-construction, known-easy baseline rather than trusted alone.
+DIAG_PRIME_P_LAWS = {
+    "const": lambda k: 2,
+    "log": lambda k: max(1, round(math.log2(max(int(k), 2)))),
+    "sqrt": lambda k: max(1, round(math.sqrt(int(k)))),
+}
 
-    This is the monomial set behind ``prod_parity_diag_prime``
+
+def diag_prime_p(law: str, k: int) -> int:
+    """``p``, the number of modes :func:`diag_monomials` includes, for one of
+    :data:`DIAG_PRIME_P_LAWS`, evaluated at photon number ``k``."""
+    if law not in DIAG_PRIME_P_LAWS:
+        raise ValueError(f"unknown p-growth law {law!r}; expected one of {sorted(DIAG_PRIME_P_LAWS)}")
+    return int(DIAG_PRIME_P_LAWS[law](int(k)))
+
+
+def diag_monomials(m: int, p: int):
+    """Single-mode square monomials ``(i, i)`` for the first ``p`` of ``m`` modes -- ``n_i^2`` on
+    a size-``p`` SUBSET of modes, none of :func:`second_monomials`'s off-diagonal ``i < j`` pairs.
+
+    This is the monomial set behind ``prod_parity_diag_prime_<law>``
     (:mod:`observable.scorers.exp_poly`'s module docstring / ``angle_monomials``): the
-    ``O = sum_i (-1)^{n_i^2 / r_i}`` construction from Monbroussou et al. (arXiv:2607.24728),
-    Eq. (G4)/(G8) -- a quadratic number-phase observable engineered (via the prime-reciprocal
-    angles, see :func:`prime_reciprocal_angles`) to defeat both the Fourier-decomposition and
-    Fourier-truncation classical-simulation routes the paper's Lemma 5 gives for the linear
-    (``prod_parity_*_pi``/plain ``parity``) case.  The paper's own numerics are explicitly
-    inconclusive on whether this evades classical simulation outright (Section V B); this
-    implementation is for testing it empirically against this codebase's learners the same way
-    every other observable here is tested, not because the paper proves it is hard.
+    ``O = Pi_{i=1}^p (-1)^{alpha_i n_i^2}`` construction from Monbroussou et al.
+    (arXiv:2607.24728), Eq. (G4)/(G8) -- a quadratic number-phase observable engineered (via the
+    prime-reciprocal angles, see :func:`prime_reciprocal_angles`) to defeat both the
+    Fourier-decomposition and Fourier-truncation classical-simulation routes the paper's Lemma 5
+    gives for the linear (``prod_parity_*_pi``/plain ``parity``) case.
+
+    **``p`` -- the size of the mode subset, NOT ``m`` -- is what selects the regime.**  The paper's
+    own Table I shows the SAME observable family at ``p = Theta(1)`` and ``p = Theta(log k)`` is
+    already classically simulable (their Simulation Technique 3); only ``p = Theta(sqrt k)`` is
+    presented (orange box) as evading every technique they tried, and their Section III C
+    separately shows ``p`` growing all the way to the full mode/photon count instead lands back in
+    an easy, average-case-simulable regime (products of photon-number operators whose "degree
+    grows with the photon number" admit a Haar-mean average-case surrogate).  Summing over every
+    mode (``p = m``) is therefore a DIFFERENT, already-easy construction, not a stronger version of
+    this one -- see :func:`diag_prime_p` for the three ``p``-growth laws this module exposes.  The
+    paper's own numerics on ``p = Theta(sqrt k)`` are explicitly inconclusive on whether it evades
+    classical simulation outright (Section V B); this implementation is for testing it empirically
+    against this codebase's learners the same way every other observable here is tested, not
+    because the paper proves it is hard.
     """
-    m = int(m)
+    m, p = int(m), int(p)
     if m < 1:
         raise ValueError(f"prod_parity_diag needs m >= 1 (m={m})")
-    return [(i, i) for i in range(m)]
+    if not 1 <= p <= m:
+        raise ValueError(f"prod_parity_diag needs 1 <= p <= m (p={p}, m={m})")
+    return [(i, i) for i in range(p)]
 
 
 def prime_reciprocal_angles(n: int) -> list[float]:
@@ -233,37 +278,44 @@ def prod_parity_score(key, monomials) -> int:
 def angle_monomials(observable: str, m: int, k: int, angle_seed: int):
     """``[(theta, monomial), ...]`` for an angle prod_parity observable.
 
-    Base set from :func:`consecutive_monomials`, :func:`second_monomials`, or
-    :func:`diag_monomials` (``diag``: single-mode squares ``n_i^2`` only, no off-diagonal pairs).
-    ``_pi`` gives ``theta = pi`` for all (so ``cos(P) = (-1)^P`` exactly); ``_random`` draws
+    Base set from :func:`consecutive_monomials` or :func:`second_monomials`.  ``_pi`` gives
+    ``theta = pi`` for all (so ``cos(P) = (-1)^P`` exactly); ``_random`` draws
     ``Uniform[0, 2pi]`` from ``angle_seed`` over the monomials in their fixed order, so the draw
-    is reproducible and hashable; ``_prime`` gives ``theta_i = 1/r_i``
-    (:func:`prime_reciprocal_angles`) -- only meaningful paired with ``diag`` (that pairing is
-    ``prod_parity_diag_prime``, the construction from Monbroussou et al. discussed in
-    :func:`diag_monomials`), so raises if requested with any other base.
+    is reproducible and hashable.
     """
     mo = _PROD_ANGLE_RE.match(observable)
     if mo is None:
         raise ValueError(f"{observable!r} is not an angle prod_parity observable "
-                         "(expected prod_parity_{consecutive,second,diag}_{pi,random,prime})")
+                         "(expected prod_parity_{consecutive,second}_{pi,random})")
     base_kind, angle_kind = mo.group(1), mo.group(2)
-    if base_kind == "consecutive":
-        monos = list(consecutive_monomials(m, k))
-    elif base_kind == "second":
-        monos = list(second_monomials(m))
-    else:
-        monos = list(diag_monomials(m))
-    if angle_kind == "prime" and base_kind != "diag":
-        raise ValueError(f"{observable!r}: the 'prime' angle is only defined for the 'diag' base "
-                         "(prod_parity_diag_prime) -- other bases have no prescribed angle "
-                         "sequence to match one prime per monomial")
+    monos = list(consecutive_monomials(m, k) if base_kind == "consecutive"
+                 else second_monomials(m))
     if angle_kind == "random":
         rng = np.random.default_rng(int(angle_seed))
         thetas = [float(t) for t in rng.uniform(0.0, 2 * math.pi, size=len(monos))]
-    elif angle_kind == "prime":
-        thetas = prime_reciprocal_angles(len(monos))
     else:
         thetas = [math.pi] * len(monos)
+    return list(zip(thetas, monos))
+
+
+def diag_prime_angle_monomials(observable: str, m: int, k: int):
+    """``[(theta, monomial), ...]`` for a ``prod_parity_diag_prime_<law>`` observable.
+
+    ``p = diag_prime_p(law, k)`` modes (:data:`DIAG_PRIME_P_LAWS`), each paired with its own
+    ``theta_i = 1/r_i`` (:func:`prime_reciprocal_angles`) -- the ``O = Pi_{i=1}^p (-1)^{n_i^2/r_i}``
+    construction (see :func:`diag_monomials`).  A dedicated function rather than a branch of
+    :func:`angle_monomials`: this family has three name components (``diag``, ``prime``, and the
+    ``p``-law) where the ``consecutive``/``second`` families have two, and always uses the prime
+    angles (there is no ``_pi``/``_random`` variant of this specific construction).
+    """
+    mo = _DIAG_PRIME_RE.match(observable)
+    if mo is None:
+        raise ValueError(f"{observable!r} is not a prod_parity_diag_prime observable "
+                         f"(expected prod_parity_diag_prime_{{{'/'.join(sorted(DIAG_PRIME_P_LAWS))}}})")
+    law = mo.group(1)
+    p = diag_prime_p(law, k)
+    monos = diag_monomials(m, p)
+    thetas = prime_reciprocal_angles(len(monos))
     return list(zip(thetas, monos))
 
 
@@ -292,7 +344,7 @@ class ProdParityFamily(ObservableFamily):
 
 
 class ProdAngleFamily(ObservableFamily):
-    describe = "prod_parity_{consecutive,second,diag}_{pi,random,prime}"
+    describe = "prod_parity_{consecutive,second}_{pi,random}"
 
     def matches(self, name: str) -> bool:
         return is_prod_parity_angle(name)
@@ -309,11 +361,36 @@ class ProdAngleFamily(ObservableFamily):
                                     in angle_monomials(name, ctx.m, ctx.k, ctx.angle_seed)]}
 
 
-# The two patterns are disjoint, so this order is documentation rather than disambiguation:
-# `_PROD_PARITY_RE` requires a DOUBLE underscore after "prod_parity", so the single-underscore
-# angle names ("prod_parity_consecutive_pi") do not match it, and the geometry-derived names
-# ("prod_parity_consecutive") are matched only by their exact-string checks.  Verified, not
-# assumed -- but the angle family is still registered first so that a future loosening of
-# `_PROD_PARITY_RE` fails toward the more specific family instead of silently swallowing it.
+class ProdParityDiagPrimeFamily(ObservableFamily):
+    """``prod_parity_diag_prime_{const,log,sqrt}`` -- see :func:`diag_prime_angle_monomials`.
+
+    Kept separate from :class:`ProdAngleFamily` rather than folded into its ``diag``/``prime``
+    kinds: this family always uses the prime angles (no ``_pi``/``_random`` variant) and its ``p``
+    is a function of ``k`` via :data:`DIAG_PRIME_P_LAWS`, not a fixed monomial set -- a third,
+    independent axis the two-kind ``{base}_{angle}`` naming does not have room for.
+    """
+
+    describe = f"prod_parity_diag_prime_{{{','.join(sorted(DIAG_PRIME_P_LAWS))}}}"
+
+    def matches(self, name: str) -> bool:
+        return is_prod_parity_diag_prime(name)
+
+    def build(self, name: str, ctx: ObservableContext) -> Observable:
+        angle_monos = diag_prime_angle_monomials(name, ctx.m, ctx.k)
+        return Expectation([prod_parity_angle_score(key, angle_monos) for key in ctx.keys])
+
+    def spec(self, name: str, ctx: ObservableContext) -> dict:
+        return {"observable": "prod_parity_diag_prime",
+                "angle_monomials": [[round(float(th), 12), list(mono)] for th, mono
+                                    in diag_prime_angle_monomials(name, ctx.m, ctx.k)]}
+
+
+# The three patterns are pairwise disjoint (`_PROD_PARITY_RE` needs a DOUBLE underscore after
+# "prod_parity" so it never matches the single-underscore angle/diag-prime names; `_PROD_ANGLE_RE`
+# and `_DIAG_PRIME_RE` differ in their fixed base tokens), so registration order here is
+# documentation rather than disambiguation -- but the two more specific families are still
+# registered before the general one so a future loosening of `_PROD_PARITY_RE` fails toward a
+# specific family instead of silently swallowing it.
+register(ProdParityDiagPrimeFamily())
 register(ProdAngleFamily())
 register(ProdParityFamily())
