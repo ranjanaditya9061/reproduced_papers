@@ -407,7 +407,8 @@ def main(argv=None) -> None:
     path = artifact_path(cfg, model, args.out_root)
     if not path.exists():
         raise SystemExit(f"no artifact at {path}; run v2.pipeline.generate first")
-    ctx = context_for(load_dist(path, size=1), graph_density=args.graph_density)
+    dist = load_dist(path, size=1)
+    ctx = context_for(dist.meta, dist.keys, graph_density=args.graph_density)
 
     X = sample_X(args.n_x, cfg.problem.n_features, cfg.seeds.sample_seed)
     res = analyse(model, X, names, ctx, delta=args.delta, shots=args.shots)

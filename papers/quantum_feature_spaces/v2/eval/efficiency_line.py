@@ -67,7 +67,8 @@ def variant_eta(cfg_path: str | Path, observable: str, *, n_x: int = DEFAULT_N_X
     if not path.exists():
         raise SystemExit(f"no artifact at {path}; run pipeline.generate --config {cfg_path}")
 
-    ctx = context_for(load_dist(path, size=1), graph_density=graph_density)
+    dist = load_dist(path, size=1)
+    ctx = context_for(dist.meta, dist.keys, graph_density=graph_density)
     obs = resolve_observable(observable, ctx)
     if not obs.is_differentiable:
         raise ValueError(f"observable {observable!r} is not differentiable "
