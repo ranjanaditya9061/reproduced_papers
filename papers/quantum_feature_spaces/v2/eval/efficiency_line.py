@@ -18,12 +18,23 @@ Reports the mean over the ``n_x`` points (not a single-point value) so the line 
 observable's efficiency across the input space rather than whatever one row happened to be. Two
 lines per subfolder plot, x-axis = variant: ``eta_mean`` (left axis, ``[0, 1]``) at the fixed
 ``--observable``, and ``trace_mean`` (right axis, unbounded) -- the mean of ``tr(F)``, the
-distribution's own Fisher information with no observable involved, read off the same ``F`` the
-``eta`` loop already builds. Plotting both together separates two different questions: how much
-total input-information the *distribution* carries (``trace_mean``, observable-independent) versus
-how much of that information the *readout* actually captures (``eta_mean``, observable-dependent) --
-a variant can have a large ``trace_mean`` and small ``eta_mean`` (an information-rich distribution
-this observable fails to read out) or the reverse.
+distribution's own Fisher information with no observable involved. Plotting both together separates
+two different questions: how much total input-information the *distribution* carries
+(``trace_mean``, observable-independent) versus how much of that information the *readout* actually
+captures (``eta_mean``, observable-dependent) -- a variant can have a large ``trace_mean`` and small
+``eta_mean`` (an information-rich distribution this observable fails to read out) or the reverse.
+
+**``trace_mean`` is reported on the unprojected ``F``, unlike ``eta_mean``.**
+:func:`metrics.observable.fisher_at` always projects ``F`` onto the ``(n_f-1)``-dim complement of
+``1/sqrt(n_f)`` (:func:`metrics.distribution.project_physical`) before returning it -- a projection
+that only removes a genuinely null direction when ``n_features == m``.  Every config under
+``configs/eval/`` has ``n_features=5, m=6`` (``n_features < m``), where
+:func:`metrics.distribution.phase_eigenvalue`'s own docstring calls that same direction "genuinely
+informative" rather than null.  So ``trace_mean``/the debug eigenvalues here come from
+:func:`_unprojected_fisher` -- the full ``n_features``-dimensional ``F``, with no direction dropped
+-- while ``eta_mean`` still goes through the projected ``F^+`` (every other quantity in
+:mod:`metrics.observable` is only defined on that subspace, so ``eta`` cannot be un-projected the
+same way without reimplementing that module's machinery).
 
 Requires every variant's dataset to already be generated (:mod:`configs.run_size_sweep` or
 ``python -m pipeline.generate``) -- this only reads saved artifacts, it does not generate them. A
@@ -52,20 +63,44 @@ def _variants_in(subfolder: Path) -> list[tuple[str, Path]]:
     return [(p.stem, p) for p in sorted(subfolder.glob("*.yaml"))]
 
 
+def _unprojected_fisher(p, dp):
+    """``F`` built straight from ``(p, dp)`` -- no :func:`metrics.distribution.project_physical`
+    mean-subtraction.
+
+    :func:`metrics.observable.fisher_at` always projects ``F`` onto the ``(n_f-1)``-dim complement
+    of ``1/sqrt(n_f)`` before returning it, unconditionally -- regardless of whether
+    ``n_features == m``.  That projection is only guaranteed to remove a genuinely null (exactly
+    unobservable, to round-off) direction when ``n_features == m``; when ``n_features < m`` (every
+    config under ``configs/eval/`` uses ``n_features=5, m=6``),
+    :func:`metrics.distribution.phase_eigenvalue`'s own docstring calls the projected-out direction
+    "genuinely informative" rather than null.  ``eta``/``F^+`` still need the projected ``F`` (every
+    other quantity in :mod:`metrics.observable` is defined on that subspace), so this is a separate,
+    diagnostic-only ``F`` used just for the reported ``trace``/``eigenvalues`` here -- it is not fed
+    back into ``eta``.
+    """
+    from metrics.distribution import SUPPORT_TOL
+
+    keep = p > SUPPORT_TOL
+    J = (dp[keep] / p[keep].sqrt().unsqueeze(1)).double()
+    return J.T @ J
+
+
 def variant_eta(cfg_path: str | Path, observable: str, *, n_x: int = DEFAULT_N_X,
                 out_root: str = "datasets", graph_density: float = 0.5,
                 debug: bool = False) -> tuple[float, float, dict | None]:
     """``(eta_mean, trace_mean, debug_points)`` for one config, over ``n_x`` sampled input points.
 
-    ``trace_mean`` is the mean of ``tr(F)`` -- the distribution's own Fisher information, with no
-    observable involved (:data:`metrics.fisher`'s convention: ``trace = diagonal(F).sum()``) --
-    read off the same ``F`` this loop already builds for ``eta``, so it costs nothing extra.
+    ``trace_mean`` is the mean of ``tr(F)`` on the **unprojected** Fisher matrix
+    (:func:`_unprojected_fisher`) -- the distribution's own Fisher information, with no observable
+    involved, over the full ``n_features``-dimensional input space rather than the ``(n_f-1)``-dim
+    subspace :func:`metrics.observable.fisher_at` reports on.  ``eta`` itself still uses the
+    projected ``F`` from ``fisher_at`` (see :func:`_unprojected_fisher`'s docstring for why).
 
     ``debug_points`` is ``None`` unless ``debug=True``, in which case it is a per-point breakdown
-    (``eta``, ``trace``, ``eigenvalues`` of ``F``, ``V_eff``, and ``||g||``) for all ``n_x`` points
-    -- printed here and also returned so it lands in the caller's JSON, for diagnosing whether a
-    suspicious ``trace_mean`` (e.g. clustered near some round number across every point) is a real
-    effect or a sign the Jacobian/Fisher computation silently degenerated for this variant.
+    (``eta``, ``trace``, ``eigenvalues`` of the unprojected ``F``, ``V_eff``, and ``||g||``) for all
+    ``n_x`` points -- printed here and also returned so it lands in the caller's JSON, for
+    diagnosing whether a suspicious ``trace_mean`` is a real effect or a sign the Jacobian/Fisher
+    computation silently degenerated for this variant.
 
     Raises if ``observable`` is non-differentiable at this config (mirrors
     :func:`metrics.observable.analyse`'s exclusion, but as a single named observable rather than a
@@ -96,9 +131,10 @@ def variant_eta(cfg_path: str | Path, observable: str, *, n_x: int = DEFAULT_N_X
     etas, traces = [], []
     points = [] if debug else None
     for i, x in enumerate(X):
-        p, dp, F = fisher_at(model, x)
+        p, dp, F_proj = fisher_at(model, x)
         g, V = influence_terms(obs, p, dp)
-        e = eta(g, V, F)
+        e = eta(g, V, F_proj)
+        F = _unprojected_fisher(p, dp)                  # trace/eigenvalues reported on THIS one
         tr = float(F.diagonal().sum())
         etas.append(e)
         traces.append(tr)
