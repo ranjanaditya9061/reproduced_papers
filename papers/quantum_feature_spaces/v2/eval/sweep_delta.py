@@ -42,6 +42,7 @@ if __package__ in (None, ""):                        # allow `python eval/sweep_
 
 from config import load_config
 from model import build_model, sample_X
+from pipeline.distribution import readout_condition
 
 CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs" / "sample"
 
@@ -131,32 +132,24 @@ def probs_batch(model, X: torch.Tensor) -> torch.Tensor:
 
 def readout_zero_probs(model, P: torch.Tensor):
     """Condition ``P`` (``(N, n_outcomes)``, aligned to ``model.outcome_keys()``) on the readout
-    modes reading dual-rail ``0``, renormalize, and return ``(P_conditioned, data_keys)``.
+    modes, renormalize, and return ``(P_conditioned, data_keys)``.
 
     ``spin_magic`` reports two readout modes (:meth:`model.photonic.PhotonicModel.readout_modes`,
     forwarding :meth:`circuit.prep.SpinMagicPrep.readout_modes` -- the ``(m, m+1)`` pair a readout
-    photon is emitted into).  Dual-rail ``0`` is one photon in the first mode, none in the second
-    (:func:`circuit.fock.binary_keys`'s ``(1, 0)`` convention).  Nothing post-selects this inside
-    the prep -- see :mod:`circuit.prep`'s module docstring -- so it is applied here, offline, and
-    is exactly what makes the outcome basis returned comparable to every other (data-mode-only)
-    arm's.  A no-op (returns ``P``, ``keys`` unchanged) when ``readout_modes()`` is empty, which is
-    every arm except ``spin_magic*``: :meth:`circuit.prep.SpinPrep.probs` already traces its spin
-    out inside perceval, so ``spin``'s distribution is already the bare photonic one.
+    photon is emitted into).  A thin wrapper around :func:`pipeline.distribution.readout_condition`
+    (shared with :func:`pipeline.distribution.load_dist`, which applies the same conditioning to a
+    loaded artifact instead of a live model): both read the same two fields
+    (:meth:`model.base.DistributionModel.readout_modes`/``outcome_keys``), so one function does the
+    conditioning for both. A no-op (returns ``P``, ``keys`` unchanged) when ``readout_modes()`` is
+    empty, which is every arm except ``spin_magic*``: :meth:`circuit.prep.SpinPrep.probs` already
+    traces its spin out inside perceval, so ``spin``'s distribution is already the bare photonic
+    one.
     """
     readout = model.readout_modes()
     keys = model.outcome_keys()
-    if not readout:
-        return P, keys
-    r0, r1 = readout
-    mask = torch.tensor([int(key[r0]) == 1 and int(key[r1]) == 0 for key in keys])
-    data_keys = [tuple(v for j, v in enumerate(key) if j not in readout)
-                 for key, keep in zip(keys, mask.tolist()) if keep]
-
-    Pc = P[:, mask]
-    totals = Pc.sum(dim=1, keepdim=True)
-    if bool((totals <= 0).any()):
-        raise ValueError("readout=0 post-selection has zero mass at some x")
-    return Pc / totals, data_keys
+    structure = getattr(model.prep, "structure", None)
+    (P,), data_keys = readout_condition((P,), keys, readout, structure=structure)
+    return P, data_keys
 
 
 def measure(cfg, delta: float, n_x: int, seed: int) -> dict:

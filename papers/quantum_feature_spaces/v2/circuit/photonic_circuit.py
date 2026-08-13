@@ -64,16 +64,27 @@ def build_quantum_layer(m: int, k: int, n_features: int, seed: int, *, measure: 
     distribution (what every model wants) or ``"amplitudes"`` for the complex amplitudes (the
     projected-kernel feature map).  ``input_state`` defaults to :func:`default_input_state`;
     the spin preps override it.
+
+    An encoding with :attr:`~circuit.encoding.Encoding.extra_input_names` (e.g.
+    :class:`~circuit.encoding.HavlicekEncoding`'s ``b``/``c``/``d``) widens ``input_size`` by each
+    group's own width (:meth:`~circuit.encoding.Encoding.extra_input_widths`, ``n_features`` by
+    default, but e.g. ``n_features*(n_features-1)/2`` for a pairwise group) and adds the name to
+    ``input_parameters``, so the returned layer's ``forward`` takes one tensor per name in addition
+    to ``X`` -- the caller must supply them via ``enc.extra_inputs(X)`` (see
+    :meth:`circuit.prep.FockPrep.probs`).  Extra names must not prefix one another or the default
+    ``"x"`` group: merlin's parameter binding keys groups by plain string-prefix matching, so a
+    name like ``"x2"`` would silently double-count against ``"x"``'s own ``x2`` index.
     """
     import merlin as ML
     import perceval as pcvl
 
+    enc = build_encoding(encoding) if isinstance(encoding, str) else encoding
     state = default_input_state(m, k) if input_state is None else list(input_state)
     layer = ML.QuantumLayer(
-        input_size=n_features,
-        experiment=pcvl.Experiment(build_sandwich_circuit(m, n_features, seed, encoding)),
+        input_size=n_features + sum(enc.extra_input_widths(n_features)),
+        experiment=pcvl.Experiment(build_sandwich_circuit(m, n_features, seed, enc)),
         input_state=state,
-        input_parameters=["x"],
+        input_parameters=["x", *enc.extra_input_names],
         measurement_strategy=getattr(ML.MeasurementStrategy, measure)(ML.ComputationSpace.FOCK),
     )
     return layer, state

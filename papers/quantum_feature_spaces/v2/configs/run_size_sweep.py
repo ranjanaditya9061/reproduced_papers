@@ -14,10 +14,18 @@ here already uses), re-validates, and generates from the mutated config directly
 itself from whatever ``k`` it sees (:func:`circuit.spin.normalize_cx_pairs`), so nothing else needs
 adjusting when the size changes.
 
-**Only ``photonic``/``fock`` continues past ``m=12``.**  Every other kind hits the exact-``probs``
-memory wall there (:mod:`pipeline.distribution`'s ``check_size``); from ``m=14`` on, only the
-``photonic_fock*`` configs run, switched onto the shots branch (``generation.shots`` set instead of
-relying on exact ``probs``).
+**Only ``GROWTH_STEMS`` grow past ``(6, 3)``.**  Every template in ``size_sweep_full/`` runs at
+``(6, 3)``, but only ``fermion_m6k3``, ``photonic_fock_m6k3``, and ``qubit_m6k3`` continue on to
+``(8,4)``/``(10,5)``/``(12,6)`` -- those three are the actual size-scaling comparison (photonic Fock
+phase encoding vs. fermion/determinant-based vs. qubit, at matched size). Everything else --
+classical baselines, the ``bs``/``bs_phase`` encodings, and every ``spin``/``spin_magic`` variant --
+is an ablation at one fixed size, not a scaling question, so it stays pinned at ``(6, 3)``;
+``spin``/``spin_magic`` in particular hit the per-row perceval basis-discovery cost
+(:func:`circuit.prep._align_rows`) that makes them impractically slow well before ``m=12`` anyway.
+Of ``GROWTH_STEMS``, only ``photonic_fock_m6k3`` continues past ``m=12``: every other kind hits the
+exact-``probs`` memory wall there (:mod:`pipeline.distribution`'s ``check_size``); from ``m=14`` on,
+only it runs, switched onto the shots branch (``generation.shots`` set instead of relying on exact
+``probs``).
 
 **One bad config does not stop the run.**  A single failure (e.g. a size that blows the memory
 guard, or a prep that cannot run in this environment) is caught, printed, and recorded -- every
@@ -47,12 +55,23 @@ from config import load_config
 from pipeline.generate import generate_exact, generate_shots
 
 CONFIG_DIR = Path(__file__).parent / "size_sweep_full"
-#: (m, k) tiers with exact probs -- every template runs here.
+#: (m, k) tiers with exact probs -- every template runs at (6, 3); only GROWTH_STEMS grow past it.
 EXACT_SIZES = [(6, 3), (8, 4), (10, 5), (12, 6)]
 #: (m, k) tiers past the exact-probs memory wall -- photonic/fock only, via the shots branch.
 SHOTS_SIZES = [(14, 7), (16, 8), (18, 9)]
 #: Shots to draw per row at the SHOTS_SIZES tier.
 SHOTS_BUDGET = 10_000
+
+#: Template stems (filename without ``.yaml``) that actually run past ``(6, 3)``.  Every other
+#: template in ``size_sweep_full/`` -- the classical baselines, the bs/bs_phase encodings, and
+#: every ``spin``/``spin_magic`` variant -- stays pinned at ``(6, 3)``: the ablation grid there is
+#: about encoding placement/structure at one fixed size, not about how it scales, and
+#: ``spin``/``spin_magic`` in particular hit the per-row perceval basis-discovery cost
+#: (:func:`circuit.prep._align_rows`) that makes them impractically slow well before ``m=12``.
+#: This is the size-scaling question instead: how does each of these three model families --
+#: photonic Fock (phase encoding, the core arm), fermion (determinant-based), and qubit (phase
+#: feature_map) -- behave as ``m`` grows, at matched size across all three.
+GROWTH_STEMS = ("fermion_m6k3", "photonic_fock_m6k3", "qubit_m6k3")
 
 
 #: The template's own size -- n_jobs scaling below is relative to what configs/generate_size_sweep.py
@@ -117,8 +136,10 @@ def _for_size(cfg, m: int, k: int, *, shots: int = 0):
 
 def run(*, config_dir: Path = CONFIG_DIR, sizes: list[tuple[int, int]] | None = None,
        root: str = "datasets", force: bool = False) -> list[tuple[Path, tuple[int, int], Exception]]:
-    """Generate every ``(6, 3)`` template in ``config_dir`` at every size in ``sizes``, one size
-    tier at a time, ascending.  ``photonic_fock*`` templates also run the ``SHOTS_SIZES`` tier.
+    """Generate every ``(6, 3)`` template in ``config_dir`` at ``(6, 3)``; only ``GROWTH_STEMS``
+    also run at the larger tiers, one size tier at a time, ascending.  ``photonic_fock_m6k3`` (the
+    one ``GROWTH_STEMS`` member under the ``photonic_fock`` prefix) also runs the ``SHOTS_SIZES``
+    tier.
 
     Returns the ``(path, (m, k), exception)`` triples that failed -- empty if everything succeeded.
     """
@@ -131,7 +152,14 @@ def run(*, config_dir: Path = CONFIG_DIR, sizes: list[tuple[int, int]] | None = 
 
     for m, k in order:
         shots_tier = (m, k) in SHOTS_SIZES
-        paths = [p for p in templates if not shots_tier or p.stem.startswith("photonic_fock")]
+        growth_tier = (m, k) != (6, 3)
+        if shots_tier:
+            paths = [p for p in templates if p.stem.startswith("photonic_fock")
+                     and p.stem in GROWTH_STEMS]
+        elif growth_tier:
+            paths = [p for p in templates if p.stem in GROWTH_STEMS]
+        else:
+            paths = templates
         if not paths:
             print(f"=== (m={m}, k={k}): no applicable templates, skipping", flush=True)
             continue

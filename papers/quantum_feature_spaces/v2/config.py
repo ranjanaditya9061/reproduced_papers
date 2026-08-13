@@ -116,6 +116,14 @@ class ModelConfig:
     rank: int | None = None
     param_matched: bool = False
 
+    # --- kind="qubit" --------------------------------------------------------------------- #
+    #: ``None``/``"iqp"`` (default) is the full Havlicek sandwich (two ``H^n -> U_phi(x)`` passes,
+    #: linear + pairwise ``Z_iZ_j`` terms).  ``"phase"`` is the qubit analogue of the photonic
+    #: ``phase`` encoding: a single diagonal ``exp(i sum x_i Z_i)`` (linear term only) sandwiched
+    #: directly between ``V_lead``/``W_trail``, no Hadamard mixer of its own.  See
+    #: :class:`v2.model.qubit.QubitFeatureMap`.
+    feature_map: str | None = None
+
 
 @dataclass
 class GenerationConfig:

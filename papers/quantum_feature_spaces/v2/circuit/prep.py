@@ -31,6 +31,8 @@ from __future__ import annotations
 import numpy as np
 
 from . import spin as _spin
+from .encoding import build_encoding
+from .fock import binary_keys, fock_keys
 from .photonic_circuit import build_quantum_layer
 
 #: name -> StatePrep subclass, populated on subclassing.
@@ -125,7 +127,8 @@ class FockPrep(StatePrep):
 
     def probs(self, X, *, m, k, n_features, seed, encoding, n_jobs=1):
         layer = self._get_layer(m=m, k=k, n_features=n_features, seed=seed, encoding=encoding)
-        return layer.forward(X)
+        enc = build_encoding(encoding) if isinstance(encoding, str) else encoding
+        return layer.forward(X, *enc.extra_inputs(X))
 
     def outcome_keys(self, *, m, k):
         from circuit.fock import fock_keys
@@ -404,12 +407,15 @@ class SpinMagicPrep(StatePrep):
                   self.structure, structure_params, encode_on_spin, encode_circuit, enc_name)
                  for row in rows]
         results = _spin.parallel_row_map(_magic_row_worker, tasks, n_jobs)
-        keys, probs = _align_rows(results, n_modes=m + 2)
+        keys, probs = _align_rows_fixed(results, basis=_magic_basis(m, k))
         self._keys = keys
         return torch.as_tensor(probs, dtype=torch.float32)
 
     def outcome_keys(self, *, m, k):
-        return getattr(self, "_keys", None)
+        # Fixed in advance (see :func:`_magic_basis`), not discovered per call -- so two separate
+        # `probs` calls at the same (m, k) always align to the same columns without needing to be
+        # routed through one shared batch.
+        return _magic_basis(m, k)
 
     def spec(self) -> dict:
         encode_on_spin, encode_circuit = self._resolved_encoding()
@@ -528,6 +534,44 @@ def _align_rows(results, *, n_modes: int):
     for i, (keys, probs) in enumerate(results):
         for row, pr in zip(keys, probs):
             out[i, index[tuple(int(v) for v in row)]] = pr
+    return np.asarray(basis, dtype=np.int16), out
+
+
+def _magic_basis(m: int, k: int) -> list[tuple[int, ...]]:
+    """The fixed ``spin_magic`` outcome basis: ``m``-mode ``k``-photon Fock keys, each paired with
+    both dual-rail readout outcomes -- ``n_fock(m, k) * 2`` keys total, ``m + 2`` long.
+
+    Unlike :func:`_align_rows`, this basis does not depend on what any particular batch's perceval
+    calls happened to report: it is the same combinatorial enumeration :func:`circuit.fock.fock_keys`
+    gives every other Fock-basis model, crossed with the readout pair's two outcomes
+    (:func:`circuit.fock.binary_keys`). Fixing it here is what lets two separate ``probs`` calls
+    (e.g. :func:`eval.sweep_delta.probs_batch`'s ``x0`` and ``X_ball`` project) share one basis
+    without needing to route every call through a single batched union.
+    """
+    return [data + readout for data in fock_keys(m, k) for readout in binary_keys(2)]
+
+
+def _align_rows_fixed(results, *, basis: list[tuple[int, ...]]):
+    """Scatter per-row ``(keys, probs)`` onto the fixed ``basis``, zero-filling unreported outcomes.
+
+    Like :func:`_align_rows`, perceval prunes negligible-probability outcomes and *which* ones it
+    prunes can differ per row -- but here the destination columns are fixed in advance rather than
+    discovered from the batch, so two different batches (or two different single-row calls) always
+    align to the same columns. Returns ``(keys, probs)`` with ``keys`` a ``(n_states, n_modes)`` int
+    array (``basis``, unchanged) and ``probs`` ``(n_rows, n_states)``.
+    """
+    index = {key: i for i, key in enumerate(basis)}
+    out = np.zeros((len(results), len(basis)), dtype=np.float64)
+    for i, (keys, probs) in enumerate(results):
+        for row, pr in zip(keys, probs):
+            t = tuple(int(v) for v in row)
+            if t not in index:
+                raise ValueError(
+                    f"perceval reported outcome {t} ({sum(t)} photons) outside the fixed "
+                    f"spin_magic basis ({len(basis)} outcomes over {len(basis[0])} modes) -- "
+                    "the circuit no longer conserves photon number as assumed."
+                )
+            out[i, index[t]] = pr
     return np.asarray(basis, dtype=np.int16), out
 
 

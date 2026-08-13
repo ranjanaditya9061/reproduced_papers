@@ -87,32 +87,63 @@ def save_dist(path: str | Path, cfg, model, probs: torch.Tensor) -> Path:
     return path
 
 
-def _readout_zero_select(probs: torch.Tensor, probs_at_zero: torch.Tensor, keys: tuple,
-                         readout: tuple) -> tuple[torch.Tensor, torch.Tensor, tuple]:
-    """Condition ``probs`` on the readout modes reading dual-rail ``0``, renormalise, and drop the
-    readout columns from ``keys``.
+def readout_condition(tensors: tuple, keys: tuple, readout: tuple,
+                      *, structure: str | None = None) -> tuple[tuple, tuple]:
+    """Condition each of ``tensors`` (last axis aligned to ``keys``) on the readout modes, drop
+    the readout columns from ``keys``, and return ``(conditioned_tensors, data_keys)``.
 
-    Mirrors :func:`eval.sweep_delta.readout_zero_probs`, but works from a loaded
-    :class:`Distribution`'s stored ``keys``/``readout_modes`` rather than a live model -- both read
-    the same fields (:meth:`model.base.DistributionModel.readout_modes`/``outcome_keys``, persisted
-    into ``meta.json`` by :func:`~pipeline.artifact.save_meta`), so the two are equivalent.  A no-op
-    when ``readout`` is empty (every prep except ``spin_magic*``).
+    Shared by :func:`~pipeline.distribution.load_dist` (a loaded artifact's stored ``probs``/
+    ``probs_at_zero``) and :func:`eval.sweep_delta.readout_zero_probs` (a live model's ``probs``
+    batch) -- both read the same two fields
+    (:meth:`model.base.DistributionModel.readout_modes`/``outcome_keys``, persisted into
+    ``meta.json`` by :func:`~pipeline.artifact.save_meta`), so one function suffices for both.  A
+    no-op when ``readout`` is empty (every prep except ``spin_magic*``).
+
+    Every structure but ``"ghz"`` post-selects on the readout reading dual-rail ``0`` (one photon
+    in the first readout mode, none in the second) and renormalises, matching every other
+    (data-mode-only) arm's basis. ``structure == "ghz"`` never re-superposes the spin after its
+    first gap, so the final ``H`` ahead of the readout emission acts on a fixed Z-eigenstate rather
+    than a genuine superposition: the readout branches deterministically, and masking to the
+    dual-rail-``0`` branch alone would discard the outcome and, for some ``x``, leave zero mass on
+    the kept branch. For ``ghz`` we instead marginalize -- sum both dual-rail readout outcomes
+    together -- rather than post-select on either.
     """
     if not readout:
-        return probs, probs_at_zero, keys
+        return tensors, keys
     r0, r1 = readout
-    mask = torch.tensor([int(key[r0]) == 1 and int(key[r1]) == 0 for key in keys])
-    data_keys = tuple(tuple(v for j, v in enumerate(key) if j not in readout)
-                      for key, keep in zip(keys, mask.tolist()) if keep)
 
-    def _select(P: torch.Tensor) -> torch.Tensor:
-        Pc = P[..., mask]
+    # ``ghz`` keeps both readout branches (marginalize); every other structure keeps only the
+    # dual-rail-0 branch (post-select). Either way, surviving rows are then grouped by their
+    # data-only key: for the post-select mask that grouping is already 1:1 (a no-op sum), for the
+    # marginalize mask it is what sums the two readout branches together.
+    if structure == "ghz":
+        mask = torch.ones(len(keys), dtype=torch.bool)
+    else:
+        mask = torch.tensor([int(key[r0]) == 1 and int(key[r1]) == 0 for key in keys])
+
+    data_keys, index = [], {}
+    for key, keep in zip(keys, mask.tolist()):
+        if not keep:
+            continue
+        data_key = tuple(v for j, v in enumerate(key) if j not in readout)
+        if data_key not in index:
+            index[data_key] = len(data_keys)
+            data_keys.append(data_key)
+    data_keys = tuple(data_keys)
+
+    def _condition(P: torch.Tensor) -> torch.Tensor:
+        Pc = torch.zeros(*P.shape[:-1], len(data_keys), dtype=P.dtype)
+        for j, (key, keep) in enumerate(zip(keys, mask.tolist())):
+            if not keep:
+                continue
+            data_key = tuple(v for i, v in enumerate(key) if i not in readout)
+            Pc[..., index[data_key]] += P[..., j]
         totals = Pc.sum(dim=-1, keepdim=True)
         if bool((totals <= 0).any()):
-            raise ValueError("readout=0 post-selection has zero mass at some x")
+            raise ValueError("readout post-selection has zero mass at some x")
         return Pc / totals
 
-    return _select(probs), _select(probs_at_zero.unsqueeze(0))[0], data_keys
+    return tuple(_condition(P) for P in tensors), data_keys
 
 
 def load_dist(path: str | Path, *, size: int | None = None, load_full: bool = False) -> Distribution:
@@ -139,7 +170,10 @@ def load_dist(path: str | Path, *, size: int | None = None, load_full: bool = Fa
 
     if not load_full:
         readout = tuple(int(v) for v in (meta.get("readout_modes") or ()))
-        probs, probs_at_zero, keys = _readout_zero_select(probs, probs_at_zero, keys, readout)
+        structure = (meta.get("spec") or {}).get("structure")
+        (probs, probs_at_zero_2d), keys = readout_condition(
+            (probs, probs_at_zero.unsqueeze(0)), keys, readout, structure=structure)
+        probs_at_zero = probs_at_zero_2d[0]
 
     n = probs.shape[0] if size is None else min(int(size), probs.shape[0])
     X = sample_X(int(meta["size"]), int(meta["n_features"]), int(meta["sample_seed"]))

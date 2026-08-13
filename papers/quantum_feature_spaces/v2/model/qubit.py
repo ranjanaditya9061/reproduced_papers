@@ -113,9 +113,17 @@ class QubitFeatureMap(nn.Module):
     and pads the rest to the encoding's fixed point (see there), so the unencoded qubits carry no
     ``x``-dependent phase at that layer -- though ``V_lead``/``W_trail`` still entangle them with
     the encoded qubits, which is the point of raising ``n_qubits`` at fixed ``n_features``.
+
+    ``feature_map="iqp"`` (default) is the full Havlicek sandwich, two ``H^n -> U_phi(x)`` passes.
+    ``feature_map="phase"`` is the qubit analogue of the photonic ``phase`` encoding: a single
+    diagonal ``exp(i sum x_i Z_i)`` (linear term only, no pairwise ``Z_i Z_j``, no Hadamard of its
+    own) sandwiched directly between ``V_lead`` and ``W_trail`` -- mirroring how the photonic
+    ``phase`` encoding is one ``PS(x)`` between two Haar unitaries, with no beamsplitter mixer of
+    its own beyond ``W_1``/``W_2``.
     """
 
-    def __init__(self, n_qubits: int, n_features: int, depth: int, seed: int, lead: bool = True):
+    def __init__(self, n_qubits: int, n_features: int, depth: int, seed: int, lead: bool = True,
+                 feature_map: str = "iqp"):
         super().__init__()
         n = int(n_qubits)
         if int(n_features) > n:
@@ -124,11 +132,14 @@ class QubitFeatureMap(nn.Module):
                 f"n_features <= n_qubits (got n_features={n_features}, n_qubits={n}). Raise "
                 f"n_qubits (m), or lower n_features."
             )
+        if feature_map not in ("iqp", "phase"):
+            raise ValueError(f"feature_map must be 'iqp' or 'phase' (got {feature_map!r})")
         self.n_qubits = n
         self.n_features = int(n_features)
         self.depth = int(depth)
         self.seed = int(seed)
         self.lead = bool(lead)
+        self.feature_map_kind = feature_map
         self.register_buffer("H", _hadamard_n(n).to(torch.complex64))
         self.register_buffer("signs", _basis_signs(n))
         self.register_buffer("pair_mask", torch.triu(torch.ones(n, n), diagonal=1).bool())
@@ -155,16 +166,31 @@ class QubitFeatureMap(nn.Module):
         phi_pair = (sign_outer.unsqueeze(0) * diff_outer.unsqueeze(1)).sum(dim=(-2, -1))
         return torch.exp(1j * (phi_single + phi_pair).to(torch.complex64))
 
+    def _phase_diag(self, x: torch.Tensor) -> torch.Tensor:
+        """``exp(i sum_i x_i Z_i)`` -- the linear-only term of :meth:`_iqp_diag`, no pairwise
+        ``Z_i Z_j``.  Unencoded qubits (``n_features < n_qubits``) are padded with ``x_i = 0``
+        rather than ``pi``: with no pairwise term to protect, a plain zero phase already leaves
+        those qubits' diagonal entry at ``1`` regardless of their bit pattern.
+        """
+        if self.n_features < self.n_qubits:
+            pad = x.new_zeros((x.shape[0], self.n_qubits - self.n_features))
+            x = torch.cat([x, pad], dim=1)
+        phi_single = x @ self.signs.T
+        return torch.exp(1j * phi_single.to(torch.complex64))
+
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         n = self.n_qubits
         state = torch.zeros(X.shape[0], 2 ** n, dtype=torch.complex64, device=X.device)
         state[:, 0] = 1.0                                    # |0^n>
         if self.lead:
             state = _variational(state, self.theta_lead, n)  # V_lead (W1 analogue)
-        state = state @ self.H.T                             # IQP: H^n
-        state = state * self._iqp_diag(X)                    #      U_phi(x)
-        state = state @ self.H.T                             #      H^n
-        state = state * self._iqp_diag(X)                    #      U_phi(x)
+        if self.feature_map_kind == "phase":
+            state = state * self._phase_diag(X)               # single U(x), no Hadamard mixer
+        else:
+            state = state @ self.H.T                          # IQP: H^n
+            state = state * self._iqp_diag(X)                 #      U_phi(x)
+            state = state @ self.H.T                           #      H^n
+            state = state * self._iqp_diag(X)                  #      U_phi(x)
         return _variational(state, self.theta_trail, n)      # W_trail (W2 analogue)
 
 
@@ -179,11 +205,11 @@ class QubitModel(DistributionModel):
     name = "qubit"
 
     def __init__(self, *, m: int, k: int, n_features: int, seed: int = 42,
-                 lead: bool = True):
+                 lead: bool = True, feature_map: str = "iqp"):
         super().__init__(m=m, k=k, n_features=n_features, seed=seed)
         self.n_qubits = int(m)
         self.feature_map = QubitFeatureMap(self.n_qubits, n_features=self.n_features, depth=k,
-                                           seed=seed, lead=lead)
+                                           seed=seed, lead=lead, feature_map=feature_map)
         self._keys = [tuple((z >> i) & 1 for i in range(self.n_qubits))
                       for z in range(2 ** self.n_qubits)]
         self._autosize_batch(2 ** self.n_qubits)
@@ -209,18 +235,22 @@ class QubitModel(DistributionModel):
         return int(self.feature_map.theta_lead.numel() + self.feature_map.theta_trail.numel())
 
     def circuit_spec(self) -> dict:
-        # `embedding` marks the V_lead -> IQP -> W_trail structure, so datasets made by an older
-        # IQP-only map get a distinct identity rather than colliding.  `n_qubits` is included so
-        # two datasets differing only in m (same n_features, same seed) do not collide: m sets the
-        # statevector width and is otherwise absent from hash_fields.
-        return {"model": self.name, "embedding": "Vlead-IQP-Wtrail",
+        # `embedding` marks the V_lead -> {IQP,phase} -> W_trail structure, so datasets made by an
+        # older IQP-only map (or the other feature_map) get a distinct identity rather than
+        # colliding.  `n_qubits` is included so two datasets differing only in m (same n_features,
+        # same seed) do not collide: m sets the statevector width and is otherwise absent from
+        # hash_fields.
+        embedding = ("Vlead-IQP-Wtrail" if self.feature_map.feature_map_kind == "iqp"
+                    else "Vlead-Phase-Wtrail")
+        return {"model": self.name, "embedding": embedding,
                 "n_qubits": self.n_qubits, "depth": self.feature_map.depth,
                 "lead": self.feature_map.lead, "basis": "computational_2^n"}
 
     @classmethod
     def from_config(cls, cfg: "ExperimentConfig") -> "QubitModel":
         return cls(m=cfg.problem.m, k=cfg.problem.k, n_features=cfg.problem.n_features,
-                   seed=cfg.seeds.model_seed)
+                   seed=cfg.seeds.model_seed,
+                   feature_map=getattr(cfg.model, "feature_map", None) or "iqp")
 
     @classmethod
     def validate_config(cls, cfg: "ExperimentConfig") -> None:

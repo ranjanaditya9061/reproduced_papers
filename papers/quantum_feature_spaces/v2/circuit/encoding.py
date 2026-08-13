@@ -28,6 +28,8 @@ Adding one: subclass :class:`Encoding` with a ``name`` and it auto-registers.
 
 from __future__ import annotations
 
+import math
+
 #: name -> Encoding subclass, populated on subclassing.
 ENCODINGS: dict[str, type["Encoding"]] = {}
 
@@ -36,6 +38,22 @@ class Encoding:
     """Adds the ``x``-dependent components to a circuit, and validates its own geometry."""
 
     name: str | None = None
+
+    #: Extra named ``input_parameters`` groups (beyond the default ``"x"``) this encoding needs
+    #: bound into a merlin ``QuantumLayer`` -- e.g. ``["y"]`` for a derived-feature product that
+    #: perceval cannot compute from two Parameters internally (see :meth:`extra_inputs` and
+    #: :class:`HavlicekEncoding`). Empty for every diagonal/single-feature encoding.
+    extra_input_names: tuple[str, ...] = ()
+
+    def extra_input_widths(self, n_features: int) -> list[int]:
+        """Column width of each group in :attr:`extra_input_names`, in order.
+
+        Defaults to ``n_features`` per group (one value per feature, the common case). A group
+        carrying one value per feature *pair* (:class:`HavlicekEncoding`'s ``b``/``d``) overrides
+        this to report ``n_features * (n_features - 1) // 2`` instead, so
+        :func:`~circuit.photonic_circuit.build_quantum_layer` can size ``input_size`` correctly.
+        """
+        return [n_features] * len(self.extra_input_names)
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -82,6 +100,18 @@ class Encoding:
         an ``O(m^2)`` dense matrix per row) and need not override this.
         """
         raise NotImplementedError
+
+    def extra_inputs(self, X):
+        """``(N, n_features)`` tensors, one per name in :attr:`extra_input_names`, in order.
+
+        Computed from ``X`` (the model's real, stored input -- this method derives from it, it
+        does not replace it) right before a merlin ``QuantumLayer`` call, so a merlin-bound
+        product like :class:`HavlicekEncoding`'s ``x_i * x_{(i+1) mod n}`` can be supplied as a
+        second named parameter group without perceval needing to multiply two Parameters
+        internally (see :meth:`add_to`'s per-encoding note on why that is not a circuit
+        primitive).  Empty for every encoding with no ``extra_input_names``.
+        """
+        return []
 
     def spec(self) -> dict:
         """Identity fields folded into the artifact hash.
@@ -257,6 +287,213 @@ class BeamsplitterPhaseEncoding(Encoding):
             ps_step = torch.eye(m, dtype=torch.complex64).unsqueeze(0).expand(N, m, m).clone()
             ps_step[:, i, i] = torch.exp(1j * X[:, i].to(torch.complex64))
             U = torch.einsum("nij,njk->nik", ps_step, U)
+        return U
+
+
+def _bs_ladder_fixed_unitary(m: int, n_features: int, N: int) -> torch.Tensor:
+    """``(N, m, m)`` -- one fixed ``BS(pi/2)`` on modes ``(i, i+1)`` for ``i < n_features``,
+    composed in the same add-order as :func:`_bs_ladder_unitary` (data-independent, so every row
+    is identical, but broadcast to ``N`` for uniform composition with the data-carrying layers).
+    """
+    import torch
+
+    theta = torch.full((N,), math.pi / 2, dtype=torch.float32)
+    U = torch.eye(m, dtype=torch.complex64).unsqueeze(0).expand(N, m, m).clone()
+    for i in range(n_features):
+        block = _bs_block(theta)
+        step = torch.eye(m, dtype=torch.complex64).unsqueeze(0).expand(N, m, m).clone()
+        step[:, i:i + 2, i:i + 2] = block
+        U = torch.einsum("nij,njk->nik", step, U)
+    return U
+
+
+def _bs_ladder_pairwise_unitary(X: torch.Tensor, *, m: int, n_features: int) -> torch.Tensor:
+    """``(N, m, m)`` -- one ``BS(x_i * x_j)`` on modes ``(i, j)``, for every ``i < j <
+    n_features``.  The pairwise term, matching IQP's full ``sum_{i<j}`` rather than only adjacent
+    pairs: a beamsplitter is a genuine two-mode gate, so its ``2x2`` block is embedded directly at
+    rows/columns ``(i, j)`` of the running unitary -- ``i`` and ``j`` need not be adjacent, since
+    this is the analytic matrix path with no physical adjacency constraint (unlike a perceval
+    circuit, where every component acts on physically adjacent modes; see :meth:`add_to`).
+    """
+    import torch
+
+    N = X.shape[0]
+    U = torch.eye(m, dtype=torch.complex64).unsqueeze(0).expand(N, m, m).clone()
+    for i in range(n_features):
+        for j in range(i + 1, n_features):
+            theta = X[:, i] * X[:, j]
+            block = _bs_block(theta)
+            step = torch.eye(m, dtype=torch.complex64).unsqueeze(0).expand(N, m, m).clone()
+            step[:, i, i] = block[:, 0, 0]
+            step[:, i, j] = block[:, 0, 1]
+            step[:, j, i] = block[:, 1, 0]
+            step[:, j, j] = block[:, 1, 1]
+            U = torch.einsum("nij,njk->nik", step, U)
+    return U
+
+
+def _pair_indices(n_features: int) -> list[tuple[int, int]]:
+    """``[(0,1), (0,2), .., (n-2,n-1)]`` -- every ``i < j`` pair, in a fixed order shared by
+    :meth:`HavlicekEncoding.add_to`/``add_concrete``/``extra_inputs`` so a pair's index into
+    ``pairs`` always lines up with its column in the ``b``/``d`` input groups.
+    """
+    return [(i, j) for i in range(n_features) for j in range(i + 1, n_features)]
+
+
+def _route_pair(m: int, i: int, j: int) -> list[int]:
+    """A permutation sending mode ``i`` to port ``0`` and mode ``j`` to port ``1``, every other
+    mode filling the remaining ports in order -- so a plain adjacent ``BS`` on ports ``(0, 1)``
+    after this permutation couples the original, possibly non-adjacent, modes ``i`` and ``j``.
+
+    ``perm[k]`` is perceval's ``PERM`` convention: the output port that input mode ``k``'s content
+    is routed to (verified against ``PERM([1,2,3,4,0]).compute_unitary()``, which sends input ``k``
+    to output ``(k+1) mod 5``, i.e. ``U[out, in]`` is ``1`` exactly at ``out = perm[in]``).
+    """
+    rest = [k for k in range(m) if k not in (i, j)]
+    perm = [0] * m
+    perm[i], perm[j] = 0, 1
+    for offset, k in enumerate(rest):
+        perm[k] = 2 + offset
+    return perm
+
+
+def _add_routed_bs(circuit, m: int, i: int, j: int, bs) -> None:
+    """Add ``bs`` (a 2-mode component) coupling modes ``i`` and ``j``, routing them adjacent via
+    :func:`_route_pair` first and back afterward when they are not already adjacent.  A plain
+    adjacent add when ``j == i + 1`` avoids two no-op ``PERM`` layers in the common case (the
+    ladder-style ``BS(pi/2)`` layers and most ``i < j`` pairs at small ``n_features``).
+    """
+    import perceval as pcvl
+
+    if j == i + 1:
+        circuit.add(i, bs)
+        return
+    perm = _route_pair(m, i, j)
+    inv_perm = [0] * m
+    for k in range(m):
+        inv_perm[perm[k]] = k
+    circuit.add(0, pcvl.PERM(perm))
+    circuit.add((0, 1), bs)
+    circuit.add(0, pcvl.PERM(inv_perm))
+
+
+class HavlicekEncoding(Encoding):
+    """The photonic analogue of the qubit IQP feature map's ``H -> U_phi(x) -> H -> U_phi(x)``
+    sandwich, mode-for-mode:
+
+    .. math::
+        \\mathrm{BS}(\\pi/2) \\to \\mathrm{PS}(x) \\to \\mathrm{BS}(x^2)
+        \\to \\mathrm{BS}(\\pi/2) \\to \\mathrm{PS}(x) \\to \\mathrm{BS}(x^2)
+        \\to \\mathrm{BS}(\\pi/2)
+
+    Three fixed ``BS(pi/2)`` layers (the balanced 50:50 mixer -- the photonic analogue of the
+    qubit Hadamard, since ``BS(pi/2)`` is ``[[1, i], [i, 1]] / sqrt(2)`` -- applied ladder-style,
+    one per adjacent mode pair) sandwich two data layers, each itself split into a single-mode
+    phase ``PS(x_i)`` (IQP's linear ``x_i Z_i`` term) followed by a two-mode ``BS(x_i * x_j)`` for
+    *every* pair ``i < j`` (IQP's full pairwise ``sum_{i<j} Z_i Z_j`` term -- linear optics has no
+    direct two-mode *phase* gate, so the pairwise coupling is carried by a beamsplitter, a genuine
+    two-mode primitive, rather than an artificial product-phase gate).  A beamsplitter only acts on
+    physically adjacent modes, so each non-adjacent pair ``(i, j)`` is realised as ``PERM -> BS ->
+    PERM``: route ``i`` and ``j`` to adjacent ports, apply the coupling there, then permute back --
+    everything else passes through the permutation unchanged (see :func:`_route_pair`).
+
+    Same geometry as ``bs``/``bs_phase``: needs one more mode than feature, hence
+    ``n_features <= m - 1``.  Not diagonal (every layer but ``PS`` mixes modes), so :meth:`unitary`
+    is the analytic hook.
+
+    ``BS(x_i * x_j)`` needs a *product* of two features, which perceval's Parameter algebra cannot
+    express directly (it composes Parameters additively/affinely, not by multiplying two distinct
+    free Parameters together) -- so :meth:`add_to` cannot bind it to raw ``x`` the way
+    ``phase``/``bs``/``bs_phase`` do.  Instead every data value the circuit needs is precomputed
+    outside perceval and supplied as its own named input group (:attr:`extra_input_names`,
+    :meth:`extra_inputs`): merlin's ``spec_mappings`` keys parameters by a plain *string-prefix*
+    match against the group name, so the four data layers get single-letter, mutually-non-prefixing
+    group names -- ``x`` (the real input, first linear layer, width ``n_features``), ``b`` (first
+    pairwise layer, one value per ``i < j`` pair, width ``n_features * (n_features - 1) / 2``),
+    ``c`` (second linear layer, same values as ``x``), ``d`` (second pairwise layer, same values as
+    ``b``) -- fed the *same* numbers twice over: physically the same encoding applied twice,
+    mechanically four independent input groups.
+    """
+
+    name = "havlicek"
+    extra_input_names = ("b", "c", "d")
+
+    def extra_input_widths(self, n_features: int) -> list[int]:
+        n_pairs = n_features * (n_features - 1) // 2
+        return [n_pairs, n_features, n_pairs]
+
+    def validate(self, *, m: int, k: int, n_features: int) -> None:
+        if n_features > m - 1:
+            raise ValueError(
+                f"encoding 'havlicek' needs a beamsplitter ladder that spans every feature on "
+                f"modes (i, i+1), so it needs n_features <= m - 1 (got n_features={n_features}, "
+                f"m={m}). Raise m, or lower n_features."
+            )
+
+    def extra_inputs(self, X):
+        import torch
+
+        pairs = _pair_indices(X.shape[1])
+        xcorr = torch.stack([X[:, i] * X[:, j] for i, j in pairs], dim=1)
+        return [xcorr, X, xcorr]
+
+    def add_to(self, circuit, *, m: int, n_features: int, parameterised: bool = True) -> None:
+        import perceval as pcvl
+
+        pairs = _pair_indices(n_features)
+        for i in range(n_features):
+            circuit.add(i, pcvl.BS(theta=math.pi / 2))
+        for i in range(n_features):
+            circuit.add(i, pcvl.PS(pcvl.P(f"x{i}")))
+        for idx, (i, j) in enumerate(pairs):
+            _add_routed_bs(circuit, m, i, j, pcvl.BS(theta=pcvl.P(f"b{idx}")))
+        for i in range(n_features):
+            circuit.add(i, pcvl.BS(theta=math.pi / 2))
+        for i in range(n_features):
+            circuit.add(i, pcvl.PS(pcvl.P(f"c{i}")))
+        for idx, (i, j) in enumerate(pairs):
+            _add_routed_bs(circuit, m, i, j, pcvl.BS(theta=pcvl.P(f"d{idx}")))
+        for i in range(n_features):
+            circuit.add(i, pcvl.BS(theta=math.pi / 2))
+
+    def add_concrete(self, circuit, x, *, m: int, n_features: int) -> None:
+        import perceval as pcvl
+
+        pairs = _pair_indices(n_features)
+        for i in range(n_features):
+            circuit.add(i, pcvl.BS(theta=math.pi / 2))
+        for i in range(n_features):
+            circuit.add(i, pcvl.PS(float(x[i])))
+        for i, j in pairs:
+            _add_routed_bs(circuit, m, i, j, pcvl.BS(theta=float(x[i] * x[j])))
+        for i in range(n_features):
+            circuit.add(i, pcvl.BS(theta=math.pi / 2))
+        for i in range(n_features):
+            circuit.add(i, pcvl.PS(float(x[i])))
+        for i, j in pairs:
+            _add_routed_bs(circuit, m, i, j, pcvl.BS(theta=float(x[i] * x[j])))
+        for i in range(n_features):
+            circuit.add(i, pcvl.BS(theta=math.pi / 2))
+
+    def unitary(self, X, *, m: int, n_features: int):
+        import torch
+
+        N = X.shape[0]
+
+        def _ps_unitary(x_row: torch.Tensor) -> torch.Tensor:
+            U = torch.eye(m, dtype=torch.complex64).unsqueeze(0).expand(N, m, m).clone()
+            step = torch.eye(m, dtype=torch.complex64).unsqueeze(0).expand(N, m, m).clone()
+            for i in range(n_features):
+                step[:, i, i] = torch.exp(1j * x_row[:, i].to(torch.complex64))
+            return torch.einsum("nij,njk->nik", step, U)
+
+        U = _bs_ladder_fixed_unitary(m, n_features, N)
+        U = torch.einsum("nij,njk->nik", _ps_unitary(X), U)
+        U = torch.einsum("nij,njk->nik", _bs_ladder_pairwise_unitary(X, m=m, n_features=n_features), U)
+        U = torch.einsum("nij,njk->nik", _bs_ladder_fixed_unitary(m, n_features, N), U)
+        U = torch.einsum("nij,njk->nik", _ps_unitary(X), U)
+        U = torch.einsum("nij,njk->nik", _bs_ladder_pairwise_unitary(X, m=m, n_features=n_features), U)
+        U = torch.einsum("nij,njk->nik", _bs_ladder_fixed_unitary(m, n_features, N), U)
         return U
 
 
