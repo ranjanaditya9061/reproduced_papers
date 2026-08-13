@@ -15,10 +15,11 @@ itself from whatever ``k`` it sees (:func:`circuit.spin.normalize_cx_pairs`), so
 adjusting when the size changes.
 
 **Only ``GROWTH_STEMS`` grow past ``(6, 3)``.**  Every template in ``size_sweep_full/`` runs at
-``(6, 3)``, but only ``fermion_m6k3``, ``photonic_fock_m6k3``, and ``qubit_m6k3`` continue on to
-``(8,4)``/``(10,5)``/``(12,6)`` -- those three are the actual size-scaling comparison (photonic Fock
-phase encoding vs. fermion/determinant-based vs. qubit, at matched size). Everything else --
-classical baselines, the ``bs``/``bs_phase`` encodings, and every ``spin``/``spin_magic`` variant --
+``(6, 3)``, but only ``fermion_m6k3``, ``photonic_fock_m6k3``, ``qubit_m6k3``, ``qubit_phase_m6k3``,
+and ``quadratic_fock_m6k3`` continue on to ``(8,4)``/``(10,5)``/``(12,6)`` -- those five are the
+actual size-scaling comparison (photonic Fock phase encoding vs. fermion/determinant-based vs.
+qubit IQP vs. qubit phase vs. the param-matched quadratic_fock classical control, at matched size).
+Everything else -- the bs/bs_phase/havlicek encodings and every ``spin``/``spin_magic`` variant --
 is an ablation at one fixed size, not a scaling question, so it stays pinned at ``(6, 3)``;
 ``spin``/``spin_magic`` in particular hit the per-row perceval basis-discovery cost
 (:func:`circuit.prep._align_rows`) that makes them impractically slow well before ``m=12`` anyway.
@@ -63,15 +64,17 @@ SHOTS_SIZES = [(14, 7), (16, 8), (18, 9)]
 SHOTS_BUDGET = 10_000
 
 #: Template stems (filename without ``.yaml``) that actually run past ``(6, 3)``.  Every other
-#: template in ``size_sweep_full/`` -- the classical baselines, the bs/bs_phase encodings, and
-#: every ``spin``/``spin_magic`` variant -- stays pinned at ``(6, 3)``: the ablation grid there is
-#: about encoding placement/structure at one fixed size, not about how it scales, and
+#: template in ``size_sweep_full/`` -- the bs/bs_phase/havlicek encodings, and every
+#: ``spin``/``spin_magic`` variant -- stays pinned at ``(6, 3)``: the ablation grid there is about
+#: encoding placement/structure at one fixed size, not about how it scales, and
 #: ``spin``/``spin_magic`` in particular hit the per-row perceval basis-discovery cost
 #: (:func:`circuit.prep._align_rows`) that makes them impractically slow well before ``m=12``.
-#: This is the size-scaling question instead: how does each of these three model families --
-#: photonic Fock (phase encoding, the core arm), fermion (determinant-based), and qubit (phase
-#: feature_map) -- behave as ``m`` grows, at matched size across all three.
-GROWTH_STEMS = ("fermion_m6k3", "photonic_fock_m6k3", "qubit_m6k3")
+#: This is the size-scaling question instead: how does each of these five model families -- photonic
+#: Fock (phase encoding, the core arm), fermion (determinant-based), qubit (IQP feature_map, the
+#: default), qubit (phase feature_map), and quadratic_fock (the param-matched classical control) --
+#: behave as ``m`` grows, at matched size across all five.
+GROWTH_STEMS = ("fermion_m6k3", "photonic_fock_m6k3", "qubit_m6k3", "qubit_phase_m6k3",
+                "quadratic_fock_m6k3")
 
 
 #: The template's own size -- n_jobs scaling below is relative to what configs/generate_size_sweep.py
