@@ -15,8 +15,15 @@ structure -- see that module's docstring for why ``eta = 1`` iff the observable'
 function *is* the score.
 
 Reports the mean over the ``n_x`` points (not a single-point value) so the line reflects the
-observable's efficiency across the input space rather than whatever one row happened to be. One
-line per subfolder plot, x-axis = variant, y-axis = ``eta_mean`` at the fixed ``--observable``.
+observable's efficiency across the input space rather than whatever one row happened to be. Two
+lines per subfolder plot, x-axis = variant: ``eta_mean`` (left axis, ``[0, 1]``) at the fixed
+``--observable``, and ``trace_mean`` (right axis, unbounded) -- the mean of ``tr(F)``, the
+distribution's own Fisher information with no observable involved, read off the same ``F`` the
+``eta`` loop already builds. Plotting both together separates two different questions: how much
+total input-information the *distribution* carries (``trace_mean``, observable-independent) versus
+how much of that information the *readout* actually captures (``eta_mean``, observable-dependent) --
+a variant can have a large ``trace_mean`` and small ``eta_mean`` (an information-rich distribution
+this observable fails to read out) or the reverse.
 
 Requires every variant's dataset to already be generated (:mod:`configs.run_size_sweep` or
 ``python -m pipeline.generate``) -- this only reads saved artifacts, it does not generate them. A
@@ -46,8 +53,12 @@ def _variants_in(subfolder: Path) -> list[tuple[str, Path]]:
 
 
 def variant_eta(cfg_path: str | Path, observable: str, *, n_x: int = DEFAULT_N_X,
-                out_root: str = "datasets", graph_density: float = 0.5) -> float:
-    """Mean :func:`metrics.observable.eta` for one config, over ``n_x`` sampled input points.
+                out_root: str = "datasets", graph_density: float = 0.5) -> tuple[float, float]:
+    """``(eta_mean, trace_mean)`` for one config, over ``n_x`` sampled input points.
+
+    ``trace_mean`` is the mean of ``tr(F)`` -- the distribution's own Fisher information, with no
+    observable involved (:data:`metrics.fisher`'s convention: ``trace = diagonal(F).sum()``) --
+    read off the same ``F`` this loop already builds for ``eta``, so it costs nothing extra.
 
     Raises if ``observable`` is non-differentiable at this config (mirrors
     :func:`metrics.observable.analyse`'s exclusion, but as a single named observable rather than a
@@ -75,41 +86,50 @@ def variant_eta(cfg_path: str | Path, observable: str, *, n_x: int = DEFAULT_N_X
                          "(is_differentiable=False) -- eta is undefined for it")
 
     X = sample_X(n_x, cfg.problem.n_features, cfg.seeds.sample_seed)
-    etas = []
+    etas, traces = [], []
     for x in X:
         p, dp, F = fisher_at(model, x)
         g, V = influence_terms(obs, p, dp)
         etas.append(eta(g, V, F))
+        traces.append(float(F.diagonal().sum()))
 
     import torch
-    return float(torch.tensor(etas).mean())
+    return float(torch.tensor(etas).mean()), float(torch.tensor(traces).mean())
 
 
 def sweep_variant_eta(variants: list[tuple[str, "str | Path"]], observable: str, *,
                       n_x: int = DEFAULT_N_X, out_root: str = "datasets") -> dict:
-    """``eta_mean`` for every variant, at one fixed ``observable``.
+    """``eta_mean``/``trace_mean`` for every variant, at one fixed ``observable``.
 
-    One bad variant (missing artifact, non-differentiable observable) is recorded as ``None`` and
-    printed, not fatal to the rest -- same per-cell failure handling as the other eval drivers.
+    One bad variant (missing artifact, non-differentiable observable) is recorded as ``None`` for
+    both and printed, not fatal to the rest -- same per-cell failure handling as the other eval
+    drivers.
     """
-    names, values = [], []
+    names, eta_values, trace_values = [], [], []
     for name, cfg_path in variants:
         try:
-            values.append(variant_eta(cfg_path, observable, n_x=n_x, out_root=out_root))
+            eta_mean, trace_mean = variant_eta(cfg_path, observable, n_x=n_x, out_root=out_root)
+            eta_values.append(eta_mean)
+            trace_values.append(trace_mean)
         except Exception as exc:                       # noqa: BLE001 -- one bad variant must not
             print(f"[efficiency_line] {name} failed: {exc}")  # abort the rest of the line
-            values.append(None)
+            eta_values.append(None)
+            trace_values.append(None)
         names.append(name)
 
-    return {"variants": names, "observable": observable, "n_x": n_x, "eta_mean": values}
+    return {"variants": names, "observable": observable, "n_x": n_x, "eta_mean": eta_values,
+            "trace_mean": trace_values}
 
 
 def plot_variant_eta_line(result: dict, *, save_path: str | Path | None = None, show: bool = False):
-    """``eta_mean`` line plot from :func:`sweep_variant_eta`'s output: variant on x, ``eta_mean`` on y.
+    """``eta_mean`` and ``trace_mean`` line plot from :func:`sweep_variant_eta`'s output: variant on
+    x, ``eta_mean`` on the left y-axis, ``tr(F)`` on a twin right y-axis (different scale and no
+    ``[0, 1]`` bound, so it cannot share the left axis).
 
     A variant with no value (a failed load, or a non-differentiable observable there) leaves a gap
-    in the line rather than plotting as 0 -- ``eta = 0`` is a real, meaningfully different value
-    (a variant whose distribution genuinely carries no information about the observable).
+    in the corresponding line rather than plotting as 0 -- ``eta = 0`` is a real, meaningfully
+    different value (a variant whose distribution genuinely carries no information about the
+    observable), and the same goes for a genuinely near-zero ``tr(F)``.
     """
     import matplotlib
     if not show:
@@ -118,19 +138,30 @@ def plot_variant_eta_line(result: dict, *, save_path: str | Path | None = None, 
     import numpy as np
 
     names, observable, n_x = result["variants"], result["observable"], result["n_x"]
-    values = [np.nan if v is None else v for v in result["eta_mean"]]
+    eta_values = [np.nan if v is None else v for v in result["eta_mean"]]
+    trace_values = [np.nan if v is None else v for v in result["trace_mean"]]
     positions = list(range(1, len(names) + 1))
 
     fig, ax = plt.subplots(figsize=(max(6, 0.9 * len(names) + 2), 5))
-    ax.plot(positions, values, marker="o", linewidth=2, color="#4C72B0")
-
+    eta_color, trace_color = "#4C72B0", "#DD8452"
+    l1, = ax.plot(positions, eta_values, marker="o", linewidth=2, color=eta_color, label="eta_mean")
     ax.set_xticks(positions)
     ax.set_xticklabels(names, rotation=45, ha="right")
     ax.set_xlabel("variant")
-    ax.set_ylabel("eta_mean = mean(g^T F^+ g / V_eff)")
+    ax.set_ylabel("eta_mean = mean(g^T F^+ g / V_eff)", color=eta_color)
     ax.set_ylim(-0.05, 1.05)
-    ax.set_title(f"Observable efficiency: {observable} x variant  (n_x={n_x})")
+    ax.tick_params(axis="y", labelcolor=eta_color)
     ax.grid(alpha=0.3)
+
+    ax2 = ax.twinx()
+    l2, = ax2.plot(positions, trace_values, marker="s", linewidth=2, linestyle="--",
+                   color=trace_color, label="trace_mean")
+    ax2.set_ylabel("trace_mean = mean(tr(F))", color=trace_color)
+    ax2.tick_params(axis="y", labelcolor=trace_color)
+
+    ax.set_title(f"Observable efficiency & distribution Fisher info: {observable} x variant  "
+                f"(n_x={n_x})")
+    ax.legend(handles=[l1, l2], loc="best")
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150)
