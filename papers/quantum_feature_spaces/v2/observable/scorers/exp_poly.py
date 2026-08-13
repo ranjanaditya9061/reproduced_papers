@@ -4,9 +4,10 @@
 
 * ``prod_parity[...]`` -- integer coefficients, score ``(-1)^P(n) in {+1, -1}``.  A product
   generalisation of ``parity`` (which is ``(-1)^{sum n_i}``, all size-1 monomials).
-* ``prod_parity_{consecutive,second}_{pi,random}`` -- a per-monomial *angle*, score
-  ``Re(exp(i P(n))) = cos(P(n)) in [-1, 1]``.  Contains the above as the ``theta = pi`` case,
-  since ``cos(pi N) = (-1)^N`` for integer ``N``.
+* ``prod_parity_{consecutive,second,diag}_{pi,random,prime}`` -- a per-monomial *angle*, score
+  ``Re(exp(i P(n))) = cos(P(n)) in [-1, 1]``.  ``_pi`` contains the above as the ``theta = pi``
+  case, since ``cos(pi N) = (-1)^N`` for integer ``N``. ``diag_prime`` is a distinct construction,
+  not a further generalisation of ``_pi``/``_random`` -- see :func:`diag_monomials`.
 
 **These are expectation values.**  However elaborate the polynomial, the result is ``probs @ v``
 with ``v(n) = (-1)^{P(n)}`` or ``cos(P(n))`` -- a fixed, bounded, diagonal observable.  The
@@ -59,7 +60,7 @@ PROD_PARITY_SECOND = "prod_parity_second"
 
 _PROD_PARITY_RE = re.compile(r"^prod_parity(?:__.+)?$")
 _LO_RE = re.compile(r"^lo(\d+)$")
-_PROD_ANGLE_RE = re.compile(r"^prod_parity_(consecutive|second)_(pi|random)$")
+_PROD_ANGLE_RE = re.compile(r"^prod_parity_(consecutive|second|diag)_(pi|random|prime)$")
 
 
 def is_prod_parity_observable(observable: str) -> bool:
@@ -153,6 +154,42 @@ def second_monomials(m: int):
     return [(i, j) for i in range(m) for j in range(m) if i <= j]
 
 
+def diag_monomials(m: int):
+    """Single-mode square monomials ``(i, i)`` for every mode ``i`` -- ``n_i^2``, none of
+    :func:`second_monomials`'s off-diagonal ``i < j`` pairs.
+
+    This is the monomial set behind ``prod_parity_diag_prime``
+    (:mod:`observable.scorers.exp_poly`'s module docstring / ``angle_monomials``): the
+    ``O = sum_i (-1)^{n_i^2 / r_i}`` construction from Monbroussou et al. (arXiv:2607.24728),
+    Eq. (G4)/(G8) -- a quadratic number-phase observable engineered (via the prime-reciprocal
+    angles, see :func:`prime_reciprocal_angles`) to defeat both the Fourier-decomposition and
+    Fourier-truncation classical-simulation routes the paper's Lemma 5 gives for the linear
+    (``prod_parity_*_pi``/plain ``parity``) case.  The paper's own numerics are explicitly
+    inconclusive on whether this evades classical simulation outright (Section V B); this
+    implementation is for testing it empirically against this codebase's learners the same way
+    every other observable here is tested, not because the paper proves it is hard.
+    """
+    m = int(m)
+    if m < 1:
+        raise ValueError(f"prod_parity_diag needs m >= 1 (m={m})")
+    return [(i, i) for i in range(m)]
+
+
+def prime_reciprocal_angles(n: int) -> list[float]:
+    """``[1/r_1, 1/r_2, ..., 1/r_n]`` for ``r_i`` the ``i``-th prime (``2, 3, 5, 7, ...``).
+
+    The ``alpha_i = 1/r_i`` weights of Monbroussou et al. (arXiv:2607.24728), Eq. (G4): reusing
+    distinct primes' reciprocals (rather than a fixed or random angle) is what makes the
+    resulting Fourier expansion (their Lemma 5) have ``prod_i r_i`` -- exponentially many --
+    equal-magnitude nonzero terms, ruling out both direct enumeration and magnitude-based
+    truncation (their Eq. G12-G13).  Deterministic (no seed): the primes are a fixed reference
+    sequence, the same role :func:`circuit.spin.first_primes` plays for ``rz_angles='prime'``.
+    """
+    from circuit.spin import first_primes
+
+    return [1.0 / p for p in first_primes(int(n))]
+
+
 def consecutive_monomials(m: int, k: int):
     """Consecutive sliding-window monomials of every order ``2..min(k, m)``.
 
@@ -196,21 +233,35 @@ def prod_parity_score(key, monomials) -> int:
 def angle_monomials(observable: str, m: int, k: int, angle_seed: int):
     """``[(theta, monomial), ...]`` for an angle prod_parity observable.
 
-    Base set from :func:`consecutive_monomials` or :func:`second_monomials`.  ``_pi`` gives
-    ``theta = pi`` for all (so ``cos(P) = (-1)^P`` exactly); ``_random`` draws
+    Base set from :func:`consecutive_monomials`, :func:`second_monomials`, or
+    :func:`diag_monomials` (``diag``: single-mode squares ``n_i^2`` only, no off-diagonal pairs).
+    ``_pi`` gives ``theta = pi`` for all (so ``cos(P) = (-1)^P`` exactly); ``_random`` draws
     ``Uniform[0, 2pi]`` from ``angle_seed`` over the monomials in their fixed order, so the draw
-    is reproducible and hashable.
+    is reproducible and hashable; ``_prime`` gives ``theta_i = 1/r_i``
+    (:func:`prime_reciprocal_angles`) -- only meaningful paired with ``diag`` (that pairing is
+    ``prod_parity_diag_prime``, the construction from Monbroussou et al. discussed in
+    :func:`diag_monomials`), so raises if requested with any other base.
     """
     mo = _PROD_ANGLE_RE.match(observable)
     if mo is None:
         raise ValueError(f"{observable!r} is not an angle prod_parity observable "
-                         "(expected prod_parity_{consecutive,second}_{pi,random})")
+                         "(expected prod_parity_{consecutive,second,diag}_{pi,random,prime})")
     base_kind, angle_kind = mo.group(1), mo.group(2)
-    monos = list(consecutive_monomials(m, k) if base_kind == "consecutive"
-                 else second_monomials(m))
+    if base_kind == "consecutive":
+        monos = list(consecutive_monomials(m, k))
+    elif base_kind == "second":
+        monos = list(second_monomials(m))
+    else:
+        monos = list(diag_monomials(m))
+    if angle_kind == "prime" and base_kind != "diag":
+        raise ValueError(f"{observable!r}: the 'prime' angle is only defined for the 'diag' base "
+                         "(prod_parity_diag_prime) -- other bases have no prescribed angle "
+                         "sequence to match one prime per monomial")
     if angle_kind == "random":
         rng = np.random.default_rng(int(angle_seed))
         thetas = [float(t) for t in rng.uniform(0.0, 2 * math.pi, size=len(monos))]
+    elif angle_kind == "prime":
+        thetas = prime_reciprocal_angles(len(monos))
     else:
         thetas = [math.pi] * len(monos)
     return list(zip(thetas, monos))
@@ -241,7 +292,7 @@ class ProdParityFamily(ObservableFamily):
 
 
 class ProdAngleFamily(ObservableFamily):
-    describe = "prod_parity_{consecutive,second}_{pi,random}"
+    describe = "prod_parity_{consecutive,second,diag}_{pi,random,prime}"
 
     def matches(self, name: str) -> bool:
         return is_prod_parity_angle(name)
