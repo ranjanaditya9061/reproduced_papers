@@ -53,12 +53,19 @@ def _variants_in(subfolder: Path) -> list[tuple[str, Path]]:
 
 
 def variant_eta(cfg_path: str | Path, observable: str, *, n_x: int = DEFAULT_N_X,
-                out_root: str = "datasets", graph_density: float = 0.5) -> tuple[float, float]:
-    """``(eta_mean, trace_mean)`` for one config, over ``n_x`` sampled input points.
+                out_root: str = "datasets", graph_density: float = 0.5,
+                debug: bool = False) -> tuple[float, float, dict | None]:
+    """``(eta_mean, trace_mean, debug_points)`` for one config, over ``n_x`` sampled input points.
 
     ``trace_mean`` is the mean of ``tr(F)`` -- the distribution's own Fisher information, with no
     observable involved (:data:`metrics.fisher`'s convention: ``trace = diagonal(F).sum()``) --
     read off the same ``F`` this loop already builds for ``eta``, so it costs nothing extra.
+
+    ``debug_points`` is ``None`` unless ``debug=True``, in which case it is a per-point breakdown
+    (``eta``, ``trace``, ``eigenvalues`` of ``F``, ``V_eff``, and ``||g||``) for all ``n_x`` points
+    -- printed here and also returned so it lands in the caller's JSON, for diagnosing whether a
+    suspicious ``trace_mean`` (e.g. clustered near some round number across every point) is a real
+    effect or a sign the Jacobian/Fisher computation silently degenerated for this variant.
 
     Raises if ``observable`` is non-differentiable at this config (mirrors
     :func:`metrics.observable.analyse`'s exclusion, but as a single named observable rather than a
@@ -87,38 +94,79 @@ def variant_eta(cfg_path: str | Path, observable: str, *, n_x: int = DEFAULT_N_X
 
     X = sample_X(n_x, cfg.problem.n_features, cfg.seeds.sample_seed)
     etas, traces = [], []
-    for x in X:
+    points = [] if debug else None
+    for i, x in enumerate(X):
         p, dp, F = fisher_at(model, x)
         g, V = influence_terms(obs, p, dp)
-        etas.append(eta(g, V, F))
-        traces.append(float(F.diagonal().sum()))
+        e = eta(g, V, F)
+        tr = float(F.diagonal().sum())
+        etas.append(e)
+        traces.append(tr)
+        if debug:
+            import torch as _torch
+            eigvals = _torch.linalg.eigvalsh(F.double()).flip(0)   # descending, matches trace order
+            point = {"i": i, "eta": float(e), "trace": tr, "V_eff": float(V),
+                    "g_norm": float(g.double().norm()),
+                    "eigenvalues": [float(v) for v in eigvals]}
+            points.append(point)
+            print(f"    [{i:2d}] eta={point['eta']:.6g}  trace={point['trace']:.6g}  "
+                  f"V_eff={point['V_eff']:.6g}  |g|={point['g_norm']:.6g}  "
+                  f"eigs={['%.4g' % v for v in point['eigenvalues']]}", flush=True)
 
     import torch
-    return float(torch.tensor(etas).mean()), float(torch.tensor(traces).mean())
+    eta_mean, trace_mean = float(torch.tensor(etas).mean()), float(torch.tensor(traces).mean())
+    debug_out = None
+    if debug:
+        def _spread(name, vals):
+            t = torch.tensor(vals, dtype=torch.float64)
+            s = {"mean": float(t.mean()), "std": float(t.std()) if len(vals) > 1 else 0.0,
+                 "min": float(t.min()), "max": float(t.max())}
+            print(f"    {name:<8} over {n_x} points: mean={s['mean']:.6g}  std={s['std']:.6g}  "
+                  f"min={s['min']:.6g}  max={s['max']:.6g}", flush=True)
+            return s
+
+        summary = {
+            "eta": _spread("eta", etas),
+            "trace": _spread("trace", traces),
+            "V_eff": _spread("V_eff", [pt["V_eff"] for pt in points]),
+            "g_norm": _spread("g_norm", [pt["g_norm"] for pt in points]),
+        }
+        debug_out = {"variant_points": points, "summary": summary}
+    return eta_mean, trace_mean, debug_out
 
 
 def sweep_variant_eta(variants: list[tuple[str, "str | Path"]], observable: str, *,
-                      n_x: int = DEFAULT_N_X, out_root: str = "datasets") -> dict:
+                      n_x: int = DEFAULT_N_X, out_root: str = "datasets",
+                      debug: bool = False) -> dict:
     """``eta_mean``/``trace_mean`` for every variant, at one fixed ``observable``.
 
     One bad variant (missing artifact, non-differentiable observable) is recorded as ``None`` for
     both and printed, not fatal to the rest -- same per-cell failure handling as the other eval
-    drivers.
+    drivers.  With ``debug=True``, also collects each variant's per-point breakdown
+    (:func:`variant_eta`'s ``debug_points``) under ``result["debug"][name]``.
     """
-    names, eta_values, trace_values = [], [], []
+    names, eta_values, trace_values, debug_by_name = [], [], [], {}
     for name, cfg_path in variants:
         try:
-            eta_mean, trace_mean = variant_eta(cfg_path, observable, n_x=n_x, out_root=out_root)
+            if debug:
+                print(f"  -- {name} --", flush=True)
+            eta_mean, trace_mean, dbg = variant_eta(cfg_path, observable, n_x=n_x,
+                                                     out_root=out_root, debug=debug)
             eta_values.append(eta_mean)
             trace_values.append(trace_mean)
+            if debug:
+                debug_by_name[name] = dbg
         except Exception as exc:                       # noqa: BLE001 -- one bad variant must not
             print(f"[efficiency_line] {name} failed: {exc}")  # abort the rest of the line
             eta_values.append(None)
             trace_values.append(None)
         names.append(name)
 
-    return {"variants": names, "observable": observable, "n_x": n_x, "eta_mean": eta_values,
-            "trace_mean": trace_values}
+    result = {"variants": names, "observable": observable, "n_x": n_x, "eta_mean": eta_values,
+              "trace_mean": trace_values}
+    if debug:
+        result["debug"] = debug_by_name
+    return result
 
 
 def plot_variant_eta_line(result: dict, *, save_path: str | Path | None = None, show: bool = False):
@@ -171,9 +219,13 @@ def plot_variant_eta_line(result: dict, *, save_path: str | Path | None = None, 
 
 
 def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
-       n_x: int = DEFAULT_N_X, out_root: str = "datasets") -> list[tuple[Path, Exception]]:
+       n_x: int = DEFAULT_N_X, out_root: str = "datasets",
+       debug: bool = False) -> list[tuple[Path, Exception]]:
     """For every subfolder of ``eval_dir``, build one efficiency line plot and save it (PNG + JSON)
     into that subfolder.  Mirrors :func:`eval.violin.run`'s walk and failure handling.
+
+    ``debug=True`` prints and saves the per-point breakdown from :func:`variant_eta` for every
+    variant -- see that function's docstring for what it reports and why.
     """
     subfolders = sorted(p for p in eval_dir.iterdir() if p.is_dir())
     if not subfolders:
@@ -187,7 +239,7 @@ def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
             continue
         print(f"=== {sub.name}: {len(variants)} variants -> {[n for n, _ in variants]}", flush=True)
         try:
-            result = sweep_variant_eta(variants, observable, n_x=n_x, out_root=out_root)
+            result = sweep_variant_eta(variants, observable, n_x=n_x, out_root=out_root, debug=debug)
             (sub / "variant_efficiency.json").write_text(json.dumps(result, indent=2))
             plot_variant_eta_line(result, save_path=sub / "variant_efficiency.png")
             print(f"    wrote {sub / 'variant_efficiency.png'}", flush=True)
@@ -205,10 +257,15 @@ def main(argv=None) -> None:
     ap.add_argument("--observable", default=DEFAULT_OBSERVABLE)
     ap.add_argument("--n-x", type=int, default=DEFAULT_N_X)
     ap.add_argument("--root", default="datasets")
+    ap.add_argument("--debug", action="store_true",
+                    help="print + save per-point eta/trace/eigenvalues/V_eff/g_norm for every "
+                    "point of every variant, plus each quantity's mean/std/min/max -- use this to "
+                    "check whether a suspicious trace_mean (e.g. clustered at some round number "
+                    "across every point) is real or a sign of a degenerate Jacobian")
     args = ap.parse_args(argv)
 
     failures = run(eval_dir=Path(args.eval_dir), observable=args.observable, n_x=args.n_x,
-                   out_root=args.root)
+                   out_root=args.root, debug=args.debug)
 
     if failures:
         print(f"\n{len(failures)} subfolder plot(s) failed outright:", flush=True)
