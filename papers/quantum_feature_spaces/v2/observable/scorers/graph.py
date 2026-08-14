@@ -334,6 +334,41 @@ def layered_maxcc_occupation_sum(key, edges, *, m: int, k: int) -> float:
     return float(total)
 
 
+def layered_maxcc_occupation_indexed_sum(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_occisum`` on the layered graph: ``sum_{i in maxcc} (i+1)*(n_i+1)`` over exactly the
+    modes whose vertex ``g_{i,n_i}`` lies in the *largest* connected component
+    (:func:`_maxcc_members`) -- a mode-index-weighted refinement of
+    :func:`layered_maxcc_occupation_sum`.
+
+    ``occsum`` collapses to plain occupation totals, so two components with the same total
+    occupation but different *membership* (e.g. modes ``{0,1}`` at occupations ``(2,1)`` vs. modes
+    ``{2,3}`` at occupations ``(1,2)``) tie -- measured directly: at ``(m=10,k=5)``, ``occsum`` has
+    only 6 distinct values over a 200-outcome sample and every single occsum-tied group collapses
+    further under this reading (34 distinct values, same sample). Multiplying occupation by
+    ``(mode_index+1)`` breaks that degeneracy because it is injective in *which* modes contributed,
+    not just how much they held -- so no two distinct member/occupation combinations that summed
+    identically under ``occsum`` continue to coincide here, *unless* they happen to collide under
+    this specific linear index-weighting too (unlikely but not structurally excluded, same caveat
+    ``occsum`` itself has relative to a fully injective encoding). The ``+1`` offsets on both index
+    and occupation are deliberate: an index-0 member or an occupation-0 member (``occsum`` credits an
+    unoccupied member with 0; this reading still wants it to contribute a nonzero index-based term)
+    must not silently drop out the way :func:`layered_maxcc_occupation_product`'s zero-occupation
+    case does -- this reading stays purely additive, so it inherits none of that product's
+    all-or-nothing sensitivity.
+
+    Deliberately still bounded well short of a fully injective encoding of the outcome (which would
+    need >= ``C(m+k-1,k)`` distinct values and would stop measuring anything about graph structure --
+    see the discussion this reading followed from): range grows only linearly in ``m`` and ``k``
+    (``max <= m*(k+1)``), not combinatorially in the Fock-basis size.
+    """
+    members = _maxcc_members(key, edges, m=m, k=k)
+    total = 0
+    for v in members:
+        i, p = divmod(v, k + 1)
+        total += (i + 1) * (p + 1)
+    return float(total)
+
+
 def connected_scores(keys, *, m, k, base, edges):
     """Per-outcome ``<base>`` score vector for ``connected_<base>`` (no selection)."""
     if base == "maxcc":
@@ -365,7 +400,7 @@ class ConnectedFamily(ObservableFamily):
                 "max_vertex_degree": MAX_VERTEX_DEGREE}
 
 
-#: ``connected_<reading>_layered`` readings -- all five read the same ``m*(k+1)``-vertex layered
+#: ``connected_<reading>_layered`` readings -- all six read the same ``m*(k+1)``-vertex layered
 #: graph and the same per-outcome active-vertex set (:func:`_layered_induced_subgraph`), differing
 #: only in what they compute over the resulting induced subgraph.  ``maxcc``'s ceiling is ``m``
 #: regardless of ``k`` (not "harder" at larger photon counts, see
@@ -378,19 +413,29 @@ class ConnectedFamily(ObservableFamily):
 #: (or disabling) the module-level cap, which restores real range to both.  This is a shared
 #: constant used by every graph observable in this module (including plain ``connected_maxcc``), so
 #: changing it is a deliberate, global decision, not something this family overrides for itself.
-#: ``occprod``/``occsum`` are a different axis again from all three of the above: instead of a
+#: ``occprod``/``occsum``/``occisum`` are a different axis again from the first three: instead of a
 #: property of the component-size *distribution* (``maxcc``/``productcc``/``numloops`` all reduce to
 #: one number derived purely from how the ``m`` active vertices split into components, blind to
 #: which occupation levels those vertices sit at beyond that split), they read the occupation
-#: numbers *inside* the single largest component -- see :func:`layered_maxcc_occupation_product` and
-#: :func:`layered_maxcc_occupation_sum` for the product/sum distinction (all-or-nothing vs. diluting
-#: sensitivity to an empty mode landing in the winning component).
+#: numbers *inside* the single largest component. ``occprod`` was found empirically degenerate at
+#: low fill fractions (``k/m`` small): most components then contain at least one empty (``n_i=0``)
+#: member, which zeroes the product outright, collapsing ~94% of a measured 100-sample
+#: ``(m=10,k=5,density=0.75)`` draw to exactly 0 -- an all-or-nothing gate dressed up as a
+#: multiplicative statistic, not real dynamic range; the resulting near-constant target is what
+#: drove an MLP learner to diverge (R^2 in the -1e10 range) in an actual sweep. ``occsum`` fixes the
+#: degeneracy (additive, no zero-gate) but still ties across components with the same total
+#: occupation but different membership. ``occisum`` (:func:`layered_maxcc_occupation_indexed_sum`)
+#: breaks those remaining ties by weighting occupation by mode index, while staying strictly bounded
+#: (``<= m*(k+1)``, linear in system size) rather than approaching a combinatorial, hash-like
+#: encoding of the full outcome -- measured to resolve every occsum-tied group in a sample sweep at
+#: both a small size and ``(m=10,k=5)``.
 LAYERED_READINGS = {
     "maxcc": layered_clicked_max_component,
     "productcc": layered_product_component,
     "numloops": layered_num_loops,
     "occprod": layered_maxcc_occupation_product,
     "occsum": layered_maxcc_occupation_sum,
+    "occisum": layered_maxcc_occupation_indexed_sum,
 }
 
 _LAYERED_RE = re.compile(rf"^connected_({'|'.join(LAYERED_READINGS)})_layered$")
