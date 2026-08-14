@@ -60,7 +60,8 @@ def build_vertex_graph(m: int, density: float, seed: int):
     ``mode i <-> vertex i``.  ``G`` is drawn connected (a random spanning path first, so ``maxcc``
     can in principle reach ``V`` when every mode clicks), then filled with seeded edges up to
     ``round(density * C(V, 2))`` -- floored at ``V - 1`` (a connected graph needs a spanning tree)
-    and bounded by the degree cap.  Deterministic in ``seed``, hence reproducible and hashable.
+    and bounded by :data:`MAX_VERTEX_DEGREE`.  Deterministic in ``seed``, hence reproducible and
+    hashable.
 
     Returns a sorted list of distinct ``(u, v)`` vertex pairs.
     """
@@ -168,31 +169,32 @@ def layered_vertex_index(m: int, k: int, i: int, p: int) -> int:
     return i * (k + 1) + p
 
 
-def layered_clicked_max_component(key, edges, *, m: int, k: int) -> int:
-    """``maxcc`` on the ``m*(k+1)``-vertex layered graph: :func:`connected_maxcc`'s bunching-blind
-    ``clicked = {i : n_i > 0}`` (one active vertex per *occupied* mode, occupation depth discarded)
-    is replaced here by ``clicked = {g_{i,n_i} : i in 0..m-1}`` -- exactly one active vertex per
-    mode, but which of that mode's ``k+1`` level-vertices it is depends on the mode's actual
-    occupation, including ``g_{i,0}`` for an empty mode.  So two outcomes with the same occupied-set
-    but different bunching depths (e.g. ``(3,0,2,0,0,0)`` vs ``(1,0,1,0,0,0)``) now activate
-    genuinely different vertices (``g_{0,3},g_{2,2}`` vs ``g_{0,1},g_{2,1}``) rather than the same
-    pair -- this is the mechanism that fixes ``connected_maxcc``'s bunching-blindness (see
-    ``GRAPH_OBSERVABLE_PROPOSALS.md`` for the derivation).
-
-    Always exactly ``m`` active vertices (one per mode, occupied or not -- unlike
-    :func:`clicked_max_component`, an empty mode still activates its own ``g_{i,0}``), so the
-    largest possible component here is ``m``, not ``m*(k+1)``: the extra vertices only ever widen
-    *which* ``m``-subset of the graph gets read, not how many vertices are ever active at once.
+def _layered_induced_subgraph(key, edges, *, m: int, k: int):
+    """``(active_set, adj, n_active_edges)`` for one outcome on the layered graph -- the shared
+    setup behind :func:`layered_clicked_max_component`, :func:`layered_product_component`, and
+    :func:`layered_num_loops`.  ``clicked = {g_{i,n_i} : i in 0..m-1}``: exactly one active vertex
+    per mode (occupied or not -- an empty mode still activates its own ``g_{i,0}``), landing at
+    whichever of that mode's ``k+1`` level-vertices matches its actual occupation, which is the
+    mechanism that fixes :func:`clicked_max_component`'s bunching-blindness (two outcomes sharing
+    an occupied-mode set but differing in bunching depth activate different vertices here; see
+    ``GRAPH_OBSERVABLE_PROPOSALS.md`` for the full derivation). ``n_active_edges`` counts each edge
+    once, only over pairs both in ``active_set``.
     """
-    active = [layered_vertex_index(m, k, i, int(n_i)) for i, n_i in enumerate(key)]
-    active_set = set(active)
+    active_set = {layered_vertex_index(m, k, i, int(n_i)) for i, n_i in enumerate(key)}
     adj: dict = {v: [] for v in active_set}
+    n_active_edges = 0
     for u, w in edges:
         if u in active_set and w in active_set:
             adj[u].append(w)
             adj[w].append(u)
+            n_active_edges += 1
+    return active_set, adj, n_active_edges
+
+
+def _components(active_set, adj) -> list[int]:
+    """Sizes of every connected component of ``adj`` restricted to ``active_set`` (flood fill)."""
     seen: set = set()
-    best = 0
+    sizes = []
     for start in active_set:
         if start in seen:
             continue
@@ -205,8 +207,68 @@ def layered_clicked_max_component(key, edges, *, m: int, k: int) -> int:
                 if y not in seen:
                     seen.add(y)
                     stack.append(y)
-        best = max(best, size)
-    return best
+        sizes.append(size)
+    return sizes
+
+
+def layered_clicked_max_component(key, edges, *, m: int, k: int) -> int:
+    """``maxcc`` on the ``m*(k+1)``-vertex layered graph -- the size of the largest connected
+    component among the ``m`` active vertices.  See :func:`_layered_induced_subgraph` for the
+    activation rule.  Always exactly ``m`` active vertices, so the ceiling here is ``m``, not
+    ``m*(k+1)``: the extra vertices only ever widen *which* ``m``-subset of the graph gets read.
+
+    **Ceiling is size-independent, hence not "harder" for larger sizes.** ``maxcc``'s range is
+    always ``[1, m]`` regardless of ``k`` (the layer count only changes which subset activates, not
+    how many vertices can be simultaneously active) -- so this statistic alone does not gain
+    dynamic range as the photon count grows, only as the mode count does.  Use
+    :func:`layered_product_component` or :func:`layered_num_loops` (both size-*and*-bunching
+    sensitive) if the goal is a statistic that keeps growing with ``k`` at fixed ``m``.
+    """
+    active_set, adj, _ = _layered_induced_subgraph(key, edges, m=m, k=k)
+    sizes = _components(active_set, adj)
+    return max(sizes) if sizes else 0
+
+
+def layered_product_component(key, edges, *, m: int, k: int) -> float:
+    """``productcc`` on the layered graph: the product of every connected component's size among
+    the ``m`` active vertices (:func:`_layered_induced_subgraph`), rather than only the largest.
+
+    Unlike :func:`layered_clicked_max_component`, this is sensitive to the *whole* component-size
+    distribution, not just its max: it is largest when the active vertices split into a few,
+    roughly-balanced components (by AM-GM, a product of parts summing to a fixed total is maximised
+    when the parts are as equal as possible), and grows with how many of the ``m`` active vertices
+    land in non-trivial (size > 1) components -- a singleton component contributes a factor of 1,
+    diluting the product relative to an equal-size split, but does not zero it out. Ranges up to
+    (but is generically far below) ``m^m / m^m``-scale combinatorial ceilings in principle; in
+    practice bounded well below that by ``build_vertex_graph``'s ``MAX_VERTEX_DEGREE`` cap limiting
+    how large any one component can plausibly get.
+    """
+    active_set, adj, _ = _layered_induced_subgraph(key, edges, m=m, k=k)
+    sizes = _components(active_set, adj)
+    prod = 1
+    for s in sizes:
+        prod *= s
+    return float(prod)
+
+
+def layered_num_loops(key, edges, *, m: int, k: int) -> int:
+    """``numloops`` on the layered graph: the **cycle rank** (first Betti number) of the induced
+    subgraph on the ``m`` active vertices (:func:`_layered_induced_subgraph`),
+    ``|E_active| - |V_active| + (#components)``.
+
+    Counts independent loops -- redundant connectivity (multiple distinct paths between the same
+    pair of active vertices) -- rather than mere reachability. A tree-like (or forest-like) induced
+    subgraph scores 0 regardless of its size or shape; the count only grows when the active
+    vertices are dense enough among themselves to close cycles. This is a genuinely different
+    sensitivity from both :func:`layered_clicked_max_component` (reachability only) and
+    :func:`layered_product_component` (component-size distribution only) -- it is sensitive to
+    *edge density among the active set*, which for a fixed, seeded background graph depends on
+    exactly *which* ``m`` vertices activated, i.e. on the full bunching pattern, not just on how
+    many components they happen to fall into.
+    """
+    active_set, adj, n_active_edges = _layered_induced_subgraph(key, edges, m=m, k=k)
+    n_components = len(_components(active_set, adj))
+    return n_active_edges - len(active_set) + n_components
 
 
 def connected_scores(keys, *, m, k, base, edges):
@@ -240,37 +302,63 @@ class ConnectedFamily(ObservableFamily):
                 "max_vertex_degree": MAX_VERTEX_DEGREE}
 
 
-class ConnectedMaxccLayeredFamily(ObservableFamily):
-    """``connected_maxcc_layered``: :func:`layered_clicked_max_component` on one full random graph
-    over ``m*(k+1)`` vertices (``build_vertex_graph`` called at the larger size directly, no
-    per-level structure imposed -- edges are free between any pair of ``(mode, level)`` vertices,
-    including across different modes' different levels, rather than being restricted to
-    same-level copies of a smaller graph). See that function's docstring for why this fixes
+#: ``connected_<reading>_layered`` readings -- all three read the same ``m*(k+1)``-vertex layered
+#: graph and the same per-outcome active-vertex set (:func:`_layered_induced_subgraph`), differing
+#: only in what they compute over the resulting induced subgraph.  ``maxcc``'s ceiling is ``m``
+#: regardless of ``k`` (not "harder" at larger photon counts, see
+#: :func:`layered_clicked_max_component`'s docstring); ``productcc``/``numloops`` are both
+#: sensitive to the full bunching pattern, not just reachability, so they retain dynamic range as
+#: ``k`` grows at fixed ``m`` -- PROVIDED the graph has enough edge density among any outcome's ``m``
+#: active vertices to matter.  At :data:`MAX_VERTEX_DEGREE`'s default (4), the induced subgraph on
+#: a small active-vertex subset is generically a tree, which makes ``numloops`` identically 0 at
+#: every tested size and caps how large ``productcc``'s components can get -- confirmed by raising
+#: (or disabling) the module-level cap, which restores real range to both.  This is a shared
+#: constant used by every graph observable in this module (including plain ``connected_maxcc``), so
+#: changing it is a deliberate, global decision, not something this family overrides for itself.
+LAYERED_READINGS = {
+    "maxcc": layered_clicked_max_component,
+    "productcc": layered_product_component,
+    "numloops": layered_num_loops,
+}
+
+_LAYERED_RE = re.compile(rf"^connected_({'|'.join(LAYERED_READINGS)})_layered$")
+
+
+class ConnectedLayeredFamily(ObservableFamily):
+    """``connected_<reading>_layered``, ``reading`` in :data:`LAYERED_READINGS` -- a graph-property
+    reading on one full random graph over ``m*(k+1)`` vertices (``build_vertex_graph`` called at
+    the larger size directly, no per-level structure imposed -- edges are free between any pair of
+    ``(mode, level)`` vertices, including across different modes' different levels, rather than
+    being restricted to same-level copies of a smaller graph). See
+    :func:`_layered_induced_subgraph`'s docstring for why the activation rule fixes
     :func:`clicked_max_component`'s bunching-blindness, and ``GRAPH_OBSERVABLE_PROPOSALS.md`` for
     the design discussion.
     """
 
-    describe = "connected_maxcc_layered"
+    describe = f"connected_<reading>_layered (reading in {tuple(LAYERED_READINGS)})"
 
     def matches(self, name: str) -> bool:
-        return name == "connected_maxcc_layered"
+        return bool(_LAYERED_RE.match(name))
 
     def build(self, name: str, ctx: ObservableContext) -> Observable:
         if ctx.graph_density is None:
-            raise ValueError("connected_maxcc_layered requires graph_density (+ graph_seed)")
+            raise ValueError(f"{name} requires graph_density (+ graph_seed)")
+        reading = _LAYERED_RE.match(name).group(1)
+        scorer = LAYERED_READINGS[reading]
         edges = build_vertex_graph(ctx.m * (ctx.k + 1), ctx.graph_density, ctx.graph_seed)
-        v = [layered_clicked_max_component(key, edges, m=ctx.m, k=ctx.k) for key in ctx.keys]
+        v = [scorer(key, edges, m=ctx.m, k=ctx.k) for key in ctx.keys]
         obs = Expectation(np.array(v, dtype=np.float64))
         obs.edges = edges                                  # kept for inspection / debugging
         return obs
 
     def spec(self, name: str, ctx: ObservableContext) -> dict:
-        return {"observable": "connected_maxcc_layered",
+        reading = _LAYERED_RE.match(name).group(1)
+        return {"observable": f"connected_{reading}_layered",
                 "graph_density": ctx.graph_density,
                 "graph_seed": ctx.graph_seed,
                 "max_vertex_degree": MAX_VERTEX_DEGREE,
                 "n_layers": ctx.k + 1}
 
 
-register(ConnectedMaxccLayeredFamily())
+register(ConnectedLayeredFamily())
 register(ConnectedFamily())
