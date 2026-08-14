@@ -156,6 +156,59 @@ def is_connected_observable(observable: str) -> bool:
     return is_conn and base in CONNECTED_BASES
 
 
+def layered_vertex_index(m: int, k: int, i: int, p: int) -> int:
+    """Vertex id of ``g_{i,p}`` ("mode ``i`` has exactly ``p`` photons") in the ``m*(k+1)``-vertex
+    layered graph -- mode ``i``'s own ``k+1`` occupation levels (``p = 0..k``) laid out
+    contiguously, mode-major: ``vertex = i*(k+1) + p``.
+    """
+    if not 0 <= p <= k:
+        raise ValueError(f"level p={p} outside [0, k={k}]")
+    if not 0 <= i < m:
+        raise ValueError(f"mode i={i} outside [0, m={m})")
+    return i * (k + 1) + p
+
+
+def layered_clicked_max_component(key, edges, *, m: int, k: int) -> int:
+    """``maxcc`` on the ``m*(k+1)``-vertex layered graph: :func:`connected_maxcc`'s bunching-blind
+    ``clicked = {i : n_i > 0}`` (one active vertex per *occupied* mode, occupation depth discarded)
+    is replaced here by ``clicked = {g_{i,n_i} : i in 0..m-1}`` -- exactly one active vertex per
+    mode, but which of that mode's ``k+1`` level-vertices it is depends on the mode's actual
+    occupation, including ``g_{i,0}`` for an empty mode.  So two outcomes with the same occupied-set
+    but different bunching depths (e.g. ``(3,0,2,0,0,0)`` vs ``(1,0,1,0,0,0)``) now activate
+    genuinely different vertices (``g_{0,3},g_{2,2}`` vs ``g_{0,1},g_{2,1}``) rather than the same
+    pair -- this is the mechanism that fixes ``connected_maxcc``'s bunching-blindness (see
+    ``GRAPH_OBSERVABLE_PROPOSALS.md`` for the derivation).
+
+    Always exactly ``m`` active vertices (one per mode, occupied or not -- unlike
+    :func:`clicked_max_component`, an empty mode still activates its own ``g_{i,0}``), so the
+    largest possible component here is ``m``, not ``m*(k+1)``: the extra vertices only ever widen
+    *which* ``m``-subset of the graph gets read, not how many vertices are ever active at once.
+    """
+    active = [layered_vertex_index(m, k, i, int(n_i)) for i, n_i in enumerate(key)]
+    active_set = set(active)
+    adj: dict = {v: [] for v in active_set}
+    for u, w in edges:
+        if u in active_set and w in active_set:
+            adj[u].append(w)
+            adj[w].append(u)
+    seen: set = set()
+    best = 0
+    for start in active_set:
+        if start in seen:
+            continue
+        size, stack = 0, [start]
+        seen.add(start)
+        while stack:
+            x = stack.pop()
+            size += 1
+            for y in adj[x]:
+                if y not in seen:
+                    seen.add(y)
+                    stack.append(y)
+        best = max(best, size)
+    return best
+
+
 def connected_scores(keys, *, m, k, base, edges):
     """Per-outcome ``<base>`` score vector for ``connected_<base>`` (no selection)."""
     if base == "maxcc":
@@ -187,4 +240,37 @@ class ConnectedFamily(ObservableFamily):
                 "max_vertex_degree": MAX_VERTEX_DEGREE}
 
 
+class ConnectedMaxccLayeredFamily(ObservableFamily):
+    """``connected_maxcc_layered``: :func:`layered_clicked_max_component` on one full random graph
+    over ``m*(k+1)`` vertices (``build_vertex_graph`` called at the larger size directly, no
+    per-level structure imposed -- edges are free between any pair of ``(mode, level)`` vertices,
+    including across different modes' different levels, rather than being restricted to
+    same-level copies of a smaller graph). See that function's docstring for why this fixes
+    :func:`clicked_max_component`'s bunching-blindness, and ``GRAPH_OBSERVABLE_PROPOSALS.md`` for
+    the design discussion.
+    """
+
+    describe = "connected_maxcc_layered"
+
+    def matches(self, name: str) -> bool:
+        return name == "connected_maxcc_layered"
+
+    def build(self, name: str, ctx: ObservableContext) -> Observable:
+        if ctx.graph_density is None:
+            raise ValueError("connected_maxcc_layered requires graph_density (+ graph_seed)")
+        edges = build_vertex_graph(ctx.m * (ctx.k + 1), ctx.graph_density, ctx.graph_seed)
+        v = [layered_clicked_max_component(key, edges, m=ctx.m, k=ctx.k) for key in ctx.keys]
+        obs = Expectation(np.array(v, dtype=np.float64))
+        obs.edges = edges                                  # kept for inspection / debugging
+        return obs
+
+    def spec(self, name: str, ctx: ObservableContext) -> dict:
+        return {"observable": "connected_maxcc_layered",
+                "graph_density": ctx.graph_density,
+                "graph_seed": ctx.graph_seed,
+                "max_vertex_degree": MAX_VERTEX_DEGREE,
+                "n_layers": ctx.k + 1}
+
+
+register(ConnectedMaxccLayeredFamily())
 register(ConnectedFamily())
