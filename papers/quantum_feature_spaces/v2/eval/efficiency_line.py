@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 if __package__ in (None, ""):                    # allow `python eval/efficiency_line.py`
@@ -254,6 +255,11 @@ def plot_variant_eta_line(result: dict, *, save_path: str | Path | None = None, 
     return fig
 
 
+def _safe_tag(s: str) -> str:
+    """Filesystem-safe filename fragment -- see :func:`eval.violin._safe_tag`, same convention."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+
+
 def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
        n_x: int = DEFAULT_N_X, out_root: str = "datasets",
        debug: bool = False) -> list[tuple[Path, Exception]]:
@@ -262,11 +268,15 @@ def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
 
     ``debug=True`` prints and saves the per-point breakdown from :func:`variant_eta` for every
     variant -- see that function's docstring for what it reports and why.
+
+    Output filenames are tagged with ``observable`` and ``n_x`` (:func:`_safe_tag`) so two runs at
+    different observables or sample counts do not overwrite each other's plot/JSON.
     """
     subfolders = sorted(p for p in eval_dir.iterdir() if p.is_dir())
     if not subfolders:
         raise SystemExit(f"no subfolders found in {eval_dir}")
 
+    tag = f"{_safe_tag(observable)}__nx{int(n_x)}"
     failures = []
     for sub in subfolders:
         variants = _variants_in(sub)
@@ -276,9 +286,9 @@ def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
         print(f"=== {sub.name}: {len(variants)} variants -> {[n for n, _ in variants]}", flush=True)
         try:
             result = sweep_variant_eta(variants, observable, n_x=n_x, out_root=out_root, debug=debug)
-            (sub / "variant_efficiency.json").write_text(json.dumps(result, indent=2))
-            plot_variant_eta_line(result, save_path=sub / "variant_efficiency.png")
-            print(f"    wrote {sub / 'variant_efficiency.png'}", flush=True)
+            (sub / f"variant_efficiency__{tag}.json").write_text(json.dumps(result, indent=2))
+            plot_variant_eta_line(result, save_path=sub / f"variant_efficiency__{tag}.png")
+            print(f"    wrote {sub / f'variant_efficiency__{tag}.png'}", flush=True)
         except Exception as exc:                       # noqa: BLE001 -- one bad subfolder must not
             print(f"    efficiency line FAILED: {exc}", flush=True)  # stop the rest of the run
             failures.append((sub, exc))

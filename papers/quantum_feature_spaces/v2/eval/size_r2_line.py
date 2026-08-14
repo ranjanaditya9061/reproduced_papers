@@ -40,6 +40,11 @@ DEFAULT_OBSERVABLE = "parity"
 _SIZE_STEM_RE = re.compile(r"^m(\d+)k(\d+)$")
 
 
+def _safe_tag(s: str) -> str:
+    """Filesystem-safe filename fragment -- see :func:`eval.violin._safe_tag`, same convention."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+
+
 def _sizes_in(subfolder: Path) -> list[tuple[int, Path]]:
     """``[(m, path), ...]`` for every ``m{MM}k{KK}.yaml`` directly inside ``subfolder``, sorted by
     ``m`` ascending -- the config's own ``problem.m``/``problem.k`` are the source of truth
@@ -125,6 +130,9 @@ def run(*, size_dir: Path = SIZE_DIR, observable: str = DEFAULT_OBSERVABLE,
     Unlike :func:`eval.efficiency_line.run` / :func:`eval.violin.run` (one plot per subfolder), this
     produces ONE plot with one line per subfolder, since the point is comparing families against
     each other on the same size axis rather than describing one family in isolation.
+
+    Output filenames are tagged with ``observable`` and ``learner`` (filesystem-safe fragments) so
+    two runs at different observables/learners do not overwrite each other's plot/JSON.
     """
     subfolders = sorted(p for p in size_dir.iterdir() if p.is_dir())
     if not subfolders:
@@ -141,9 +149,10 @@ def run(*, size_dir: Path = SIZE_DIR, observable: str = DEFAULT_OBSERVABLE,
 
     result = sweep_size_r2(families, observable, learner, out_root=out_root,
                            scores_root=scores_root, n_train=n_train)
-    (size_dir / "size_r2.json").write_text(json.dumps(result, indent=2))
-    plot_size_r2_line(result, save_path=size_dir / "size_r2.png")
-    print(f"wrote {size_dir / 'size_r2.png'}", flush=True)
+    tag = f"{_safe_tag(observable)}__{_safe_tag(learner)}"
+    (size_dir / f"size_r2__{tag}.json").write_text(json.dumps(result, indent=2))
+    plot_size_r2_line(result, save_path=size_dir / f"size_r2__{tag}.png")
+    print(f"wrote {size_dir / f'size_r2__{tag}.png'}", flush=True)
     return result
 
 

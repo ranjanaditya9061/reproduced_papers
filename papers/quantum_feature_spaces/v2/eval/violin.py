@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 if __package__ in (None, ""):                    # allow `python eval/violin.py`
@@ -118,15 +119,27 @@ def plot_variant_observable_violin(result: dict, *, save_path: str | Path | None
     return fig
 
 
+def _safe_tag(s: str) -> str:
+    """Filesystem-safe filename fragment for one CLI input -- keeps ``[A-Za-z0-9_.-]``, replaces
+    everything else with ``_``, so ``--observable`` names always produce a valid path component
+    across the platforms this repo runs on (notably Windows, where ``:``/``<``/``>`` etc. are
+    illegal in filenames)."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+
+
 def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
        out_root: str = "datasets", scores_root: str = "scores") -> list[tuple[Path, Exception]]:
     """For every subfolder of ``eval_dir``, build one violin plot and save it (PNG + JSON) into
     that subfolder.  Mirrors :func:`configs.run_eval_heatmaps.run`'s walk and failure handling.
+
+    Output filenames are tagged with ``observable`` (:func:`_safe_tag`) so two runs at different
+    observables do not overwrite each other's plot/JSON in the same subfolder.
     """
     subfolders = sorted(p for p in eval_dir.iterdir() if p.is_dir())
     if not subfolders:
         raise SystemExit(f"no subfolders found in {eval_dir}")
 
+    tag = _safe_tag(observable)
     failures = []
     for sub in subfolders:
         variants = _variants_in(sub)
@@ -137,9 +150,9 @@ def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
         try:
             result = sweep_variant_observable_dist(variants, observable, out_root=out_root,
                                                     scores_root=scores_root)
-            (sub / "variant_violin.json").write_text(json.dumps(result, indent=2))
-            plot_variant_observable_violin(result, save_path=sub / "variant_violin.png")
-            print(f"    wrote {sub / 'variant_violin.png'}", flush=True)
+            (sub / f"variant_violin__{tag}.json").write_text(json.dumps(result, indent=2))
+            plot_variant_observable_violin(result, save_path=sub / f"variant_violin__{tag}.png")
+            print(f"    wrote {sub / f'variant_violin__{tag}.png'}", flush=True)
         except Exception as exc:                       # noqa: BLE001 -- one bad subfolder must not
             print(f"    violin plot FAILED: {exc}", flush=True)  # stop the rest of the run
             failures.append((sub, exc))

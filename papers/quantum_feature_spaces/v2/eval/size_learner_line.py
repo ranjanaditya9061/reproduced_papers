@@ -33,6 +33,11 @@ DEFAULT_OBSERVABLE = "parity"
 _SIZE_STEM_RE = re.compile(r"^m(\d+)k(\d+)$")
 
 
+def _safe_tag(s: str) -> str:
+    """Filesystem-safe filename fragment -- see :func:`eval.violin._safe_tag`, same convention."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+
+
 def _sizes_in(family_dir: Path) -> list[tuple[int, Path]]:
     """``[(m, path), ...]`` for every ``m{MM}k{KK}.yaml`` directly inside ``family_dir``, sorted by
     ``m`` ascending -- identical convention to :func:`eval.size_r2_line._sizes_in`."""
@@ -114,6 +119,9 @@ def run(*, family: Path, observable: str = DEFAULT_OBSERVABLE, out_root: str = "
        scores_root: str = "scores", n_train: int | None = None) -> dict:
     """Sweep and plot one family's ``ridge``/``svr``/``mlp`` R^2 vs. size, saving PNG + JSON into
     ``family`` itself.
+
+    Output filenames are tagged with ``observable`` (:func:`_safe_tag`) so two runs at different
+    observables do not overwrite each other's plot/JSON.
     """
     from learner.auto import DEFAULT_SWEEP_LEARNERS
 
@@ -125,9 +133,11 @@ def run(*, family: Path, observable: str = DEFAULT_OBSERVABLE, out_root: str = "
 
     result = sweep_size_learners(sizes, observable, DEFAULT_SWEEP_LEARNERS, out_root=out_root,
                                  scores_root=scores_root, n_train=n_train)
-    (family / "size_learner_r2.json").write_text(json.dumps(result, indent=2))
-    plot_size_learner_line(result, family_name=family.name, save_path=family / "size_learner_r2.png")
-    print(f"wrote {family / 'size_learner_r2.png'}", flush=True)
+    tag = _safe_tag(observable)
+    (family / f"size_learner_r2__{tag}.json").write_text(json.dumps(result, indent=2))
+    plot_size_learner_line(result, family_name=family.name,
+                           save_path=family / f"size_learner_r2__{tag}.png")
+    print(f"wrote {family / f'size_learner_r2__{tag}.png'}", flush=True)
     return result
 
 

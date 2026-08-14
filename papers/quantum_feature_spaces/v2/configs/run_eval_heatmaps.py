@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 if __package__ in (None, ""):                    # allow `python configs/run_eval_heatmaps.py`
@@ -51,6 +52,11 @@ def _variants_in(subfolder: Path) -> list[tuple[str, Path]]:
     """``[(stem, path), ...]`` for every ``*.yaml`` directly inside ``subfolder``, sorted by stem
     so the grid's row order is stable across runs."""
     return [(p.stem, p) for p in sorted(subfolder.glob("*.yaml"))]
+
+
+def _safe_tag(s: str) -> str:
+    """Filesystem-safe filename fragment -- see :func:`eval.violin._safe_tag`, same convention."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
 
 
 def run(*, eval_dir: Path = EVAL_DIR, mode: str = "both",
@@ -82,9 +88,10 @@ def run(*, eval_dir: Path = EVAL_DIR, mode: str = "both",
                 result = sweep_variant_observable_grid(
                     variants, observables, learner, out_root=out_root, scores_root=scores_root,
                     n_train=n_train)
-                (sub / "variant_observable.json").write_text(json.dumps(result, indent=2))
-                plot_variant_observable_grid(result, save_path=sub / "variant_observable.png")
-                print(f"    wrote {sub / 'variant_observable.png'}", flush=True)
+                tag = f"{'-'.join(_safe_tag(o) for o in observables)}__{_safe_tag(learner)}"
+                (sub / f"variant_observable__{tag}.json").write_text(json.dumps(result, indent=2))
+                plot_variant_observable_grid(result, save_path=sub / f"variant_observable__{tag}.png")
+                print(f"    wrote {sub / f'variant_observable__{tag}.png'}", flush=True)
             except Exception as exc:                       # noqa: BLE001 -- one bad subfolder must
                 print(f"    variant_observable grid FAILED: {exc}", flush=True)  # not stop the rest
                 failures.append((sub, exc))
@@ -94,9 +101,10 @@ def run(*, eval_dir: Path = EVAL_DIR, mode: str = "both",
                 result = sweep_variant_learner_grid(
                     variants, observable, learners=learners, out_root=out_root,
                     scores_root=scores_root, n_train=n_train)
-                (sub / "variant_learner.json").write_text(json.dumps(result, indent=2))
-                plot_variant_learner_grid(result, save_path=sub / "variant_learner.png")
-                print(f"    wrote {sub / 'variant_learner.png'}", flush=True)
+                tag = f"{'-'.join(_safe_tag(n) for n, _ in learners)}__{_safe_tag(observable)}"
+                (sub / f"variant_learner__{tag}.json").write_text(json.dumps(result, indent=2))
+                plot_variant_learner_grid(result, save_path=sub / f"variant_learner__{tag}.png")
+                print(f"    wrote {sub / f'variant_learner__{tag}.png'}", flush=True)
             except Exception as exc:                       # noqa: BLE001 -- see above
                 print(f"    variant_learner grid FAILED: {exc}", flush=True)
                 failures.append((sub, exc))
