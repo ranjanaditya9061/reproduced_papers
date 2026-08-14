@@ -193,22 +193,31 @@ def _layered_induced_subgraph(key, edges, *, m: int, k: int):
 
 def _components(active_set, adj) -> list[int]:
     """Sizes of every connected component of ``adj`` restricted to ``active_set`` (flood fill)."""
+    return [len(members) for members in _component_members(active_set, adj)]
+
+
+def _component_members(active_set, adj) -> list[set]:
+    """Vertex-member sets of every connected component of ``adj`` restricted to ``active_set``
+    (flood fill) -- the member-set generalisation of :func:`_components`, needed whenever a reading
+    wants to look *inside* a component (e.g. the occupation numbers of the modes it contains) rather
+    than just its size.
+    """
     seen: set = set()
-    sizes = []
+    components = []
     for start in active_set:
         if start in seen:
             continue
-        size, stack = 0, [start]
+        members, stack = set(), [start]
         seen.add(start)
         while stack:
             x = stack.pop()
-            size += 1
+            members.add(x)
             for y in adj[x]:
                 if y not in seen:
                     seen.add(y)
                     stack.append(y)
-        sizes.append(size)
-    return sizes
+        components.append(members)
+    return components
 
 
 def layered_clicked_max_component(key, edges, *, m: int, k: int) -> int:
@@ -271,6 +280,60 @@ def layered_num_loops(key, edges, *, m: int, k: int) -> int:
     return n_active_edges - len(active_set) + n_components
 
 
+def _maxcc_members(key, edges, *, m: int, k: int) -> set:
+    """Vertex-member set of the (a, on ties) largest connected component among the ``m`` active
+    vertices on the layered graph -- the shared lookup behind
+    :func:`layered_maxcc_occupation_product` and :func:`layered_maxcc_occupation_sum`. Ties broken
+    arbitrarily by iteration order (matches :func:`layered_clicked_max_component`'s ``max`` tie
+    handling, which has the same ambiguity on sizes alone).
+    """
+    active_set, adj, _ = _layered_induced_subgraph(key, edges, m=m, k=k)
+    components = _component_members(active_set, adj)
+    return max(components, key=len) if components else set()
+
+
+def layered_maxcc_occupation_product(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_occprod`` on the layered graph: the product of occupation numbers ``n_i`` over
+    exactly the modes whose vertex ``g_{i,n_i}`` lies in the *largest* connected component
+    (:func:`_maxcc_members`), rather than that component's plain vertex count.
+
+    Where :func:`layered_clicked_max_component` answers "how many modes are in the best-connected
+    region" and :func:`layered_product_component` answers "how balanced is the split across *all*
+    components," this answers "how much bunching is concentrated in that one best-connected region"
+    -- connectivity picks *which* modes count, occupation numbers say *how much*. On this layered
+    graph every active vertex's level *is* that mode's occupation, so an empty mode (``n_i=0``)
+    landing in the winning component zeroes the product outright -- a deliberate all-or-nothing
+    sensitivity, unlike the additive version (:func:`layered_maxcc_occupation_sum`), which only
+    dilutes in that case.
+    """
+    members = _maxcc_members(key, edges, m=m, k=k)
+    if not members:
+        return 0.0
+    prod = 1
+    for v in members:
+        i, p = divmod(v, k + 1)
+        prod *= p
+    return float(prod)
+
+
+def layered_maxcc_occupation_sum(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_occsum`` on the layered graph: the sum of occupation numbers ``n_i`` over exactly the
+    modes whose vertex ``g_{i,n_i}`` lies in the *largest* connected component
+    (:func:`_maxcc_members`) -- the additive sibling of
+    :func:`layered_maxcc_occupation_product`, without that reading's all-or-nothing sensitivity to
+    an empty mode landing in the winning component (a zero there only drops one term from the sum,
+    it does not zero the whole score). Ranges ``[0, k]`` -- the largest component can in principle
+    contain every photon, but never more since occupations across distinct modes sum to ``k``
+    exactly.
+    """
+    members = _maxcc_members(key, edges, m=m, k=k)
+    total = 0
+    for v in members:
+        i, p = divmod(v, k + 1)
+        total += p
+    return float(total)
+
+
 def connected_scores(keys, *, m, k, base, edges):
     """Per-outcome ``<base>`` score vector for ``connected_<base>`` (no selection)."""
     if base == "maxcc":
@@ -302,7 +365,7 @@ class ConnectedFamily(ObservableFamily):
                 "max_vertex_degree": MAX_VERTEX_DEGREE}
 
 
-#: ``connected_<reading>_layered`` readings -- all three read the same ``m*(k+1)``-vertex layered
+#: ``connected_<reading>_layered`` readings -- all five read the same ``m*(k+1)``-vertex layered
 #: graph and the same per-outcome active-vertex set (:func:`_layered_induced_subgraph`), differing
 #: only in what they compute over the resulting induced subgraph.  ``maxcc``'s ceiling is ``m``
 #: regardless of ``k`` (not "harder" at larger photon counts, see
@@ -315,10 +378,19 @@ class ConnectedFamily(ObservableFamily):
 #: (or disabling) the module-level cap, which restores real range to both.  This is a shared
 #: constant used by every graph observable in this module (including plain ``connected_maxcc``), so
 #: changing it is a deliberate, global decision, not something this family overrides for itself.
+#: ``occprod``/``occsum`` are a different axis again from all three of the above: instead of a
+#: property of the component-size *distribution* (``maxcc``/``productcc``/``numloops`` all reduce to
+#: one number derived purely from how the ``m`` active vertices split into components, blind to
+#: which occupation levels those vertices sit at beyond that split), they read the occupation
+#: numbers *inside* the single largest component -- see :func:`layered_maxcc_occupation_product` and
+#: :func:`layered_maxcc_occupation_sum` for the product/sum distinction (all-or-nothing vs. diluting
+#: sensitivity to an empty mode landing in the winning component).
 LAYERED_READINGS = {
     "maxcc": layered_clicked_max_component,
     "productcc": layered_product_component,
     "numloops": layered_num_loops,
+    "occprod": layered_maxcc_occupation_product,
+    "occsum": layered_maxcc_occupation_sum,
 }
 
 _LAYERED_RE = re.compile(rf"^connected_({'|'.join(LAYERED_READINGS)})_layered$")
