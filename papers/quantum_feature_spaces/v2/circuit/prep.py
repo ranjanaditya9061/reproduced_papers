@@ -273,17 +273,18 @@ class SpinMagicPrep(StatePrep):
     * ``structure`` -- the per-gap gate pattern applied to the spin *before every* emission:
 
       =============  ============================================================================
-      ``structure``  per-gap gate(s), ``j = 0 .. k-1``
+      ``structure``  per-gap gate(s), ``j = 0 .. k-1`` -- see :func:`_apply_structure_gate`
       =============  ============================================================================
-      ``linear``     ``H``                                     (default; legacy behaviour)
-      ``ghz``        ``H`` at ``j == 0`` only; nothing at ``j > 0``
-      ``linear_u3``  ``H`` then a Haar-random ``U3``, unconditionally, every gap
+      ``linear``     branch gate at ``phi=0``, every gap          (default; legacy behaviour)
+      ``ghz``        branch gate at ``phi=pi``, every gap
+      ``linear_u3``  ``linear``'s branch gate then a Haar-random ``U3``, every gap
       =============  ============================================================================
 
-      ``linear`` reproduces a linear cluster state (the qubit is re-superposed every gap);
-      ``ghz`` never re-superposes after the first gap, so the emissions instead inherit
-      correlation from the shared spin the way a GHZ state's branches do; ``linear_u3`` adds a
-      fixed Haar-random single-qubit rotation to every gap on top of the cluster structure,
+      Both ``linear`` and ``ghz`` re-apply the branch gate every gap -- they differ only in
+      ``phi``, not in cadence.  ``phi=0`` reproduces a linear cluster state (each gap extends the
+      chain); ``phi=pi`` instead gives a caterpillar/GHZ connection (each gap's emission inherits
+      correlation from the same shared branch rather than extending it).  ``linear_u3`` adds a
+      fixed Haar-random single-qubit rotation to every gap on top of the ``linear`` branch gate,
       independent of whether a magic gate is also injected.
 
     * ``gate_kind``/``t_var`` -- an *additional*, sparser non-Clifford gate injected into the
@@ -300,9 +301,8 @@ class SpinMagicPrep(StatePrep):
 
     * ``encode_on_spin`` -- ``rx(x[2j]), ry(x[2j+1])`` (indices mod ``n_features``) on the spin
       after the gap's structural gate(s), before that gap's emission.  Composes with every
-      ``structure``: on ``ghz`` a data-carrying gap after the first has no preceding ``H``, so
-      the two features rotate a state that was not just re-superposed (the "just rx/ry" case);
-      on ``linear``/``linear_u3`` every gap is re-superposed first (the "H + rx/ry" case).
+      ``structure`` identically: the branch gate fires every gap regardless of ``structure``, so
+      every ``encode_on_spin`` gap rotates a state that was just re-branched.
     * ``encode_circuit`` -- whether ``x`` reaches the interferometer at all.  ``False`` zeroes
       ``x`` before :func:`~v2.circuit.photonic_circuit.build_sandwich_circuit`, so the encoding
       becomes the identity there (a fixed Haar scrambler with no data), leaving ``x`` reaching
@@ -460,18 +460,29 @@ def _spin_row_worker(task):
     return _spin.full_distribution(p, m)
 
 
+def _apply_structure_gate(p, *, phi: float) -> None:
+    """``Ry(pi/2) . Rz(phi) . Ry(pi/2)`` on the spin -- the branch gate that distinguishes a
+    linear cluster (``phi=0``) from a GHZ/caterpillar branch (``phi=pi``); not a Hadamard, despite
+    an earlier version of this code using ``H`` here."""
+    p.gate.ry(0, np.pi / 2)
+    p.gate.rz(0, float(phi))
+    p.gate.ry(0, np.pi / 2)
+
+
 def _magic_row_worker(task):
     """One row of :class:`SpinMagicPrep`: emitter train + gap gate(s) + readout pair.
 
     Three independent per-gap ingredients, each optional and composable: the ``structure`` gate
-    (``H``, ``ghz``'s first-gap-only ``H``, or ``H`` + unconditional Haar ``U3``), the sparser
-    ``gate_kind`` magic gate (``j < t_var`` only), and the data-on-spin ``rx``/``ry`` pair.  Order
-    within a gap is structure, then data, then magic gate, then emission -- so a magic gate always
-    acts on whatever the structure/data steps just prepared, matching the legacy ``spoqc_magic*``
-    order (``H`` then data then gate) with ``structure``'s extra ``U3`` slotted in next to ``H``.
+    (:func:`_apply_structure_gate`, ``ghz``'s first-gap-only version, or that plus an unconditional
+    Haar ``U3``), the sparser ``gate_kind`` magic gate (``j < t_var`` only), and the data-on-spin
+    ``rx``/``ry`` pair.  Order within a gap is structure, then data, then magic gate, then emission
+    -- so a magic gate always acts on whatever the structure/data steps just prepared, matching the
+    legacy ``spoqc_magic*`` order (structure gate then data then gate) with ``structure``'s extra
+    ``U3`` slotted in next to it.
     """
     (row, m, k, t_var, n_features, seed, gate_kind, params, structure, structure_params,
      encode_on_spin, encode_circuit, enc_name) = task
+    print(task)
     from perceval import Detector
     from perceval_spoqc import HybridProcessor
 
@@ -485,11 +496,8 @@ def _magic_row_worker(task):
     p.with_initial_source_state(np.outer(zero, zero.conj()))
 
     for j in range(k):
-        if structure == "ghz":
-            if j == 0:
-                p.gate.h(0)
-        else:                                              # "linear" and "linear_u3" both re-H
-            p.gate.h(0)
+        # caterpillar/GHZ (phi=pi) vs linear (phi=0) -- every gap, both branches re-apply it.
+        _apply_structure_gate(p, phi=np.pi if structure == "ghz" else 0.0)
         if structure == "linear_u3":
             theta, phi, lam = structure_params[j]           # ZYZ Euler, as in apply_gap_gate's u3
             p.gate.rz(0, float(lam))

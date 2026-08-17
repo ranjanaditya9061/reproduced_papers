@@ -52,12 +52,24 @@ if __package__ in (None, ""):                    # allow `python eval/best_of_gr
 EVAL_DIR = Path(__file__).resolve().parents[1] / "configs" / "eval"
 DEFAULT_OBSERVABLES = ["parity", "majority", "n_first"]
 
+#: ``{observable_key: display_label}`` for the y-axis -- ``n_first`` is a misleading name kept for
+#: historical/on-disk-compatibility reasons (see :mod:`observable.scorers.counting`): it actually
+#: scores the *parity* of mode 0's photon count (``n_0 mod 2``), not a raw photon number, so its
+#: display label says "Parity" too rather than repeating the internal name's inaccuracy.
+OBSERVABLE_LABELS: dict[str, str] = {
+    "parity": "Parity",
+    "majority": "Majority",
+    "n_first": "Mode 1\nParity",
+}
+
 #: Per-folder ``{file_stem: display_label}`` -- the yaml stem on disk (e.g. ``bs_phase``) stays the
 #: config's identity; this only controls what the heatmap's axis prints, so the two can diverge
 #: (compact/unambiguous filenames vs. readable plot labels) without a rename touching any config
 #: loader.  A stem missing from its folder's mapping falls back to a title-cased, underscore-split
 #: version of the stem itself (see :func:`_display_label`), so a new variant file never breaks the
-#: plot -- it just prints a slightly blunter label until an entry is added here.
+#: plot -- it just prints a slightly blunter label until an entry is added here.  This dict's key
+#: order also drives the x-axis column order (see :func:`_variants_in`) -- reordering keys here
+#: reorders the plot, no other change needed.
 VARIANT_LABELS: dict[str, dict[str, str]] = {
     "photonic_encoding": {
         "phase": "Phase",
@@ -70,40 +82,42 @@ VARIANT_LABELS: dict[str, dict[str, str]] = {
         "iqp": "IQP (Havlicek)",
     },
     "complex_qubit_encoding": {
-        "photonic_phase": "Photonic,\nphase",
-        "photonic_havlicek": "Photonic,\nHavlicek",
-        "qubit_phase": "Qubit,\nphase",
-        "qubit_havlicek": "Qubit,\nHavlicek (IQP)",
+        "photonic_phase": "Photonic\nPhase",
+        "photonic_havlicek": "Photonic\nHavlicek",
+        "qubit_phase": "Qubit\nPhase",
+        "qubit_havlicek": "Qubit\nHavlicek (IQP)",
     },
     "classical_vs_quantum": {
-        "quadratic_fock": "Quadratic Fock\n(classical)",
-        "fermion_phase": "Fermion,\nphase",
-        "fermion_havlicek": "Fermion,\nHavlicek",
+        "quadratic_fock": "Quadratic",
+        "fermion_phase": "Fermion\nPhase",
+        "fermion_bs": "Fermion,\nBeamsplitter",
+        "fermion_bs_phase": "Fermion\nPhase +\nBeamsplitter",
+        "fermion_havlicek": "Fermion\nHavlicek",
     },
     "spin_magic": {
         "ghz_enccirc": "GHZ",
-        "linear_encboth": "Linear cluster,\n(spin-and-circuit)",
-        "linear_enccirc": "Linear cluster",
-        "linear_encspin": "Linear cluster,\n(spin-encoded)",
-        "linear_u3_enccirc": "Arbitrary cluster, \n(random U3)",
+        "linear_enccirc": "Linear",
+        "linear_u3_enccirc": "Arbitrary \nRandom U3",
+        "linear_encspin": "Linear\nSpin-Encoded",
+        "linear_encboth": "Linear\nSpin-and-\nCircuit",
     },
     "spin": {
-        "encboth_l1": "Encoded both,\n1 layer",
-        "enccirc_l1": "Circuit-encoded,\n1 layer",
-        "enccirc_l3": "Circuit-encoded,\n3 layers",
-        "encspin_l1": "Spin-encoded,\n1 layer",
+        "enccirc_l1": "Circuit-\nEncoded\n1 Layer",
+        "encspin_l1": "Spin-\nEncoded\n1 Layer",
+        "encboth_l1": "Spin-and\n-Circuit\n1 Layer",
+        "enccirc_l3": "Circuit\nEncoded\n3 Layers",
     },
 }
 
 #: Per-folder x-axis title -- what the varying axis actually represents, shown instead of the
 #: generic "model" label so the heatmap states its own comparison without needing the caption.
 AXIS_TITLES: dict[str, str] = {
-    "photonic_encoding": "photonic encoding",
-    "qubit_encoding": "qubit encoding",
-    "complex_qubit_encoding": "Complex encoding (Havlicek)",
-    "classical_vs_quantum": "Classical equivalent model",
-    "spin_magic": "Single-Qubit Emitter Variant",
-    "spin": "multi-qubit emitter (spin) variant",
+    "photonic_encoding": "Photonic Encoding",
+    "qubit_encoding": "Qubit Encoding",
+    "complex_qubit_encoding": "Havlicek Encoding",
+    "classical_vs_quantum": "Classical Equivalent Model",
+    "spin_magic": "Single-Qubit Emitted Cluster",
+    "spin": "Multi-Qubit Emitted Variant",
 }
 
 
@@ -122,14 +136,42 @@ def _safe_tag(s: str) -> str:
 
 
 def _variants_in(subfolder: Path) -> list[tuple[str, Path]]:
-    """``[(stem, path), ...]`` for every ``*.yaml`` directly inside ``subfolder``, sorted by stem."""
-    return [(p.stem, p) for p in sorted(subfolder.glob("*.yaml"))]
+    """``[(stem, path), ...]`` for every ``*.yaml`` directly inside ``subfolder``, ordered per
+    :data:`VARIANT_LABELS`'s key order for this folder (that dict is curated in the order the
+    columns should read left-to-right) with any stem missing from the mapping appended
+    alphabetically after -- so a new variant file still shows up, just at the end until an entry
+    is added to :data:`VARIANT_LABELS`."""
+    stem_to_path = {p.stem: p for p in subfolder.glob("*.yaml")}
+    order = list(VARIANT_LABELS.get(subfolder.name, {}))
+    ordered_stems = [s for s in order if s in stem_to_path]
+    ordered_stems += sorted(s for s in stem_to_path if s not in order)
+    return [(s, stem_to_path[s]) for s in ordered_stems]
+
+
+def _grid_seed_worker(task):
+    """One ``(observable, variant, learner, seed)`` fit -- module-level so it's picklable for
+    :func:`~v2.circuit.spin.parallel_row_map`'s process pool.  Returns ``(r2, error)`` rather than
+    raising/printing here: printing happens in the parent, once results are back in task order, so
+    output from a parallel run reads the same as the old serial loop instead of interleaving across
+    worker processes."""
+    (vpath, obs, lname, out_root, scores_root, n_train, graph_density, seed,
+     base_kwargs) = task
+    from learner.auto import run_config
+
+    kwargs = dict(base_kwargs)
+    kwargs["seed"] = seed
+    try:
+        res = run_config(vpath, obs, lname, out_root=out_root, scores_root=scores_root,
+                         n_train=n_train, graph_density=graph_density, split_seed=seed, **kwargs)
+        return res["r2"], None
+    except Exception as exc:                                # noqa: BLE001 -- one bad seed must not
+        return None, str(exc)                                # abort the rest of the sweep
 
 
 def sweep_best_of_grid(variants: list[tuple[str, Path]], observables: list[str], *,
                        learners=None, n_seeds: int = 10, out_root: str = "datasets",
                        scores_root: str = "scores", n_train: int | None = None,
-                       graph_density: float = 0.5) -> dict:
+                       graph_density: float = 0.5, n_jobs: int = 1) -> dict:
     """For every ``(observable, variant)`` cell: fit each learner in ``learners`` at ``n_seeds``
     reseeded draws, average each learner's R^2 over seeds, then take the max across learners.
 
@@ -140,13 +182,39 @@ def sweep_best_of_grid(variants: list[tuple[str, Path]], observables: list[str],
     learner/seed is recorded as ``None`` in ``r2`` (empty dict in ``detail``) and printed, not fatal
     to the rest of the grid -- same per-cell failure discipline as every other sweep in
     :mod:`learner.auto`.
-    """
-    import math
 
-    from learner.auto import DEFAULT_SWEEP_LEARNERS, run_config
+    Every ``(observable, variant, learner, seed)`` fit is independent, so they are flattened into
+    one task list and handed to :func:`~v2.circuit.spin.parallel_row_map`, the same ordered
+    process-pool map :mod:`v2.circuit.prep`'s row workers use, rather than looping in serial.
+    ``n_jobs=1`` (the default) stays serial; ``-1`` uses all-but-one CPU.
+    """
+    from circuit.spin import parallel_row_map
+    from learner.auto import DEFAULT_SWEEP_LEARNERS
 
     learners = learners or DEFAULT_SWEEP_LEARNERS
     variant_names = [name for name, _ in variants]
+
+    cells = [(obs, vname, vpath, lname, base_kwargs)
+            for obs in observables
+            for vname, vpath in variants
+            for lname, base_kwargs in learners]
+    tasks = [(vpath, obs, lname, out_root, scores_root, n_train, graph_density, seed, base_kwargs)
+            for obs, vname, vpath, lname, base_kwargs in cells
+            for seed in range(int(n_seeds))]
+    flat = parallel_row_map(_grid_seed_worker, tasks, n_jobs)
+
+    n = int(n_seeds)
+    cell_seed_scores: dict[tuple[str, str, str], list] = {}
+    for i, (obs, vname, vpath, lname, base_kwargs) in enumerate(cells):
+        seed_results = flat[i * n:(i + 1) * n]
+        seed_scores = []
+        for seed, (r2, err) in enumerate(seed_results):
+            if err is not None:
+                print(f"[best_of_grid] {obs}/{vname}/{lname}/seed={seed} failed: {err}")
+            else:
+                print(vname, lname, seed, r2)
+            seed_scores.append(r2)
+        cell_seed_scores[(obs, vname, lname)] = seed_scores
 
     r2_grid, detail_grid = [], []
     for obs in observables:
@@ -155,18 +223,7 @@ def sweep_best_of_grid(variants: list[tuple[str, Path]], observables: list[str],
             cell_detail: dict[str, list[float]] = {}
             learner_means = []
             for lname, base_kwargs in learners:
-                seed_scores = []
-                for seed in range(int(n_seeds)):
-                    kwargs = dict(base_kwargs)
-                    kwargs["seed"] = seed
-                    try:
-                        res = run_config(vpath, obs, lname, out_root=out_root,
-                                         scores_root=scores_root, n_train=n_train,
-                                         graph_density=graph_density, split_seed=seed, **kwargs)
-                        seed_scores.append(res["r2"])
-                    except Exception as exc:                # noqa: BLE001 -- one bad seed must not
-                        print(f"[best_of_grid] {obs}/{vname}/{lname}/seed={seed} failed: {exc}")
-                        seed_scores.append(None)
+                seed_scores = cell_seed_scores[(obs, vname, lname)]
                 cell_detail[lname] = seed_scores
                 valid = [s for s in seed_scores if s is not None]
                 if valid:
@@ -181,7 +238,7 @@ def sweep_best_of_grid(variants: list[tuple[str, Path]], observables: list[str],
             "learners": [name for name, _ in learners]}
 
 
-def plot_best_of_grid(result: dict, *, title: str = "", x_label: str = "model",
+def plot_best_of_grid(result: dict, *, x_label: str = "model",
                       variant_labels: list[str] | None = None,
                       save_path: str | Path | None = None, show: bool = False):
     """Observables on y, variants on x, cell = max-of-per-learner-mean-R^2 -- same visual
@@ -211,11 +268,9 @@ def plot_best_of_grid(result: dict, *, title: str = "", x_label: str = "model",
     ax.set_xticks(range(len(variants)))
     ax.set_xticklabels(labels, rotation=0, ha="center")
     ax.set_yticks(range(len(obs)))
-    ax.set_yticklabels(obs)
+    ax.set_yticklabels([OBSERVABLE_LABELS.get(o, o.replace("_", " ").title()) for o in obs])
     ax.set_xlabel(x_label)
-    ax.set_ylabel("observable")
-    ax.set_title(title or f"best-of-{len(result['learners'])} R^2 "
-                          f"(mean over {result['n_seeds']} seeds)")
+    ax.set_ylabel("Observable")
 
     for i in range(len(obs)):
         for j in range(len(variants)):
@@ -224,7 +279,7 @@ def plot_best_of_grid(result: dict, *, title: str = "", x_label: str = "model",
             colour = "black" if not np.isfinite(v) or -0.4 < v < 0.75 else "white"
             ax.text(j, i, text, ha="center", va="center", color=colour, fontsize=9)
 
-    fig.colorbar(im, ax=ax, label="R^2")
+    fig.colorbar(im, ax=ax, label="Coefficient of Determination (R^2)")
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150)
@@ -235,7 +290,7 @@ def plot_best_of_grid(result: dict, *, title: str = "", x_label: str = "model",
 
 def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds: int = 10,
        out_root: str = "datasets", scores_root: str = "scores",
-       n_train: int | None = None) -> dict:
+       n_train: int | None = None, n_jobs: int = 1) -> dict:
     """One ``configs/eval/<group>/`` folder -> one saved grid (PNG + JSON) inside that folder."""
     variants = _variants_in(eval_dir)
     if not variants:
@@ -244,15 +299,14 @@ def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds
           flush=True)
 
     result = sweep_best_of_grid(variants, observables, n_seeds=n_seeds, out_root=out_root,
-                                scores_root=scores_root, n_train=n_train)
+                                scores_root=scores_root, n_train=n_train, n_jobs=n_jobs)
     tag = "-".join(_safe_tag(o) for o in observables)
     out_json = eval_dir / f"best_of_grid__{tag}.json"
-    out_png = eval_dir / f"best_of_grid__{tag}.png"
+    out_png = eval_dir / f"best_of_grid__{tag}.pdf"
     out_json.write_text(json.dumps(result, indent=2))
     labels = [_display_label(eval_dir.name, stem) for stem in result["variants"]]
     x_label = AXIS_TITLES.get(eval_dir.name, "model")
-    plot_best_of_grid(result, title=f"{eval_dir.name}: best-of-3 R^2 (mean over {n_seeds} seeds)",
-                      x_label=x_label, variant_labels=labels, save_path=out_png)
+    plot_best_of_grid(result, x_label=x_label, variant_labels=labels, save_path=out_png)
     print(f"    wrote {out_png}", flush=True)
     return result
 
@@ -262,14 +316,19 @@ def main(argv=None) -> None:
                                               "(mean over reseeded fits) for one configs/eval/ group.")
     ap.add_argument("--eval-dir", required=True, help="e.g. configs/eval/havlicek")
     ap.add_argument("--observables", nargs="+", default=DEFAULT_OBSERVABLES)
-    ap.add_argument("--n-seeds", type=int, default=10)
+    ap.add_argument("--n-seeds", type=int, default=1)
     ap.add_argument("--n-train", type=int, default=None)
+    ap.add_argument("--n-jobs", type=int, default=-1, help="parallel fits across (observable, "
+                                                            "variant, learner, seed) cells; "
+                                                            "1 = serial, -1 = all-but-one CPU "
+                                                            "(default)")
     ap.add_argument("--root", default="datasets")
     ap.add_argument("--scores-root", default="scores")
     args = ap.parse_args(argv)
 
     run(eval_dir=Path(args.eval_dir), observables=args.observables, n_seeds=args.n_seeds,
-       out_root=args.root, scores_root=args.scores_root, n_train=args.n_train)
+       out_root=args.root, scores_root=args.scores_root, n_train=args.n_train,
+       n_jobs=args.n_jobs)
 
 
 if __name__ == "__main__":

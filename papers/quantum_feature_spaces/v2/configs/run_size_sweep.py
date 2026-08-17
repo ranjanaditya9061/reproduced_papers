@@ -59,7 +59,7 @@ CONFIG_DIR = Path(__file__).parent / "size_sweep_full"
 #: (m, k) tiers with exact probs -- every template runs at (6, 3); only GROWTH_STEMS grow past it.
 EXACT_SIZES = [(6, 3), (8, 4), (10, 5), (12, 6)]
 #: (m, k) tiers past the exact-probs memory wall -- photonic/fock only, via the shots branch.
-SHOTS_SIZES = [(14, 7), (16, 8), (18, 9)]
+SHOTS_SIZES = [(14, 7), (16, 8), (18, 9), (20, 10), (30, 15), (40, 20), (50, 25), (60, 30)]
 #: Shots to draw per row at the SHOTS_SIZES tier.
 SHOTS_BUDGET = 10_000
 
