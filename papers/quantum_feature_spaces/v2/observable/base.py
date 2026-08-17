@@ -98,6 +98,11 @@ class ObservableContext:
     reference_probs: Sequence | Callable[[], Sequence] | None = None
     #: Modes reserved for a post-selection readout (``spin_magic``); ``()`` otherwise.
     readout_modes: Sequence[int] = field(default=())
+    #: Encoded-input dimension, needed only by circuit-derived graph constructions
+    #: (``connected_<reading>_pairU``) that reconstruct the sandwich unitary via
+    #: :func:`~circuit.photonic_circuit.sandwich_unitaries`/``sandwich_unitary_at`` at ``x=0`` --
+    #: ``None`` for every other family, which never needs it.
+    n_features: int | None = None
 
     def __post_init__(self):
         set_ = object.__setattr__                    # frozen -> resolve defaults in place

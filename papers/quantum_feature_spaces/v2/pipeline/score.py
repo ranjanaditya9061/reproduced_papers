@@ -65,6 +65,7 @@ def context_for(meta, keys, reference_probs=None, **knobs) -> ObservableContext:
         input_state=meta.get("input_state"),
         reference_probs=reference_probs,
         readout_modes=tuple(meta.get("readout_modes") or ()),
+        n_features=meta.get("n_features"),
         **knobs,
     )
 

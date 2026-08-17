@@ -24,10 +24,14 @@ import numpy as np
 
 from observable.base import (Expectation, Observable, ObservableContext, ObservableFamily, base_score_vec,
                     register)
+from observable.scorers.counting import parity_modes, parity_score
 
-#: Base scorers usable under ``connected_<base>``.  ``maxcc`` is the graph reading; the rest are
-#: the plain counting scorers, scored (unselected) over the full distribution.
-CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "maxcc")
+#: Base scorers usable under ``connected_<base>``.  ``maxcc`` is the graph reading; ``parity_maxcc``
+#: is the elementwise product of ``parity`` and ``maxcc`` (not a selection, not a sub-scoring of
+#: parity restricted to the winning component -- both factors are computed the normal whole-outcome
+#: way and simply multiplied); the rest are the plain counting scorers, scored (unselected) over the
+#: full distribution.
+CONNECTED_BASES = ("parity", "majority", "bunching", "n_first", "maxcc", "parity_maxcc")
 
 #: Hard cap on any vertex's degree in ``G``.  An edge whose addition would push either endpoint
 #: past this is skipped, so ``G`` stays bounded-degree (expander-like) rather than growing hubs as
@@ -138,6 +142,18 @@ def clicked_max_component(key, edges) -> int:
                     stack.append(y)
         best = max(best, size)
     return best
+
+
+def parity_maxcc_score(key, edges, m: int) -> float:
+    """``parity(key) * maxcc(key)`` -- the plain elementwise product of the two existing scorers,
+    each computed the normal whole-outcome way (:func:`~observable.scorers.counting.parity_score`
+    over the readout half, :func:`clicked_max_component` over the full clicked set); no
+    sub-selection of one by the other.  Couples an additive, graph-blind signal (``parity`` is
+    linear in occupation, ``+-1``) with a nonlinear, connectivity-mediated one (``maxcc``, which is
+    blind to anything outside the winning component) -- genuinely different information from either
+    factor alone, without introducing a new selection/support-restriction mechanism.
+    """
+    return float(parity_score(key, parity_modes(m)) * clicked_max_component(key, edges))
 
 
 def parse_connected_observable(observable: str):
@@ -369,10 +385,112 @@ def layered_maxcc_occupation_indexed_sum(key, edges, *, m: int, k: int) -> float
     return float(total)
 
 
+def layered_parity_maxcc(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_paritymaxcc`` on the layered graph: ``parity(key) * maxcc(key)``, the plain
+    elementwise product of :func:`~observable.scorers.counting.parity_score` (whole-outcome, over
+    the readout half) and :func:`layered_clicked_max_component` (whole-outcome, on the layered
+    graph) -- the layered-graph sibling of :func:`parity_maxcc_score`, same product, just reading
+    ``maxcc`` off the ``m*(k+1)``-vertex layered graph instead of the plain ``m``-vertex one so it
+    inherits the layered construction's bunching-depth sensitivity in the ``maxcc`` factor.
+    """
+    return float(parity_score(key, parity_modes(m))
+                 * layered_clicked_max_component(key, edges, m=m, k=k))
+
+
+def layered_maxcc_parity(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_ccparity`` on the layered graph: **parity computed only over the modes in the
+    largest connected component** (:func:`_maxcc_members`), not the fixed readout half -- the
+    genuinely different construction from :func:`layered_parity_maxcc`'s plain product. Where
+    ``paritymaxcc`` multiplies two whole-outcome scorers together, this restricts parity's *domain*
+    to a per-outcome, dynamically-selected mode set: the winning component's own membership decides
+    which modes' occupations get summed before the even/odd check, so the same photon count parity
+    reads differently depending on which modes the graph happened to connect for this outcome.
+
+    ``+1`` if the summed occupation over the winning component's member modes is even, ``-1`` if
+    odd -- same even/odd convention as :func:`~observable.scorers.counting.parity_score`, applied to
+    a different, per-outcome mode set instead of the fixed first-``ceil(m/2)`` readout half. An empty
+    winning-component set (only possible if ``key`` is the all-zero outcome, excluded by ``k>=1``)
+    would sum to 0, i.e. ``+1`` -- not reachable in practice but noted for completeness.
+    """
+    members = _maxcc_members(key, edges, m=m, k=k)
+    modes = {divmod(v, k + 1)[0] for v in members}
+    total = sum(int(key[i]) for i in modes)
+    return 1.0 if total % 2 == 0 else -1.0
+
+
+def layered_maxcc_bunching(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_ccbunching`` on the layered graph: **bunching computed only over the modes in the
+    largest connected component** (:func:`_maxcc_members`) -- the domain-restriction sibling of
+    :func:`layered_maxcc_parity` (``ccparity``), applied to
+    :func:`~observable.scorers.counting.bunching_score` instead of ``parity``.
+
+    ``+1`` if every member mode of the winning component holds at most one photon, ``-1`` if any
+    member mode is bunched -- same even/odd-style +-1 convention as the plain ``bunching``
+    observable, but read only over the graph-selected mode set rather than every mode in the
+    outcome. A mode with zero occupation trivially satisfies "at most one," so an empty member mode
+    does not by itself trigger ``-1`` -- only a genuinely bunched (``n_i > 1``) member does.
+    """
+    members = _maxcc_members(key, edges, m=m, k=k)
+    modes = {divmod(v, k + 1)[0] for v in members}
+    if not modes:
+        return 1.0
+    return 1.0 if max(int(key[i]) for i in modes) <= 1 else -1.0
+
+
+def layered_maxcc_majority(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_ccmajority`` on the layered graph: **the left/right occupation imbalance computed
+    only over the modes in the largest connected component** (:func:`_maxcc_members`) -- the
+    domain-restriction sibling of :func:`layered_maxcc_parity` (``ccparity``), applied to
+    :func:`~observable.scorers.counting.majority_score` instead of ``parity``.
+
+    ``(n_left - n_right) / k`` where ``n_left``/``n_right`` sum occupation only over member modes
+    falling in the first/second half of the mode index range (``m // 2`` split, same convention as
+    plain ``majority``) -- so unlike plain ``majority``, both the split point and which modes
+    contribute are fixed, but a member mode outside neither half's membership (impossible here since
+    every mode falls in exactly one half) never arises; the only per-outcome variation is *which*
+    modes from each half are actually in the winning component. Normalised by the *total* photon
+    count ``k``, not by the component's own occupation sum, so this stays comparable in scale to
+    plain ``majority`` across outcomes with differently sized winning components -- a component that
+    is small or occupation-light relative to ``k`` will read close to 0, not because there is no
+    imbalance in the modes it contains, but because it is capturing only a fraction of ``k``'s total
+    mass; this is a deliberate scale choice, documented rather than silently changed to a
+    component-local normalisation.
+    """
+    members = _maxcc_members(key, edges, m=m, k=k)
+    modes = {divmod(v, k + 1)[0] for v in members}
+    split = m // 2
+    n_left = sum(int(key[i]) for i in modes if i < split)
+    n_right = sum(int(key[i]) for i in modes if i >= split)
+    return (n_left - n_right) / k
+
+
+def layered_maxcc_first(key, edges, *, m: int, k: int) -> float:
+    """``maxcc_ccnfirst`` on the layered graph: **the occupation parity of the lowest-indexed mode
+    in the largest connected component** (:func:`_maxcc_members`) -- the domain-restriction sibling
+    of :func:`layered_maxcc_parity` (``ccparity``), applied to
+    :func:`~observable.scorers.counting.first_mode_score` instead of ``parity``.
+
+    Plain ``n_first`` always reads mode 0, a fixed choice with no ``x``-dependence in *which* mode
+    gets read (only in that mode's occupation). Here the graph picks the mode instead: whichever
+    member of the winning component has the smallest mode index plays the role mode 0 played, so the
+    *identity* of the read-out mode is itself ``x``-dependent (it changes with whichever modes the
+    graph happened to connect for this outcome), not just its occupation value -- the same
+    "selection becomes part of the signal, not just a fixed lens" idea behind ``ccparity``, ported to
+    the one existing counting scorer that names a specific mode rather than aggregating over a set.
+    Returns ``min_mode_occupation mod 2``, same convention as plain ``n_first``.
+    """
+    members = _maxcc_members(key, edges, m=m, k=k)
+    modes = {divmod(v, k + 1)[0] for v in members}
+    i0 = min(modes)
+    return float(int(key[i0]) % 2)
+
+
 def connected_scores(keys, *, m, k, base, edges):
     """Per-outcome ``<base>`` score vector for ``connected_<base>`` (no selection)."""
     if base == "maxcc":
         return np.array([clicked_max_component(key, edges) for key in keys], dtype=np.float64)
+    if base == "parity_maxcc":
+        return np.array([parity_maxcc_score(key, edges, m) for key in keys], dtype=np.float64)
     return base_score_vec(base, ObservableContext(m=m, k=k, keys=keys),
                           allowed=CONNECTED_BASES, label="connected")
 
@@ -428,7 +546,27 @@ class ConnectedFamily(ObservableFamily):
 #: breaks those remaining ties by weighting occupation by mode index, while staying strictly bounded
 #: (``<= m*(k+1)``, linear in system size) rather than approaching a combinatorial, hash-like
 #: encoding of the full outcome -- measured to resolve every occsum-tied group in a sample sweep at
-#: both a small size and ``(m=10,k=5)``.
+#: both a small size and ``(m=10,k=5)``. ``paritymaxcc`` (:func:`layered_parity_maxcc`) is a
+#: different axis again from all of the above: a plain elementwise product of ``parity`` (additive,
+#: graph-blind, whole-outcome) and ``maxcc`` (nonlinear, graph-mediated, blind to anything outside
+#: the winning component) -- not a selection or sub-scoring of one by the other, just their product.
+#: ``ccparity`` (:func:`layered_maxcc_parity`) is different again, and easy to conflate with
+#: ``paritymaxcc`` -- it does NOT multiply the two; it restricts *parity's own domain* to the
+#: winning component's member modes (a per-outcome, graph-selected mode set) instead of the fixed
+#: readout half, so the even/odd check itself runs over a different, ``x``-dependent set of modes
+#: per outcome rather than combining two independently-computed whole-outcome scores. Reseed-checked
+#: (5 matched ``graph_seed=nn_seed`` runs, mlp, photonic Fock m=6..12): unlike ``paritymaxcc``
+#: (which reseeded into noise indistinguishable from plain ``parity``), ``ccparity`` reproduced a
+#: clean, monotonically increasing R^2-vs-``m`` trend across both seeds tested
+#: (0.853/0.913/0.974/0.968 and 0.853/0.903/0.916/0.937) -- the one reading in this module with a
+#: confirmed, reproducible size-dependent learnability signal. ``ccbunching``
+#: (:func:`layered_maxcc_bunching`) and ``ccmajority`` (:func:`layered_maxcc_majority`) are the same
+#: domain-restriction idea applied to ``bunching``/``majority`` instead of ``parity`` -- untested for
+#: a size trend as of this writing. ``ccnfirst`` (:func:`layered_maxcc_first`) is a variant of the
+#: same idea for ``n_first``, which names one fixed mode rather than aggregating over a set: instead
+#: of restricting a domain, the graph picks *which* mode plays ``n_first``'s role (the winning
+#: component's lowest-indexed member) each outcome, so the mode identity itself becomes
+#: ``x``-dependent, not just its occupation.
 LAYERED_READINGS = {
     "maxcc": layered_clicked_max_component,
     "productcc": layered_product_component,
@@ -436,6 +574,11 @@ LAYERED_READINGS = {
     "occprod": layered_maxcc_occupation_product,
     "occsum": layered_maxcc_occupation_sum,
     "occisum": layered_maxcc_occupation_indexed_sum,
+    "paritymaxcc": layered_parity_maxcc,
+    "ccparity": layered_maxcc_parity,
+    "ccbunching": layered_maxcc_bunching,
+    "ccmajority": layered_maxcc_majority,
+    "ccnfirst": layered_maxcc_first,
 }
 
 _LAYERED_RE = re.compile(rf"^connected_({'|'.join(LAYERED_READINGS)})_layered$")
@@ -477,5 +620,526 @@ class ConnectedLayeredFamily(ObservableFamily):
                 "n_layers": ctx.k + 1}
 
 
+def pair_vertex_index(m: int, i: int, j: int) -> int:
+    """Vertex id of mode-pair ``(i, j)`` (``i <= j``) in the ``m*(m+1)/2``-vertex mode-pair graph --
+    pairs laid out in colex order over ``i <= j``, matching
+    ``[(a, b) for a in range(m) for b in range(a, m)]``'s own enumeration order (see
+    :func:`_pair_vertex_table`) so vertex ids are stable without materialising that list.
+
+    **Includes the diagonal ``i == j``** -- vertex ``(i, i)`` represents mode ``i``'s own *bunching*
+    (two-or-more photons in the same mode), the mode-pair graph's analogue of a self-pair. Without
+    it, an outcome like ``(2, 0, 0, ...)`` (all photons bunched into one mode) would activate *zero*
+    mode-pair vertices under the off-diagonal-only construction (no two *distinct* modes are
+    co-occupied), making the graph blind to single-mode bunching in exactly the way §1 of
+    ``GRAPH_OBSERVABLE_PROPOSALS.md`` already flagged for the plain mode graph -- the diagonal
+    restores that sensitivity here too, at the cost of ``m`` extra vertices (``C(m,2) -> C(m,2)+m =
+    m*(m+1)/2``, still quadratic in ``m``).
+    """
+    if not 0 <= i <= j < m:
+        raise ValueError(f"need 0 <= i <= j < m={m} (got i={i}, j={j})")
+    #: number of pairs (a, b), a < i, plus offset of (i, j) within first-element-i pairs (b >= i).
+    return i * m - i * (i - 1) // 2 + (j - i)
+
+
+def _pair_vertex_table(m: int) -> list[tuple[int, int]]:
+    """``[(i, j), ...]`` indexed by :func:`pair_vertex_index`'s own vertex id -- the inverse of that
+    function, built once per ``m`` rather than re-derived per vertex (which an earlier version of
+    :func:`pair_maxcc_parity` did via an ``O(m^2)`` scan per active vertex).
+    """
+    return [(i, j) for i in range(m) for j in range(i, m)]
+
+
+def _pair_active_set(key, *, m: int) -> set:
+    """Mode-pair vertices ``(i, j)`` (``i <= j``) that are "clicked": for ``i < j``, both modes
+    co-occupied; for the diagonal ``i == j``, mode ``i`` itself is bunched (``n_i >= 2``, see
+    :func:`pair_vertex_index`'s docstring for why the diagonal exists). Unlike
+    :func:`_layered_induced_subgraph`'s one-vertex-per-mode activation, this reads pairwise
+    co-occupation (plus single-mode bunching via the diagonal) rather than per-mode occupation
+    levels, so the vertex set is a genuinely different kind of information about the outcome.
+    """
+    occupied = [i for i, n_i in enumerate(key) if int(n_i) > 0]
+    active = {pair_vertex_index(m, i, i) for i in range(m) if int(key[i]) >= 2}
+    for a in range(len(occupied)):
+        for b in range(a + 1, len(occupied)):
+            i, j = occupied[a], occupied[b]
+            active.add(pair_vertex_index(m, i, j))
+    return active
+
+
+def _pair_induced_subgraph(key, edges, *, m: int):
+    """``(active_set, adj)`` for one outcome on the mode-pair graph -- the pair-graph analogue of
+    :func:`_layered_induced_subgraph`. ``active_set`` is every co-occupied mode pair
+    (:func:`_pair_active_set`); size varies per outcome (``C(|occupied|, 2)``), unlike the layered
+    graph's fixed ``m`` active vertices per outcome -- an outcome with more occupied modes activates
+    more mode-pair vertices, so activation count is itself informative here in a way it structurally
+    cannot be on the layered graph.
+    """
+    active_set = _pair_active_set(key, m=m)
+    adj: dict = {v: [] for v in active_set}
+    for u, w in edges:
+        if u in active_set and w in active_set:
+            adj[u].append(w)
+            adj[w].append(u)
+    return active_set, adj
+
+
+def pair_max_component(key, edges, *, m: int) -> int:
+    """``maxcc`` on the mode-pair graph: size of the largest connected component among the active
+    vertices (:func:`_pair_induced_subgraph`) -- co-occupied off-diagonal pairs plus any bunched
+    mode's diagonal self-pair. ``0`` only when no mode is occupied at all (impossible for ``k>=1``);
+    a single occupied, unbunched mode with no co-occupied partner activates nothing either (one
+    occupied mode alone forms neither an off-diagonal pair nor a bunched diagonal), so ``0`` is still
+    reachable for a "one photon, no bunching, no partner" outcome.
+    """
+    active_set, adj = _pair_induced_subgraph(key, edges, m=m)
+    sizes = _components(active_set, adj)
+    return max(sizes) if sizes else 0
+
+
+def pair_maxcc_members(key, edges, *, m: int) -> set:
+    """Vertex-member set of the largest connected component on the mode-pair graph -- the pair-graph
+    analogue of :func:`_maxcc_members`, feeding :func:`pair_maxcc_parity`.
+    """
+    active_set, adj = _pair_induced_subgraph(key, edges, m=m)
+    components = _component_members(active_set, adj)
+    return max(components, key=len) if components else set()
+
+
+def pair_maxcc_parity(key, edges, *, m: int, k: int) -> float:
+    """``pair_ccparity``: **parity computed only over the modes that appear in some mode pair
+    belonging to the largest connected component** of the mode-pair graph
+    (:func:`pair_maxcc_members`) -- the mode-pair-graph analogue of :func:`layered_maxcc_parity`
+    (``ccparity``), which reseed-checked as the one construction in the layered-graph family with a
+    confirmed, reproducible size-dependent R^2 trend (see :data:`LAYERED_READINGS`'s docstring).
+    Here the graph-selected domain is "every mode that co-occurs, in the winning component, with at
+    least one other occupied mode" rather than "every mode whose own occupation-level vertex landed
+    in the winning component" -- a genuinely different selection rule, since it is driven by
+    *pairwise* co-occupation structure rather than single-mode occupation levels.
+
+    ``+1`` if the summed occupation over those modes is even, ``-1`` if odd. ``0`` active vertices
+    (fewer than 2 modes occupied) reduces to summing over no modes, i.e. ``+1``.
+    """
+    members = pair_maxcc_members(key, edges, m=m)
+    table = _pair_vertex_table(m)
+    modes: set = set()
+    for v in members:
+        i, j = table[v]
+        modes.add(i)
+        modes.add(j)
+    total = sum(int(key[i]) for i in modes)
+    return 1.0 if total % 2 == 0 else -1.0
+
+
+def pair_parity_maxcc(key, edges, *, m: int) -> float:
+    """``pair_paritymaxcc``: ``parity(key) * maxcc(key)`` on the mode-pair graph -- the plain
+    elementwise product of :func:`~observable.scorers.counting.parity_score` (whole-outcome, over
+    the readout half) and :func:`pair_max_component` (whole-outcome, on the mode-pair graph), NOT a
+    domain restriction. The mode-pair-graph sibling of :func:`layered_parity_maxcc`, which reseed-
+    checked as noise-indistinguishable from plain ``parity`` (see :data:`LAYERED_READINGS`'s
+    docstring) -- included here for the same direct comparison against ``pair_ccparity``
+    (:func:`pair_maxcc_parity`) on this differently-selected graph, since the product-vs-domain-
+    restriction distinction is exactly what separated a null result (``paritymaxcc``) from a real one
+    (``ccparity``) on the layered graph, and it is worth checking whether that same separation holds
+    here too rather than assuming it transfers.
+    """
+    return float(parity_score(key, parity_modes(m)) * pair_max_component(key, edges, m=m))
+
+
+#: ``connected_<reading>_pair`` readings -- both read the ``m*(m+1)/2``-vertex mode-pair graph
+#: (:func:`_pair_induced_subgraph`), whose active set is co-occupied mode *pairs* plus per-mode
+#: bunching via the diagonal (:func:`pair_vertex_index`'s docstring), not individual mode occupation
+#: levels: a structurally different selection mechanism from every ``*_layered`` reading, which is
+#: why this is a new family rather than another :data:`LAYERED_READINGS` entry. ``maxcc`` is the
+#: direct size reading; ``ccparity`` is the domain-restriction construction that proved out on the
+#: layered graph, ported to this graph's own selection rule; ``paritymaxcc`` is the plain product
+#: (not domain restriction) that reseed-checked as a null result on the layered graph, included here
+#: for the matching direct comparison against ``ccparity`` on this graph too.
+PAIR_READINGS = {
+    "maxcc": pair_max_component,
+    "ccparity": pair_maxcc_parity,
+    "paritymaxcc": pair_parity_maxcc,
+}
+
+_PAIR_RE = re.compile(rf"^connected_({'|'.join(PAIR_READINGS)})_pair$")
+
+
+class ConnectedPairFamily(ObservableFamily):
+    """``connected_<reading>_pair``, ``reading`` in :data:`PAIR_READINGS` -- a graph-property
+    reading on an ``m*(m+1)/2``-vertex graph over *mode pairs* (including the diagonal ``i==i`` for
+    single-mode bunching) rather than modes: off-diagonal vertex ``(i,j)`` is active iff both modes
+    ``i`` and ``j`` are occupied, diagonal vertex ``(i,i)`` is active iff mode ``i`` itself is
+    bunched (:func:`_pair_active_set`). Grows quadratically in ``m`` with no extra bunching-budget
+    mechanism needed (``GRAPH_OBSERVABLE_PROPOSALS.md`` section 2.3), and reads pairwise
+    co-occupation correlation rather than single-mode occupation -- the natural graph-connectivity
+    complement to ``pairprod``'s signed pairwise-product observable, which reads the same pair
+    structure through a different (non-graph) lens.
+    """
+
+    describe = f"connected_<reading>_pair (reading in {tuple(PAIR_READINGS)})"
+
+    def matches(self, name: str) -> bool:
+        return bool(_PAIR_RE.match(name))
+
+    def build(self, name: str, ctx: ObservableContext) -> Observable:
+        if ctx.graph_density is None:
+            raise ValueError(f"{name} requires graph_density (+ graph_seed)")
+        reading = _PAIR_RE.match(name).group(1)
+        n_vertices = ctx.m * (ctx.m + 1) // 2
+        edges = build_vertex_graph(n_vertices, ctx.graph_density, ctx.graph_seed)
+        if reading == "maxcc":
+            v = [pair_max_component(key, edges, m=ctx.m) for key in ctx.keys]
+        elif reading == "paritymaxcc":
+            v = [pair_parity_maxcc(key, edges, m=ctx.m) for key in ctx.keys]
+        else:
+            v = [pair_maxcc_parity(key, edges, m=ctx.m, k=ctx.k) for key in ctx.keys]
+        obs = Expectation(np.array(v, dtype=np.float64))
+        obs.edges = edges                                  # kept for inspection / debugging
+        return obs
+
+    def spec(self, name: str, ctx: ObservableContext) -> dict:
+        reading = _PAIR_RE.match(name).group(1)
+        return {"observable": f"connected_{reading}_pair",
+                "graph_density": ctx.graph_density,
+                "graph_seed": ctx.graph_seed,
+                "max_vertex_degree": MAX_VERTEX_DEGREE,
+                "n_vertices": ctx.m * (ctx.m + 1) // 2}
+
+
+def mode_coupling_strengths(m: int, model_seed: int, n_features: int) -> "np.ndarray":
+    """``|U_ab|`` for every ``0 <= a <= b < m``, ``(m,m)`` array, symmetric -- the sandwich
+    circuit's own mode-to-mode transition amplitude at ``x=0`` (no encoding contribution), used as a
+    physically-grounded coupling strength in place of :func:`build_vertex_graph`'s uniform-random
+    edge draw.
+
+    Reconstructed via :func:`~circuit.photonic_circuit.sandwich_unitaries` +
+    :func:`~circuit.photonic_circuit.sandwich_unitary_at` -- **not** by reading the live model's
+    internal state, since the merlin ``QuantumLayer`` this repo wraps has an empty ``state_dict()``
+    (``W1``/``W2`` are never exposed as torch parameters) and no ``circuit.pt`` is persisted for the
+    photonic model as a result. ``sandwich_unitaries(m, model_seed)`` regenerates the *exact same*
+    ``W1``/``W2`` the original circuit used (same two seeded ``perceval`` draws, in the same order;
+    verified elsewhere in this codebase to reproduce merlin's own probabilities to ~1e-7), so this
+    needs only ``(m, model_seed, n_features)`` -- all already in the artifact's stored metadata, none
+    of it merlin-internal.
+
+    The diagonal ``|U_ii|`` (probability amplitude for a photon to stay in its own mode) is included
+    deliberately, not filtered out -- it is what lets the mode-pair graph's own diagonal
+    (:func:`pair_vertex_index`'s ``i==j`` bunching vertex) get a physically meaningful weight too,
+    rather than only the off-diagonal pairs.
+    """
+    from circuit.photonic_circuit import sandwich_unitaries, sandwich_unitary_at
+    import torch as _torch
+
+    W1, W2 = sandwich_unitaries(m, model_seed)
+    x0 = _torch.zeros(1, n_features)
+    U = sandwich_unitary_at(W1, W2, x0, n_features, encoding="phase")[0]
+    return U.abs().numpy()
+
+
+def build_unitary_weighted_pair_graph(m: int, model_seed: int, n_features: int, *,
+                                      threshold: float, seed: int) -> list[tuple[int, int]]:
+    """Edge list for the mode-pair graph, weighted by circuit coupling instead of drawn uniformly at
+    random (:func:`build_vertex_graph`'s construction) -- the circuit-derived sibling of that
+    function, same output shape (a sorted list of distinct ``(u, v)`` vertex-id pairs) so it drops
+    straight into :func:`pair_max_component` / :func:`pair_maxcc_parity` / :func:`pair_parity_maxcc`
+    unchanged.
+
+    Each vertex ``(a, b)`` (``a <= b``, :func:`pair_vertex_index`'s indexing, diagonal included) gets
+    a strength ``s(a,b) = |U_ab|`` from :func:`mode_coupling_strengths`. An edge between vertices
+    ``(a,b)`` and ``(a',b')`` is included iff ``s(a,b) * s(a',b') > threshold`` -- the product
+    (rather than the sum) so a genuinely weakly-coupled vertex suppresses every edge it would
+    otherwise participate in, regardless of how strong its partner is; this is a stricter,
+    self-consistently physical notion of "both endpoints matter" than an additive rule would give.
+    ``threshold`` is therefore this construction's density-like knob, but its scale is set by the
+    circuit's own ``|U|`` values rather than being a unitless fraction of ``C(V,2)`` the way
+    :func:`build_vertex_graph`'s ``density`` is -- callers should inspect
+    :func:`mode_coupling_strengths`'s own range for a given circuit before picking a threshold.
+
+    Deliberately **not** run through :func:`build_vertex_graph`'s connectivity-guaranteeing spanning
+    path -- unlike that function, this graph is allowed to be disconnected (or have isolated
+    diagonal-only vertices) when the circuit's own coupling is weak enough, since the point is to let
+    the circuit's real structure show through rather than forcing a connected graph regardless of
+    what the physics says. ``seed`` is accepted for interface parity with :func:`build_vertex_graph`
+    but only used to break ties among edges at exactly ``threshold`` (float equality is otherwise
+    seed-independent and deterministic in the circuit alone).
+    """
+    strengths = mode_coupling_strengths(m, model_seed, n_features)
+    table = _pair_vertex_table(m)
+    n_vertices = len(table)
+    edges: list[tuple[int, int]] = []
+    for u in range(n_vertices):
+        au, bu = table[u]
+        su = float(strengths[au, bu])
+        for w in range(u + 1, n_vertices):
+            aw, bw = table[w]
+            sw = float(strengths[aw, bw])
+            if su * sw > threshold:
+                edges.append((u, w))
+    return sorted(edges)
+
+
+#: ``connected_<reading>_pairU`` readings -- same readings as :data:`PAIR_READINGS`, on the same
+#: ``m*(m+1)/2``-vertex mode-pair graph, but with edges from :func:`build_unitary_weighted_pair_graph`
+#: (circuit-derived, via the reconstructed sandwich unitary at ``x=0``) instead of
+#: :func:`build_vertex_graph`'s uniform-random draw. Tried specifically because the mode-pair
+#: graph's own random-edge version (``connected_paritymaxcc_pair``) was the one construction in this
+#: whole module that showed a clean, reseed-confirmed harder-with-size *and* harder-with-density
+#: trend (see ``PAIR_READINGS``'s own reseed-check history) -- the natural next question is whether
+#: a graph tied to the circuit's real coupling structure, rather than an arbitrary random draw,
+#: sustains or improves on that trend.
+PAIR_U_READINGS = {
+    "maxcc": pair_max_component,
+    "ccparity": pair_maxcc_parity,
+    "paritymaxcc": pair_parity_maxcc,
+}
+
+_PAIR_U_RE = re.compile(rf"^connected_({'|'.join(PAIR_U_READINGS)})_pairU$")
+
+
+class ConnectedPairUnitaryFamily(ObservableFamily):
+    """``connected_<reading>_pairU``, ``reading`` in :data:`PAIR_U_READINGS` -- the circuit-derived
+    sibling of :class:`ConnectedPairFamily`: same ``m*(m+1)/2``-vertex mode-pair graph and the same
+    scoring functions, but edges come from :func:`build_unitary_weighted_pair_graph` (weighted by
+    the reconstructed sandwich unitary's ``|U_ab|`` at ``x=0``) instead of a uniform-random draw.
+    ``ctx.graph_density`` is reused as the coupling-product ``threshold`` (see
+    :func:`build_unitary_weighted_pair_graph`'s docstring for why its scale differs from the random
+    construction's density fraction) so the same ``graph_density`` config knob drives both families,
+    just interpreted differently per family.
+    """
+
+    describe = f"connected_<reading>_pairU (reading in {tuple(PAIR_U_READINGS)})"
+
+    def matches(self, name: str) -> bool:
+        return bool(_PAIR_U_RE.match(name))
+
+    def build(self, name: str, ctx: ObservableContext) -> Observable:
+        if ctx.graph_density is None:
+            raise ValueError(f"{name} requires graph_density (used as the coupling threshold)")
+        if ctx.n_features is None:
+            raise ValueError(f"{name} requires n_features (from the artifact's stored metadata)")
+        reading = _PAIR_U_RE.match(name).group(1)
+        edges = build_unitary_weighted_pair_graph(
+            ctx.m, ctx.seed, ctx.n_features, threshold=ctx.graph_density, seed=ctx.graph_seed)
+        if reading == "maxcc":
+            v = [pair_max_component(key, edges, m=ctx.m) for key in ctx.keys]
+        elif reading == "paritymaxcc":
+            v = [pair_parity_maxcc(key, edges, m=ctx.m) for key in ctx.keys]
+        else:
+            v = [pair_maxcc_parity(key, edges, m=ctx.m, k=ctx.k) for key in ctx.keys]
+        obs = Expectation(np.array(v, dtype=np.float64))
+        obs.edges = edges                                  # kept for inspection / debugging
+        return obs
+
+    def spec(self, name: str, ctx: ObservableContext) -> dict:
+        reading = _PAIR_U_RE.match(name).group(1)
+        return {"observable": f"connected_{reading}_pairU",
+                "coupling_threshold": ctx.graph_density,
+                "model_seed": ctx.seed,
+                "n_vertices": ctx.m * (ctx.m + 1) // 2}
+
+
+def triple_vertex_index(m: int, i: int, j: int, l: int) -> int:
+    """Vertex id of mode-triple ``(i, j, l)`` (``i < j < l``) in the mode-triple graph's off-diagonal
+    block -- laid out to match ``list(itertools.combinations(range(m), 3))``'s own enumeration order
+    (see :func:`_triple_vertex_table`), computed directly rather than looked up.
+
+    This is the **off-diagonal block only** (``C(m,3)`` vertices); it is followed in the full vertex
+    space by the doubled-mode block (:func:`triple_doubled_vertex_index`) and the tripled-mode block
+    (:func:`triple_tripled_vertex_index`), analogous to how :func:`pair_vertex_index`'s single
+    diagonal restored bunching sensitivity to the pair graph -- see :func:`_triple_active_set`'s
+    docstring for how the three blocks together fix this construction's earlier bunching-blindness.
+    """
+    if not 0 <= i < j < l < m:
+        raise ValueError(f"need 0 <= i < j < l < m={m} (got i={i}, j={j}, l={l})")
+    # offset of (i, j, l) among all triples: count triples with smaller first element, then smaller
+    # second element (given the first), then the position within the third.
+    off_i = sum((m - 1 - a) * (m - 2 - a) // 2 for a in range(i))
+    off_j = sum(m - 1 - b for b in range(i + 1, j))
+    off_l = l - j - 1
+    return off_i + off_j + off_l
+
+
+def triple_doubled_vertex_index(m: int, i: int, j: int) -> int:
+    """Vertex id of the doubled-mode vertex ``(i, i, j)`` (mode ``i`` bunched at depth >= 2, mode
+    ``j != i`` also occupied) in the mode-triple graph's doubled block, immediately following the
+    off-diagonal block (:func:`triple_vertex_index`) in the full vertex ordering. **Ordered** in
+    ``(i, j)`` -- ``i`` is the bunched mode and ``j`` the plain co-occupied one, so ``(i, i, j)`` and
+    ``(j, j, i)`` are distinct vertices (different mode is the one that's bunched); ``m*(m-1)``
+    vertices total, laid out row-major over ``i`` then ``j != i``.
+    """
+    if not (0 <= i < m and 0 <= j < m and i != j):
+        raise ValueError(f"need 0 <= i, j < m={m}, i != j (got i={i}, j={j})")
+    n_off_diag = m * (m - 1) * (m - 2) // 6
+    row = i * (m - 1) + (j if j < i else j - 1)
+    return n_off_diag + row
+
+
+def triple_tripled_vertex_index(m: int, i: int) -> int:
+    """Vertex id of the fully-tripled vertex ``(i, i, i)`` (mode ``i`` bunched at depth >= 3) in the
+    mode-triple graph's tripled block, the final ``m`` vertices in the full vertex ordering (after
+    the off-diagonal and doubled blocks).
+    """
+    if not 0 <= i < m:
+        raise ValueError(f"need 0 <= i < m={m} (got i={i})")
+    n_off_diag = m * (m - 1) * (m - 2) // 6
+    n_doubled = m * (m - 1)
+    return n_off_diag + n_doubled + i
+
+
+def triple_n_vertices(m: int) -> int:
+    """Total vertex count of the full mode-triple graph -- off-diagonal + doubled + tripled blocks:
+    ``C(m,3) + m*(m-1) + m``.
+    """
+    return m * (m - 1) * (m - 2) // 6 + m * (m - 1) + m
+
+
+def _triple_vertex_table(m: int) -> list[tuple[int, int, int]]:
+    """``[(i, j, l), ...]`` indexed by vertex id across all three blocks (off-diagonal, doubled,
+    tripled) -- the inverse of :func:`triple_vertex_index` / :func:`triple_doubled_vertex_index` /
+    :func:`triple_tripled_vertex_index`, built once per ``m``. Doubled entries are returned as
+    ``(i, i, j)`` and tripled entries as ``(i, i, i)``, matching each block's own vertex semantics.
+    """
+    off_diag = [(i, j, l) for i in range(m) for j in range(i + 1, m) for l in range(j + 1, m)]
+    doubled = [(i, i, j) for i in range(m) for j in range(m) if j != i]
+    tripled = [(i, i, i) for i in range(m)]
+    return off_diag + doubled + tripled
+
+
+def _triple_active_set(key, *, m: int) -> set:
+    """Mode-triple vertices active for one outcome, across all three blocks:
+
+    - off-diagonal ``(i, j, l)``, ``i < j < l``: active iff all three modes occupied
+      (:func:`triple_vertex_index`).
+    - doubled ``(i, i, j)``, ``i != j``: active iff mode ``i`` is bunched (``n_i >= 2``) and mode
+      ``j`` is occupied (``n_j >= 1``) (:func:`triple_doubled_vertex_index`).
+    - tripled ``(i, i, i)``: active iff mode ``i`` is bunched at depth >= 3 (``n_i >= 3``)
+      (:func:`triple_tripled_vertex_index`).
+
+    Together these restore the bunching sensitivity the earlier off-diagonal-only construction
+    lacked (mirroring :func:`_pair_active_set`'s single diagonal, generalised to the two ways three
+    photon-slots can pile onto fewer than three distinct modes).
+    """
+    occupied = [i for i, n_i in enumerate(key) if int(n_i) > 0]
+    active = set()
+    n = len(occupied)
+    for a in range(n):
+        for b in range(a + 1, n):
+            for c in range(b + 1, n):
+                i, j, l = occupied[a], occupied[b], occupied[c]
+                active.add(triple_vertex_index(m, i, j, l))
+    for i in range(m):
+        n_i = int(key[i])
+        if n_i >= 2:
+            for j in occupied:
+                if j != i:
+                    active.add(triple_doubled_vertex_index(m, i, j))
+        if n_i >= 3:
+            active.add(triple_tripled_vertex_index(m, i))
+    return active
+
+
+def _triple_induced_subgraph(key, edges, *, m: int):
+    """``(active_set, adj)`` for one outcome on the mode-triple graph -- the triple-graph analogue of
+    :func:`_pair_induced_subgraph`.
+    """
+    active_set = _triple_active_set(key, m=m)
+    adj: dict = {v: [] for v in active_set}
+    for u, w in edges:
+        if u in active_set and w in active_set:
+            adj[u].append(w)
+            adj[w].append(u)
+    return active_set, adj
+
+
+def triple_max_component(key, edges, *, m: int) -> int:
+    """``maxcc`` on the mode-triple graph: size of the largest connected component among the active
+    vertices across all three blocks -- off-diagonal (three distinct co-occupied modes), doubled (one
+    bunched mode plus one more occupied mode), tripled (one mode bunched at depth >= 3)
+    (:func:`_triple_active_set`, :func:`_triple_induced_subgraph`). ``0`` only when no mode is
+    occupied at all (impossible for ``k>=1``); a single occupied, unbunched mode with no co-occupied
+    partners activates nothing (too few modes/photons to trigger any of the three blocks).
+    """
+    active_set, adj = _triple_induced_subgraph(key, edges, m=m)
+    sizes = _components(active_set, adj)
+    return max(sizes) if sizes else 0
+
+
+def triple_parity_maxcc(key, edges, *, m: int) -> float:
+    """``triple_paritymaxcc``: ``parity(key) * maxcc(key)`` on the mode-triple graph -- the plain
+    elementwise product, mirroring :func:`pair_parity_maxcc`. This reading (not the domain-
+    restriction ``ccparity`` shape) is the one that showed the cleanest, most reproducible
+    harder-with-size *and* harder-with-density trend on the mode-pair graph (see
+    ``PAIR_READINGS``'s comment above for the reseed-check summary), so it is the first reading
+    ported to the triple graph -- the direct test of whether a stricter, three-way co-occupation
+    selection extends that same trend to higher densities before saturating (the mode-pair graph's
+    own trend was found to plateau past density ~0.4 at ``m=12``; see the density-sweep discussion
+    in this session's history).
+    """
+    return float(parity_score(key, parity_modes(m)) * triple_max_component(key, edges, m=m))
+
+
+#: ``connected_<reading>_triple`` readings -- read the mode-triple graph
+#: (:func:`_triple_induced_subgraph`), whose vertex space has three blocks: off-diagonal
+#: (``C(m,3)``, three distinct co-occupied modes), doubled (``m*(m-1)``, one bunched mode plus one
+#: more occupied mode), tripled (``m``, one mode bunched at depth >= 3) -- see :func:`triple_n_vertices`
+#: for the total and :func:`_triple_active_set` for the per-outcome activation rule across all three.
+#: This mirrors :func:`pair_vertex_index`'s single diagonal, generalised to the two distinct ways
+#: three photon-slots can pile onto fewer than three distinct modes, so this graph is (unlike an
+#: earlier off-diagonal-only version of this construction) bunching-sensitive. Empirically (checked
+#: at m=12,k=6 against the pair graph's own off-diagonal active-set statistics): the *typical*
+#: off-diagonal-only active set is smaller (mean 6.47 vs the pair graph's 8.60) but has substantially
+#: higher variance (std 5.15 vs 3.01) and a longer tail (max 20 vs 15) -- so while a typical outcome
+#: selects fewer triple-vertices than pair-vertices, outcomes with many co-occupied modes select
+#: disproportionately more, since C(n,3) grows faster than C(n,2) for the same occupied-mode count n
+#: (the doubled/tripled blocks add further active vertices on top of this baseline whenever bunching
+#: occurs). Only ``paritymaxcc`` is implemented initially; a ``ccparity`` domain-restriction sibling
+#: could be added the same way :func:`pair_maxcc_parity` was, if this reading's result motivates it.
+TRIPLE_READINGS = {
+    "paritymaxcc": triple_parity_maxcc,
+}
+
+_TRIPLE_RE = re.compile(rf"^connected_({'|'.join(TRIPLE_READINGS)})_triple$")
+
+
+class ConnectedTripleFamily(ObservableFamily):
+    """``connected_<reading>_triple``, ``reading`` in :data:`TRIPLE_READINGS` -- a graph-property
+    reading on the mode-triple graph (:func:`triple_n_vertices` vertices, across the off-diagonal /
+    doubled / tripled blocks): vertex activation is co-occupation (off-diagonal) or bunching
+    (doubled/tripled) (:func:`_triple_active_set`). The three-way-co-occupation escalation of
+    :class:`ConnectedPairFamily`'s two-way construction -- see :data:`TRIPLE_READINGS`'s docstring
+    for the measured active-set-size comparison that motivated trying it.
+    """
+
+    describe = f"connected_<reading>_triple (reading in {tuple(TRIPLE_READINGS)})"
+
+    def matches(self, name: str) -> bool:
+        return bool(_TRIPLE_RE.match(name))
+
+    def build(self, name: str, ctx: ObservableContext) -> Observable:
+        if ctx.graph_density is None:
+            raise ValueError(f"{name} requires graph_density (+ graph_seed)")
+        reading = _TRIPLE_RE.match(name).group(1)
+        m = ctx.m
+        if m < 3:
+            raise ValueError(f"{name} requires m >= 3 (got m={m})")
+        n_vertices = triple_n_vertices(m)
+        edges = build_vertex_graph(n_vertices, ctx.graph_density, ctx.graph_seed)
+        scorer = TRIPLE_READINGS[reading]
+        v = [scorer(key, edges, m=m) for key in ctx.keys]
+        obs = Expectation(np.array(v, dtype=np.float64))
+        obs.edges = edges                                  # kept for inspection / debugging
+        return obs
+
+    def spec(self, name: str, ctx: ObservableContext) -> dict:
+        reading = _TRIPLE_RE.match(name).group(1)
+        return {"observable": f"connected_{reading}_triple",
+                "graph_density": ctx.graph_density,
+                "graph_seed": ctx.graph_seed,
+                "max_vertex_degree": MAX_VERTEX_DEGREE,
+                "n_vertices": triple_n_vertices(ctx.m)}
+
+
 register(ConnectedLayeredFamily())
 register(ConnectedFamily())
+register(ConnectedPairFamily())
+register(ConnectedPairUnitaryFamily())
+register(ConnectedTripleFamily())

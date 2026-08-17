@@ -41,10 +41,19 @@ from . import embedding, kernel, nn  # noqa: F401  -- registration side effects
 
 def run_config(cfg_path: str | Path, observable: str, learner_name: str, *,
                out_root: str = "datasets", scores_root: str = "scores",
-               n_train: int | None = None, graph_density: float = 0.5, **learner_kwargs) -> dict:
+               n_train: int | None = None, graph_density: float = 0.5,
+               split_seed: int | None = None, **learner_kwargs) -> dict:
     """Config -> saved dataset -> fitted ``learner_name`` -> held-out stats, in one call.
 
     Raises if the artifact for ``cfg_path`` has not been generated yet.
+
+    ``split_seed``, if given, overrides ``cfg.split.split_seed`` for this call only -- the config
+    on disk is untouched.  Needed by any caller that wants to average a score over several
+    train/test partitions (e.g. :mod:`eval.best_of_grid`'s seed-averaging): reseeding a learner's
+    own ``seed`` kwarg alone does nothing for ``ridge``/``svr`` at their default (deterministic)
+    settings, since only the split itself -- not the learner's internal randomness -- varies their
+    score in that regime.  ``None`` (the default) keeps today's behaviour exactly, reading the
+    config's own ``split_seed``.
     """
     from config import load_config
     from model import build_model
@@ -61,7 +70,7 @@ def run_config(cfg_path: str | Path, observable: str, learner_name: str, *,
     dist = load_dist(path)
     soft = load_soft(path, observable, scores_root=scores_root, graph_density=graph_density)
     tr, te = split_indices(len(dist), test_fraction=cfg.split.test_fraction,
-                           split_seed=cfg.split.split_seed)
+                           split_seed=cfg.split.split_seed if split_seed is None else split_seed)
     if n_train:
         tr = tr[:int(n_train)]
 

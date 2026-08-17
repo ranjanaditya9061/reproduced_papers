@@ -29,20 +29,22 @@ class MlpLearner(Learner):
 
     name = "mlp"
 
-    def __init__(self, *, hidden: int = 128, depth: int = 2, epochs: int = 400, lr: float = 1e-3,
-                 weight_decay: float = 1e-4, batch_size: int = 256, patience: int = 40,
-                 val_fraction: float = 0.15, seed: int = 0):
+    def __init__(self, *, hidden: int | tuple[int, ...] = 128, depth: int = 2,
+                 epochs: int = 400, lr: float = 1e-3, weight_decay: float = 1e-4,
+                 batch_size: int = 256, patience: int = 40, val_fraction: float = 0.15,
+                 seed: int = 0):
         super().__init__(hidden=hidden, depth=depth, epochs=epochs, lr=lr,
                          weight_decay=weight_decay, batch_size=batch_size, patience=patience,
                          val_fraction=val_fraction, seed=seed)
         self.net = None
 
     def _build(self, d_in: int) -> nn.Module:
-        h, depth = self.hparams["hidden"], self.hparams["depth"]
+        h = self.hparams["hidden"]
+        widths = list(h) if isinstance(h, (list, tuple)) else [h] * int(self.hparams["depth"])
         layers, d = [], d_in
-        for _ in range(depth):
-            layers += [nn.Linear(d, h), nn.ReLU()]
-            d = h
+        for w in widths:
+            layers += [nn.Linear(d, w), nn.ReLU()]
+            d = w
         layers.append(nn.Linear(d, 1))
         return nn.Sequential(*layers)
 
