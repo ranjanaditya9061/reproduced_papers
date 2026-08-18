@@ -54,30 +54,28 @@ def run_config(cfg_path: str | Path, observable: str, learner_name: str, *,
     settings, since only the split itself -- not the learner's internal randomness -- varies their
     score in that regime.  ``None`` (the default) keeps today's behaviour exactly, reading the
     config's own ``split_seed``.
+
+    Reads the **exact** branch when ``cfg.generation.shots == 0`` (the default), else the shots
+    branch -- via :func:`~pipeline.score.load_dataset`, which is what makes this work at all past
+    the point where the exact branch cannot be generated (:meth:`~model.fermion.FermionModel.
+    shot_counts`'s MH sampler exists precisely for that regime).
     """
     from config import load_config
-    from model import build_model
-    from pipeline.artifact import exact_path
-    from pipeline.distribution import load_dist
-    from pipeline.score import load_soft
+    from pipeline.score import load_dataset
     from pipeline.split import split_indices
 
     cfg = load_config(cfg_path)
-    path = exact_path(cfg, build_model(cfg), out_root)
-    if not path.exists():
-        raise SystemExit(f"no artifact at {path}; run pipeline.generate --config {cfg_path}")
-
-    dist = load_dist(path)
-    soft = load_soft(path, observable, scores_root=scores_root, graph_density=graph_density)
-    tr, te = split_indices(len(dist), test_fraction=cfg.split.test_fraction,
+    X, soft, artifact_name = load_dataset(cfg, observable, out_root=out_root,
+                                          scores_root=scores_root, graph_density=graph_density)
+    tr, te = split_indices(len(X), test_fraction=cfg.split.test_fraction,
                            split_seed=cfg.split.split_seed if split_seed is None else split_seed)
     if n_train:
         tr = tr[:int(n_train)]
 
-    model = build_learner(learner_name, **learner_kwargs).fit(dist.X[tr], soft[tr])
-    res = evaluate(model, dist.X[te], soft[te])
+    model = build_learner(learner_name, **learner_kwargs).fit(X[tr], soft[tr])
+    res = evaluate(model, X[te], soft[te])
     res.update(n_train=len(tr), n_test=len(te), label_var=float(soft[te].double().var()),
-               artifact=path.name, learner=learner_name)
+               artifact=artifact_name, learner=learner_name)
     return res
 
 
@@ -118,27 +116,20 @@ def sweep_degree_grid(cfg_path: str | Path, observable: str, *, orders=(1, 2, 3)
     from sklearn.preprocessing import PolynomialFeatures
 
     from config import load_config
-    from model import build_model
-    from pipeline.artifact import exact_path
-    from pipeline.distribution import load_dist
-    from pipeline.score import load_soft
+    from pipeline.score import load_dataset
     from pipeline.split import split_indices
     from .features import fourier_features
 
     lambdas = np.geomspace(1e2, 1e5, 25)
 
     cfg = load_config(cfg_path)
-    path = exact_path(cfg, build_model(cfg), out_root)
-    if not path.exists():
-        raise SystemExit(f"no artifact at {path}; run pipeline.generate --config {cfg_path}")
-
-    dist = load_dist(path)
-    soft = load_soft(path, observable, scores_root=scores_root, graph_density=graph_density)
-    tr, te = split_indices(len(dist), test_fraction=cfg.split.test_fraction,
+    X, soft, _ = load_dataset(cfg, observable, out_root=out_root, scores_root=scores_root,
+                              graph_density=graph_density)
+    tr, te = split_indices(len(X), test_fraction=cfg.split.test_fraction,
                            split_seed=cfg.split.split_seed)
     if n_train:
         tr = tr[:int(n_train)]
-    Xtr, Xte = dist.X[tr], dist.X[te]
+    Xtr, Xte = X[tr], X[te]
     ytr, yte = soft[tr].double().numpy(), soft[te].double().numpy()
 
     rows = []

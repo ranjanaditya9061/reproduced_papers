@@ -165,6 +165,12 @@ class DistributionModel(nn.Module):
     #: multinomial wrapper would suggest a scaling route that does not exist.
     supports_shots: bool = False
 
+    #: Which entry of :data:`pipeline.shots.METHODS` this model's :meth:`shot_counts` implements --
+    #: part of the shots-branch directory name (:func:`~pipeline.shots.shot_tag`), so a caller never
+    #: has to pass it explicitly and two models' draws can never collide under one cache key even if
+    #: they happened to share a circuit hash. Meaningless when ``supports_shots`` is ``False``.
+    shot_method: str = "clifford"
+
     def shot_counts(self, X: torch.Tensor, *, shots: int, offset: int = 0, rows=None,
                     shot_seed: int = 0) -> list[list[tuple]]:
         """One **shot sequence** (occupation tuples, in draw order) per requested row.

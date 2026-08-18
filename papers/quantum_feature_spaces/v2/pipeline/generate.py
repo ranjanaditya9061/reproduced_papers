@@ -97,13 +97,18 @@ def generate_exact(cfg: ExperimentConfig, *, root: str | Path = "datasets",
 
 
 def generate_shots(cfg: ExperimentConfig, *, root: str | Path = "datasets",
-                   method: str = "clifford", force: bool = False) -> Path | None:
+                   method: str | None = None, force: bool = False) -> Path | None:
     """Create, reuse or extend the counts branch; ``None`` if no shots were requested.
 
     Only the missing shots and the missing rows are drawn, and they are **appended** to the stored
     sequence -- the stored prefix is never rewritten, so every smaller budget stays exactly
     reproducible from the same store.  A budget *below* what is stored is not a generation job at
     all: :func:`~pipeline.shots.load_shots` crops to it.
+
+    ``method`` defaults to ``model.shot_method`` (``"clifford"`` for the boson sampler, ``"mh"``
+    for the fermion determinant readout) rather than a single hardcoded default -- passing it
+    explicitly here previously always saved fermion's MH-sampled draws under a
+    ``clifford_s<seed>`` directory, silently mislabelling the sampling method in ``meta.json``.
     """
     target_shots = int(cfg.generation.shots)
     if target_shots <= 0:
@@ -114,6 +119,8 @@ def generate_shots(cfg: ExperimentConfig, *, root: str | Path = "datasets",
         raise NotImplementedError(
             f"generation.shots > 0 but model kind={cfg.model.kind!r} prep={cfg.model.prep!r} is a "
             "probability-distribution model.")
+    if method is None:
+        method = model.shot_method
 
     path = shots_path(cfg, model, method=method, root=root)
 

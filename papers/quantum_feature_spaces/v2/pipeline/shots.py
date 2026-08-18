@@ -40,11 +40,15 @@ import torch
 from .artifact import COUNTS_DIR, SHOTS_FILENAME, circuit_path, load_meta, save_meta
 
 #: How the shots were produced.  ``"clifford"`` samples the interferometer directly -- no
-#: distribution is ever formed, which is what makes this branch a sibling of the exact one.  A
-#: ``"multinomial"`` method (draw from a stored exact ``p``) is deliberately **absent**: it would be
-#: faster but requires the full distribution, so it silently reinstates the dependency this branch
-#: exists to remove and implies a scaling route that does not exist.
-METHODS = ("clifford",)
+#: distribution is ever formed, which is what makes this branch a sibling of the exact one.
+#: ``"mh"`` (:meth:`model.fermion.FermionModel.shot_counts`) is Metropolis-Hastings against the
+#: unnormalised ``|det|^2`` weight -- the determinant readout has no interferometer-sampling
+#: backend to call, since normalising it needs the whole basis in the first place (see
+#: :mod:`sampling.mh`'s module docstring for why MH sidesteps that). A ``"multinomial"`` method
+#: (draw from a stored exact ``p``) is deliberately **absent** from both: it would be faster but
+#: requires the full distribution, so it silently reinstates the dependency this branch exists to
+#: remove and implies a scaling route that does not exist.
+METHODS = ("clifford", "mh")
 
 
 def offset_seed(shot_seed: int, offset: int) -> int:
@@ -76,8 +80,16 @@ def shot_tag(cfg, *, method: str = "clifford") -> str:
     return f"{spec['method']}_s{spec['shot_seed']}"
 
 
-def shots_path(cfg, model, *, method: str = "clifford", root: str | Path = "datasets") -> Path:
-    """``<root>/<circuit_hash>/counts/<shot_tag>`` -- beside the exact branch, same circuit."""
+def shots_path(cfg, model, *, method: str | None = None, root: str | Path = "datasets") -> Path:
+    """``<root>/<circuit_hash>/counts/<shot_tag>`` -- beside the exact branch, same circuit.
+
+    ``method`` defaults to ``model.shot_method`` rather than a hardcoded ``"clifford"`` -- this is
+    what lets every caller that already has ``model`` in hand (:func:`~pipeline.generate.
+    generate_shots`, :func:`~pipeline.score.load_dataset`, :func:`~pipeline.score.main`) find the
+    fermion MH-sampled counts branch without each one separately special-casing the model kind.
+    """
+    if method is None:
+        method = model.shot_method
     return circuit_path(cfg, model, root) / COUNTS_DIR / shot_tag(cfg, method=method)
 
 

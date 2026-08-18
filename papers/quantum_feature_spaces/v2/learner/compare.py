@@ -48,10 +48,7 @@ if __package__ in (None, ""):
 import torch
 
 from config import load_config
-from model import build_model
-from pipeline.artifact import exact_path
-from pipeline.distribution import load_dist
-from pipeline.score import load_soft
+from pipeline.score import load_dataset
 from pipeline.split import split_indices
 from .base import build_learner, evaluate
 from . import embedding, kernel, nn  # noqa: F401  -- registration side effects
@@ -66,23 +63,27 @@ def run_arm(cfg_path: str | Path, observable: str, *, learner: str, hparams: dic
             out_root: str = "datasets", scores_root: str = "scores",
             n_train: int | None = None, graph_density: float = 0.5) -> dict:
     """Fit one arm and return its held-out statistics.  Split indices depend only on the pool size,
-    so both arms see identical rows by construction."""
-    cfg = load_config(cfg_path)
-    path = exact_path(cfg, build_model(cfg), out_root)
-    if not path.exists():
-        raise SystemExit(f"no artifact at {path}; run pipeline.generate --config {cfg_path}")
+    so both arms see identical rows by construction.
 
-    dist = load_dist(path)
-    soft = load_soft(path, observable, scores_root=scores_root, graph_density=graph_density)
-    tr, te = split_indices(len(dist), test_fraction=cfg.split.test_fraction,
+    Reads the exact branch when ``cfg.generation.shots == 0``, else the shots branch -- see
+    :func:`~pipeline.score.load_dataset`. An arm whose config has ``shots > 0`` while the other
+    arm's does not is still a valid *paired* comparison as long as both see the same row count
+    and split (``split_indices`` depends only on pool size), but the label noise differs between
+    arms in that case -- not this function's concern, since it fits exactly what its own config
+    says to.
+    """
+    cfg = load_config(cfg_path)
+    X, soft, artifact_name = load_dataset(cfg, observable, out_root=out_root,
+                                          scores_root=scores_root, graph_density=graph_density)
+    tr, te = split_indices(len(X), test_fraction=cfg.split.test_fraction,
                            split_seed=cfg.split.split_seed)
     if n_train:
         tr = tr[:int(n_train)]
 
-    model = build_learner(learner, **hparams).fit(dist.X[tr], soft[tr])
-    res = evaluate(model, dist.X[te], soft[te])
+    model = build_learner(learner, **hparams).fit(X[tr], soft[tr])
+    res = evaluate(model, X[te], soft[te])
     res.update(n_train=len(tr), n_test=len(te), label_var=float(soft[te].double().var()),
-               artifact=path.name)
+               artifact=artifact_name)
     return res
 
 

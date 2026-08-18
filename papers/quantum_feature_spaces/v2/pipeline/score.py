@@ -40,6 +40,7 @@ from config import load_config
 from model import build_model
 from observable import (ObservableContext, observable_on_keys, observable_spec,
                           observable_spec_hash, resolve_observable)
+from .artifact import load_meta
 from .distribution import load_dist
 from .shots import load_shot_probs, shot_source_tag
 
@@ -119,6 +120,54 @@ def load_soft(dist_path: str | Path, name: str, *, scores_root: str | Path = "sc
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"soft": soft, "spec": observable_spec(name, ctx), "source": source}, out)
     return soft
+
+
+def load_dataset(cfg, name: str, *, out_root: str | Path = "datasets",
+                 scores_root: str | Path = "scores", graph_density: float = 0.5,
+                 force: bool = False) -> tuple[torch.Tensor, torch.Tensor, str]:
+    """``(X, soft, artifact_name)`` for ``cfg`` -- the exact branch if ``cfg.generation.shots ==
+    0``, else the shots branch, matching :func:`main`'s own dispatch.
+
+    The one thing :func:`load_soft` alone does not give a caller that wants to fit a learner:
+    ``X``. Neither branch stores it (:mod:`pipeline.distribution`'s docstring: ``sample_X`` is
+    prefix-stable and deterministic in ``sample_seed``, so storing ``X`` would just be a second,
+    driftable source of truth) -- the exact branch reconstructs it via :class:`Distribution`
+    already; this does the equivalent for the shots branch from ``shot_meta``'s own
+    ``n_features``/``sample_seed``/``size`` (present on both branches via
+    :func:`~pipeline.artifact.hash_fields`/:func:`~pipeline.artifact.save_meta`).
+
+    Exists because :mod:`learner.auto` and :mod:`learner.compare` need "the dataset this config
+    names" and, before this function, only ever asked the exact branch for it -- silently wrong
+    whenever ``cfg.generation.shots > 0`` (scores would come from :func:`load_soft`'s shots path
+    while ``X`` still came from the exact one, a row mismatch if sizes ever differ) and an outright
+    ``SystemExit`` past the point where the exact branch cannot be generated at all (the whole
+    reason :meth:`model.fermion.FermionModel.shot_counts` exists).
+    """
+    from model import build_model
+    from model.sampler import sample_X
+
+    from .artifact import exact_path
+    from .shots import shots_path
+
+    model = build_model(cfg)
+    if cfg.generation.shots:
+        sdir = shots_path(cfg, model, root=out_root)
+        if not sdir.exists():
+            raise SystemExit(f"no shots at {sdir}; set generation.shots > 0 and run "
+                             f"pipeline.generate first")
+        soft = load_soft(None, name, scores_root=scores_root, force=force, shots_dir=sdir,
+                         num_shots=cfg.generation.shots, graph_density=graph_density)
+        meta = load_meta(sdir)
+        X = sample_X(int(meta["size"]), int(meta["n_features"]), int(meta["sample_seed"]))
+        return X, soft, sdir.name
+    else:
+        path = exact_path(cfg, model, out_root)
+        if not path.exists():
+            raise SystemExit(f"no artifact at {path}; run pipeline.generate first")
+        dist = load_dist(path)
+        soft = load_soft(path, name, scores_root=scores_root, force=force,
+                         graph_density=graph_density)
+        return dist.X, soft, path.name
 
 
 def main(argv=None) -> None:
