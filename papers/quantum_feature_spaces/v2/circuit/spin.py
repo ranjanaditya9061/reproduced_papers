@@ -258,11 +258,62 @@ def full_distribution(p, n_modes: int):
 # order-independent.  Carried verbatim from model/spoqc_utils.py -- this contract is load-bearing.
 
 
-def _resolve_workers(n_jobs, n_rows, *, per_worker_mb=512) -> int:
-    """Worker count: ``n_jobs`` capped by CPUs and (if psutil is present) free RAM.
+#: Every worker process's own intra-op thread pools (torch, and the BLAS backends numpy/sklearn
+#: sit on) default to using ALL visible CPUs -- independent of, and invisible to, the process-count
+#: gate below. N worker processes each spinning up their own full-width thread pool is N x
+#: oversubscription (e.g. 3 processes x 12 threads each on a 12-core box), which is the actual
+#: mechanism behind "parallelising gets stuck / no memory or CPU" even when the process count itself
+#: was capped correctly -- the process gate alone never prevented it. `_init_worker_threads` runs
+#: once per worker process, before any task, and pins every thread pool this repo's workloads
+#: actually use (torch's own two settings, plus the OMP/MKL/OPENBLAS env vars numpy/scikit-learn's
+#: linked BLAS reads at import time) down to 1 thread each, so the only parallelism left is across
+#: processes -- exactly what the process-count gate is sized for.
+def _init_worker_threads() -> None:
+    import os
+
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+               "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        os.environ[var] = "1"
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+
+
+#: Fallback per-task memory estimate, used only when a caller passes neither ``per_worker_mb`` nor
+#: ``bytes_per_task`` -- i.e. when the caller has no cheap way to know its own task's real memory
+#: footprint. Deliberately conservative (an overestimate costs fewer workers and a slower run; an
+#: underestimate is the OOM/thrash this whole gate exists to prevent), but a FLAT constant is wrong
+#: on its own terms for any caller whose task memory actually scales with problem size -- a
+#: photonic/spin row's distribution is `O(n_fock(m,k))`, combinatorial in `m`, so a constant sized
+#: for `m=6` silently undercounts by orders of magnitude at `m=14+` (measured elsewhere in this
+#: repo: `n_out=77520` at `m=14,k=7`, ~3 GB for a `(1e4, n_out)` fp32 matrix -- `model/base.py`'s
+#: `FORWARD_ELEMENTS` docstring). Prefer passing ``bytes_per_task`` computed from the actual
+#: problem size at the call site (see ``circuit/prep.py``'s callers) over relying on this default.
+_DEFAULT_TASK_BYTES = 1536 * 1024 * 1024
+
+
+def _resolve_workers(n_jobs, n_rows, *, per_worker_mb=None, bytes_per_task=None) -> int:
+    """Worker count: ``n_jobs`` capped by CPUs and free RAM.
 
     ``1`` = serial (default), ``-1``/``0``/``None`` = auto (CPUs - 1), or an explicit count.
-    Below two rows there is nothing to parallelise.  The memory gate is best-effort.
+    Below two rows there is nothing to parallelise.
+
+    ``bytes_per_task`` is the preferred way to size the memory gate: pass the actual estimated peak
+    memory of ONE task, computed from the real problem size at the call site (e.g.
+    ``n_fock(m, k) * n_bytes_per_outcome`` for a photonic/spin row-build task) -- not a fixed
+    constant, since task memory here typically scales combinatorially with ``(m, k)`` and a
+    constant sized for a small problem silently undercounts at a large one (see
+    :data:`_DEFAULT_TASK_BYTES`'s docstring). ``per_worker_mb`` is kept as a coarser override for a
+    caller that wants to hand-pick a flat MB figure directly; if both are given ``bytes_per_task``
+    wins. If neither is given, falls back to :data:`_DEFAULT_TASK_BYTES`.
+
+    The memory gate REQUIRES ``psutil``: a missing or broken ``psutil`` import is fatal here, not
+    silently skipped -- a machine that hangs because the gate silently disabled itself is worse than
+    one that errors loudly and tells you to ``pip install psutil``.
     """
     import os
 
@@ -271,30 +322,43 @@ def _resolve_workers(n_jobs, n_rows, *, per_worker_mb=512) -> int:
     cpu = os.cpu_count() or 1
     want = max(1, cpu - 1) if n_jobs in (None, 0, -1) else int(n_jobs)
     want = min(want, n_rows, cpu)
-    try:
-        import psutil
 
-        avail_mb = psutil.virtual_memory().available / (1024 ** 2)
-        want = min(want, max(1, int(0.7 * avail_mb / per_worker_mb)))
-    except Exception:
-        pass
+    import psutil
+
+    task_bytes = (bytes_per_task if bytes_per_task is not None
+                 else per_worker_mb * 1024 * 1024 if per_worker_mb is not None
+                 else _DEFAULT_TASK_BYTES)
+    avail_bytes = psutil.virtual_memory().available
+    want = min(want, max(1, int(0.7 * avail_bytes / max(1, task_bytes))))
     return max(1, want)
 
 
-def parallel_row_map(worker, tasks, n_jobs):
+def parallel_row_map(worker, tasks, n_jobs, *, per_worker_mb=None, bytes_per_task=None):
     """Map ``worker`` over ``tasks``, returning results **in input order**.
 
     Serial when ``n_jobs == 1`` or there are <2 rows; otherwise a process pool whose ordered
     ``map`` keeps results row-aligned even though rows finish out of order.  ``worker`` must be a
     module-level (picklable) callable and each task a picklable tuple, so any accumulation the
     caller does afterwards stays deterministic.
+
+    ``bytes_per_task``/``per_worker_mb`` size the memory gate -- see :func:`_resolve_workers`. Pass
+    ``bytes_per_task`` computed from the real per-call problem size (``m``/``k``/dataset width)
+    whenever the caller can, rather than relying on the flat fallback.
+
+    Every pool worker process runs :func:`_init_worker_threads` once, before its first task, so
+    torch/BLAS intra-op threading inside ``worker`` cannot oversubscribe on top of the process-level
+    parallelism this function already provides (see that function's docstring) -- this is what
+    actually fixes the "gets stuck, no memory or CPU" failure mode, not just the worker-count cap
+    below, which was already RAM-aware before this fix.
     """
-    workers = _resolve_workers(n_jobs, len(tasks))
+    workers = _resolve_workers(n_jobs, len(tasks), per_worker_mb=per_worker_mb,
+                               bytes_per_task=bytes_per_task)
     if workers == 1:
-        return [worker(t) for t in tasks]
+        _init_worker_threads()               # serial path: still pin this process's own threads,
+        return [worker(t) for t in tasks]    # so a serial mlp fit doesn't oversubscribe either
 
     import concurrent.futures as cf
 
     chunk = max(1, len(tasks) // (workers * 4))
-    with cf.ProcessPoolExecutor(max_workers=workers) as ex:
+    with cf.ProcessPoolExecutor(max_workers=workers, initializer=_init_worker_threads) as ex:
         return list(ex.map(worker, tasks, chunksize=chunk))

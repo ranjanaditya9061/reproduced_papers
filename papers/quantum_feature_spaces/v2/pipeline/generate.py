@@ -30,7 +30,27 @@ first.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+
+# Set BEFORE torch/perceval/exqalibur are imported (both here and transitively via `model`),
+# because native BLAS/thread-pool init reads these once at import time, not per-call. Left unset,
+# every one of these libraries defaults to using ALL visible CPUs for its own intra-op threading --
+# invisible to and unaffected by `circuit.spin.parallel_row_map`'s own process-count gate, which
+# only limits how many *processes* run, not how many threads each one spawns. A single serial call
+# in THIS (main) process -- e.g. `PhotonicModel.shot_counts`'s Clifford & Clifford sampler, which
+# has no process-pool parallelism of its own -- can therefore already saturate every core on its
+# own; that compounds badly once the same code also runs inside a `parallel_row_map` worker
+# process (`circuit.spin._init_worker_threads` covers that case, but only inside a worker -- this
+# covers the main process, which `_init_worker_threads` never runs in). Set to "1" here rather than
+# left at this repo's actual process-parallel width, since generation and MLP-fitting sweeps are
+# the caller that decides how many processes to run, not this module -- pinning to 1 here and
+# parallelising at the process level (already RAM-gated) is the layering this repo uses everywhere
+# else, and mixing "some threads per process" with "some processes" reintroduces the same
+# uncontrolled multiplicative oversubscription this is meant to prevent.
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 if __package__ in (None, ""):                    # allow `python pipeline/generate.py`
     import sys
@@ -38,6 +58,9 @@ if __package__ in (None, ""):                    # allow `python pipeline/genera
     __package__ = "pipeline"
 
 import torch
+
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 from config import ExperimentConfig, load_config
 from model import build_model, sample_X

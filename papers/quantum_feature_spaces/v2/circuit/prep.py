@@ -32,11 +32,58 @@ import numpy as np
 
 from . import spin as _spin
 from .encoding import build_encoding
-from .fock import binary_keys, fock_keys
+from .fock import binary_keys, fock_keys, n_fock
 from .photonic_circuit import build_quantum_layer
 
 #: name -> StatePrep subclass, populated on subclassing.
 PREPS: dict[str, type["StatePrep"]] = {}
+
+#: Rough per-outcome byte cost of one row's built distribution inside a `parallel_row_map` worker:
+#: a perceval `probabilities()` dict entry is a Python tuple key (several ints, ~28 bytes each in
+#: CPython on top of the tuple's own overhead) plus a Python float value (~24 bytes) plus dict
+#: bucket overhead -- call it ~200 bytes/outcome as a working estimate for the live dict a worker
+#: holds mid-build, before `_align_rows`/`_align_rows_fixed` compact it into the numpy arrays
+#: actually returned. Not measured precisely; deliberately on the high side per
+#: `circuit.spin._DEFAULT_TASK_BYTES`'s own conservative-by-design convention.
+_BYTES_PER_OUTCOME = 200
+
+
+#: Bytes/complex128 amplitude in the qubit joint-state vector :func:`circuit.spin.spin_state`
+#: builds (``np.zeros(2**n_q, dtype=complex)``) -- 16 bytes/element (complex128) plus roughly
+#: another 16 bytes/element of working-copy overhead across the ``layers`` rounds of
+#: ``apply_1q``/entangler calls that each allocate a new array rather than mutate in place.
+_BYTES_PER_QUBIT_AMPLITUDE = 32
+
+
+def _row_task_bytes(m: int, k: int, *, basis_multiplier: int = 1, n_spin_qubits: int = 0) -> int:
+    """Estimated peak memory of ONE row's distribution build, for
+    :func:`~circuit.spin.parallel_row_map`'s ``bytes_per_task`` -- computed from the actual
+    ``(m, k)`` at the call site rather than a flat constant, since the outcome count this scales
+    with is combinatorial in ``m``/``k`` (:func:`~circuit.fock.n_fock`), not a fixed size regardless
+    of problem scale.
+
+    ``basis_multiplier`` accounts for a prep whose basis is a fixed multiple of the plain
+    ``m``-mode Fock basis (``spin_magic``'s ``m+2``-mode basis is exactly ``n_fock(m,k) * 2`` -- the
+    ``m``-mode Fock support times its 2-way readout photon placement, per
+    :func:`SpinMagicPrep._magic_basis`'s own docstring -- so pass ``basis_multiplier=2`` there, not
+    a per-extra-mode exponent that would not match that prep's actual basis size).
+
+    ``n_spin_qubits`` covers a SEPARATE cost the photonic outcome basis alone misses entirely:
+    :class:`SpinPrep` builds a joint qubit state over ``k`` independently-prepared spin qubits
+    BEFORE any photon ever reaches the interferometer -- :func:`circuit.spin.spin_state` allocates
+    ``np.zeros(2**n_q, dtype=complex)`` (line ``psi = np.zeros(2 ** n_q, ...)``), exponential in
+    qubit count, and this is genuinely additive to (not a proxy for, and not dominated by) the
+    photonic ``n_fock(m,k)`` term, since the two live in different parts of one row's build.  Pass
+    ``n_spin_qubits=k`` for :class:`SpinPrep` (its ``num_sources=k``, `circuit/prep.py`'s own
+    ``HybridProcessor(num_sources=k, ...)`` call). **Not** relevant to :class:`SpinMagicPrep`: that
+    prep reuses a SINGLE emitter sequentially (``num_sources=1``, a fixed ``2``-dimensional
+    single-qubit state throughout, per its own module docstring's "single reused emitter"), so it
+    carries no exponential-in-``k`` term at all -- leave ``n_spin_qubits=0`` (the default) there.
+    """
+    n_outcomes = n_fock(int(m), int(k)) * max(1, int(basis_multiplier))
+    photonic_bytes = max(1, n_outcomes) * _BYTES_PER_OUTCOME
+    qubit_bytes = (2 ** int(n_spin_qubits)) * _BYTES_PER_QUBIT_AMPLITUDE if n_spin_qubits else 0
+    return photonic_bytes + qubit_bytes
 
 
 class StatePrep:
@@ -233,7 +280,8 @@ class SpinPrep(StatePrep):
         tasks = [(row, m, k, n_features, int(seed), rx, ry, pairs, rz, self.layers,
                   self.encode_on_spin, self.encode_circuit, enc_name)
                  for row in rows]
-        results = _spin.parallel_row_map(_spin_row_worker, tasks, n_jobs)
+        results = _spin.parallel_row_map(_spin_row_worker, tasks, n_jobs,
+                                         bytes_per_task=_row_task_bytes(m, k, n_spin_qubits=k))
         keys, probs = _align_rows(results, n_modes=m)
         self._keys = keys
         return torch.as_tensor(probs, dtype=torch.float32)
@@ -406,7 +454,8 @@ class SpinMagicPrep(StatePrep):
         tasks = [(row, m, k, t_var, n_features, int(seed), self.gate_kind, params,
                   self.structure, structure_params, encode_on_spin, encode_circuit, enc_name)
                  for row in rows]
-        results = _spin.parallel_row_map(_magic_row_worker, tasks, n_jobs)
+        results = _spin.parallel_row_map(_magic_row_worker, tasks, n_jobs,
+                                         bytes_per_task=_row_task_bytes(m, k, basis_multiplier=2))
         keys, probs = _align_rows_fixed(results, basis=_magic_basis(m, k))
         self._keys = keys
         return torch.as_tensor(probs, dtype=torch.float32)
