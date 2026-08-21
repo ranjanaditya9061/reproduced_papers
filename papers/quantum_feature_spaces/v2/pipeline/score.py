@@ -34,15 +34,17 @@ if __package__ in (None, ""):                    # allow `python pipeline/score.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "pipeline"
 
+import numpy as np
 import torch
 
 from config import load_config
 from model import build_model
-from observable import (ObservableContext, observable_on_keys, observable_spec,
-                          observable_spec_hash, resolve_observable)
+from observable import (DiagonalQuadratic, Expectation, ObservableContext, ProbFunction,
+                          Quadratic, observable_on_keys, observable_spec, observable_spec_hash,
+                          resolve_observable)
 from .artifact import load_meta
 from .distribution import load_dist
-from .shots import load_shot_probs, shot_source_tag
+from .shots import load_shots, shot_source_tag
 
 #: Readout-side knobs accepted by :func:`context_for`; everything else comes from the artifact.
 OBSERVABLE_KNOBS = ("graph_density", "graph_seed", "angle_seed", "n_vertices")
@@ -82,6 +84,52 @@ def score_path(dist_path: str | Path, name: str, ctx: ObservableContext,
             / f"{observable_spec_hash(name, ctx)}.pt")
 
 
+def _score_row(obs, probs_row: torch.Tensor, idx: np.ndarray) -> float:
+    """``obs.score()``'s own formula, restricted to one row's observed-key indices ``idx`` into
+    ``obs``'s tables (built once, over the dataset-wide observed-key union in ``load_soft``) --
+    exact because every family here contributes 0 from any outcome outside a row's own support
+    (:func:`observable.base.observable_on_keys`'s docstring:
+    ``Expectation``/``Quadratic``/``DiagonalQuadratic`` are homogeneous in ``p``, and every
+    implemented :class:`~observable.base.ProbFunction` transform vanishes at 0 --
+    ``partial_basis_safe`` already guards the one way this could go wrong).  Mirrors each class's
+    own ``score()`` rather than reimplementing it independently, so there is nothing to keep in
+    sync by hand.
+    """
+    p = probs_row
+    if isinstance(obs, DiagonalQuadratic):
+        return float((p * p * obs.score_vec[idx]).sum())
+    if isinstance(obs, Quadratic):
+        K = obs.pair_kernel[idx][:, idx]
+        return float(p @ K @ p)
+    if isinstance(obs, Expectation):
+        return float((p * obs.score_vec[idx]).sum())
+    if isinstance(obs, ProbFunction):
+        t = obs.transform(p.unsqueeze(0)).squeeze(0)
+        return float(t.sum() if obs.score_vec is None else (t * obs.score_vec[idx]).sum())
+    raise NotImplementedError(f"row-streaming shot scoring not implemented for {type(obs).__name__}")
+
+
+def score_shots_streaming(obs, seq: np.ndarray, shots: int) -> torch.Tensor:
+    """``(N,)`` scores, one row at a time -- the memory-bounded alternative to
+    ``pipeline.shots.to_counts(keys, seq)``, which builds a single DENSE ``(N, n_keys)`` matrix
+    over the dataset-WIDE observed-key union (not any one row's own support) and blows up
+    combinatorially with ``m``: ``10000 x 490309`` int64 is 36.5 GiB at ``m=16``, 1.37 TiB by
+    ``m=20`` (PLOTS.md item 7b).
+
+    Each row draws only ``<= shots`` distinct outcomes, so its own local ``(idx, counts)`` (via
+    ``np.unique``) is at most ``shots``-long regardless of ``m`` -- this scores that row through
+    :func:`_score_row` and lets ``idx``/``counts``/``probs_row`` go out of scope before the next
+    row starts, so peak memory is one row's support, never the dataset-wide union.
+    """
+    N = seq.shape[0]
+    out = torch.empty(N, dtype=torch.float32)
+    for i in range(N):
+        idx, counts = np.unique(seq[i], return_counts=True)
+        probs_row = torch.from_numpy(counts.astype(np.float32) / shots)
+        out[i] = _score_row(obs, probs_row, idx)
+    return out
+
+
 def load_soft(dist_path: str | Path, name: str, *, scores_root: str | Path = "scores",
               force: bool = False, shots_dir: str | Path | None = None, num_shots: int | Path | None = None,**knobs) -> torch.Tensor:
     """``(N,)`` scores for ``name``; cached on disk, keyed by observable **and** label source.
@@ -99,24 +147,33 @@ def load_soft(dist_path: str | Path, name: str, *, scores_root: str | Path = "sc
         obs, probs, source = None, None, EXACT_SOURCE
         probs = dist.probs
         out_path = dist_path
+        n_rows = len(probs)
+        seq = shots = None
     else:
-        keys, probs, shot_meta = load_shot_probs(shots_dir, num_shots)
+        keys, seq, shot_meta = load_shots(shots_dir, num_shots)
+        shots = int(shot_meta["shots"])
         source = shot_source_tag(shot_meta)
         ctx = context_for(shot_meta, keys, **knobs)
         # The shots branch carries its OWN observed basis -- it never enumerated the full one -- so
-        # the score vector is built over those keys.  Equivalent to the dense score on the keys they
-        # share (verified to 0.00e+00), and the only form available once the basis is unenumerable.
+        # the score vector is built over those keys (O(n_keys) tables only -- see
+        # score_shots_streaming for why the (N, n_keys) dense matrix this used to require never
+        # gets built).  Equivalent to the dense score on the keys they share (verified to 0.00e+00),
+        # and the only form available once the basis is unenumerable.
         obs = observable_on_keys(name, ctx, keys)
         out_path = shots_dir
+        n_rows = seq.shape[0]
 
     out = score_path(out_path, name, ctx, scores_root, source)
     if out.exists() and not force:
         blob = torch.load(out, weights_only=False)
-        if len(blob["soft"]) >= len(probs):
-            return blob["soft"][:len(probs)]
+        if len(blob["soft"]) >= n_rows:
+            return blob["soft"][:n_rows]
 
-    obs = obs if obs is not None else resolve_observable(name, ctx)
-    soft = obs.score(probs).detach()
+    if shots_dir is None:
+        obs = obs if obs is not None else resolve_observable(name, ctx)
+        soft = obs.score(probs).detach()
+    else:
+        soft = score_shots_streaming(obs, seq, shots).detach()
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"soft": soft, "spec": observable_spec(name, ctx), "source": source}, out)
     return soft
@@ -205,4 +262,4 @@ def main(argv=None) -> None:
         print(f"  {name:32s} mean={soft.mean():+.5f}  var={soft.var():.5g}")
 
 if __name__ == "__main__":
-    main()
+    main()
