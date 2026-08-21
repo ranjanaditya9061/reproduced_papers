@@ -69,8 +69,10 @@ def sweep_size_learners(sizes: list[tuple[int, Path]], observable: str,
                 res = run_config(cfg_path, observable, learner_name, out_root=out_root,
                                  scores_root=scores_root, n_train=n_train, **kwargs)
                 r2s.append(res["r2"])
-            except Exception as exc:                       # noqa: BLE001 -- one bad cell must not
+            except (Exception, SystemExit) as exc:         # noqa: BLE001 -- one bad cell must not
                 print(f"[size_learner_line] {learner_name}/m={m} failed: {exc}")  # not stop the rest
+                                                            # (run_config raises SystemExit, not
+                                                            # Exception, on a missing dataset)
                 r2s.append(None)
             ms.append(m)
         rows.append({"learner": learner_name, "m": ms, "r2": r2s})

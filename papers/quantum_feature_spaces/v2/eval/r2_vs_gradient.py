@@ -62,7 +62,7 @@ def best_r2(cfg_path: Path, observable: str, *, n_seeds: int, out_root: str,
                 model = build_learner(lname, **k).fit(X[tr], soft[tr])
                 res = evaluate(model, X[te], soft[te])
                 scores.append(res["r2"])
-            except Exception as exc:                       # noqa: BLE001
+            except (Exception, SystemExit) as exc:         # noqa: BLE001
                 print(f"  [r2] {observable}/{lname}/seed={seed} failed: {exc}")
         if scores:
             per_learner_means[lname] = statistics.mean(scores)
@@ -79,7 +79,15 @@ def run(*, n_seeds: int = 10, out_root: str = "datasets", scores_root: str = "sc
         cfg_path = CONFIGS_DIR / fname
         row = {"m": m, "per_obs": {}}
         for obs in OBSERVABLES:
-            r = best_r2(cfg_path, obs, n_seeds=n_seeds, out_root=out_root, scores_root=scores_root)
+            try:
+                r = best_r2(cfg_path, obs, n_seeds=n_seeds, out_root=out_root,
+                           scores_root=scores_root)
+            except (Exception, SystemExit) as exc:            # noqa: BLE001 -- one bad (m, obs)
+                # cell (most commonly a missing dataset -- load_dataset raises SystemExit, not
+                # Exception, which a bare `except Exception` here would silently miss) must not
+                # abort the rest of the sweep
+                print(f"  [r2] m={m}/{obs} failed: {exc}")
+                r = {"r2": None, "per_learner": {}}
             row["per_obs"][obs] = r
             r2_txt = f"{r['r2']:.4f}" if r["r2"] is not None else "FAILED"
             print(f"m={m:2d} {obs:<14} best_r2={r2_txt} "

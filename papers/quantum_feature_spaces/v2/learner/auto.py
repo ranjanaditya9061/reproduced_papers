@@ -202,7 +202,7 @@ def sweep_heatmap(cfg_path: str | Path, observables: list[str], *,
                 res = run_config(cfg_path, obs, name, out_root=out_root, scores_root=scores_root,
                                  n_train=n_train, graph_density=graph_density, **kwargs)
                 row.append(res["r2"])
-            except Exception as exc:                       # noqa: BLE001 -- one bad cell must not
+            except (Exception, SystemExit) as exc:         # noqa: BLE001 -- one bad cell must not
                 print(f"[auto] {name}/{obs} failed: {exc}")  # abort the rest of the grid
                 row.append(math.nan)
         grid.append(row)
@@ -217,7 +217,7 @@ def sweep_heatmap(cfg_path: str | Path, observables: list[str], *,
                                           n_train=n_train, graph_density=graph_density,
                                           max_feat=grid_max_feat)
                 row.append(max((c["test_r2"] for c in cells), default=math.nan))
-            except Exception as exc:                       # noqa: BLE001 -- see above
+            except (Exception, SystemExit) as exc:         # noqa: BLE001 -- see above
                 print(f"[auto] fourier_grid/{obs} failed: {exc}")
                 row.append(math.nan)
         grid.append(row)
@@ -344,7 +344,7 @@ def sweep_variant_observable_grid(variants: list[Variant], observables: list[str
                                  scores_root=scores_root, n_train=n_train,
                                  graph_density=graph_density, **(learner_kwargs or {}))
                 row.append(res["r2"])
-            except Exception as exc:                       # noqa: BLE001 -- one bad cell must not
+            except (Exception, SystemExit) as exc:         # noqa: BLE001 -- one bad cell must not
                 print(f"[auto] {name}/{obs} failed: {exc}")  # abort the rest of the grid
                 row.append(math.nan)
         grid.append(row)
@@ -375,7 +375,7 @@ def sweep_variant_learner_grid(variants: list[Variant], observable: str, *,
                                  scores_root=scores_root, n_train=n_train,
                                  graph_density=graph_density, **kwargs)
                 row.append(res["r2"])
-            except Exception as exc:                       # noqa: BLE001 -- see above
+            except (Exception, SystemExit) as exc:         # noqa: BLE001 -- see above
                 print(f"[auto] {name}/{learner_name} failed: {exc}")
                 row.append(math.nan)
         grid.append(row)

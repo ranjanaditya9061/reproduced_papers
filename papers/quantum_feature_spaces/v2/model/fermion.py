@@ -253,6 +253,34 @@ def determinant_weight_single(U: torch.Tensor, rows_np, key: tuple, s: float,
     return torch.linalg.det(A).abs() ** 2                             # (N,)
 
 
+def _fermion_mh_row_task(V_np: np.ndarray, m: int, k: int, bunching_s: float, shot_seed: int,
+                         offset: int, row: int, shots: int, burn_in: int,
+                         x0: tuple) -> list[tuple]:
+    """One row's MH chain -- module-level and picklable, for :func:`circuit.spin.parallel_row_map`.
+
+    Takes ``V_np`` (the row's precomputed ``(k, m)`` block, per :func:`determinant_weight_single_np`'s
+    docstring) and scalars only -- never ``self`` -- so a task ships to a worker process without
+    pickling ``FermionModel`` or any torch state (``W1``/``W2`` are never touched here, only their
+    already-realised numpy slice for this one row).
+    """
+    from sampling.mh import mh_chain
+
+    def log_weight(state: tuple) -> float:
+        w = determinant_weight_single_np(V_np, state, bunching_s)
+        return math.log(w) if w > 1e-300 else math.log(1e-300)
+
+    chain = mh_chain(x0, propose=_fermion_mh_propose(m, k, shot_seed, offset, row),
+                     log_weight=log_weight, n_steps=int(shots), burn_in=burn_in,
+                     seed=_row_seed(shot_seed, offset, row))
+    return [tuple(int(v) for v in s) for s in chain]
+
+
+def _fermion_mh_row_worker(task: tuple) -> list[tuple]:
+    """``parallel_row_map`` calls the worker with one positional-args tuple; unpack for
+    :func:`_fermion_mh_row_task`."""
+    return _fermion_mh_row_task(*task)
+
+
 def determinant_weight_single_np(V: np.ndarray, key: tuple, s: float,
                                  eps: float = 1e-12) -> float:
     """Pure-numpy, single-row equivalent of :func:`determinant_weight_single` -- same
@@ -335,10 +363,17 @@ class FermionModel(DistributionModel):
     name = "fermion"
 
     def __init__(self, *, m: int, k: int, n_features: int, seed: int = 42,
-                 bunching_s: float | None = None, encoding="phase"):
+                 bunching_s: float | None = None, encoding="phase", n_jobs: int = 1):
         super().__init__(m=m, k=k, n_features=n_features, seed=seed)
         self.bunching_s = float(k) / float(m) if bunching_s is None else float(bunching_s)
         self.encoding = build_encoding(encoding) if isinstance(encoding, str) else encoding
+        #: Row-parallelism for :meth:`shot_counts`'s MH chains, via
+        #: :func:`circuit.spin.parallel_row_map` -- same knob and same auto CPU/RAM scaling
+        #: (``-1``/``0``/``None`` = auto) that ``spin``/``spin_magic`` use, since each row's chain
+        #: is independent and this loop has no batched/vectorised alternative (unlike
+        #: :meth:`~model.photonic.PhotonicModel.shot_counts`'s ``CliffordClifford2017`` backend,
+        #: which already samples the whole batch without a per-row Python loop).
+        self.n_jobs = int(n_jobs)
 
         self._keys = fock_keys(self.m, self.k)
         self._input_state = default_input_state(self.m, self.k)
@@ -422,36 +457,34 @@ class FermionModel(DistributionModel):
         calls, so a caller doing incremental extension pays burn-in again each call. Acceptable
         here because :func:`~pipeline.generate.generate_shots` extends by re-drawing only the
         *tail* shots per row in one call, not via repeated small calls.
+
+        **Rows run in parallel processes** via :func:`circuit.spin.parallel_row_map`, keyed off
+        :attr:`n_jobs` -- each chain is independent (own stream, own state), so this is an
+        embarrassingly-parallel loop, unlike the boson sampler's batched ``CliffordClifford2017``
+        call which has no per-row Python loop to parallelise in the first place. ``V_np`` (the
+        row's fixed ``(k, m)`` block, per :func:`determinant_weight_single_np`'s docstring) is
+        realised from ``U`` for the whole requested batch in one torch call *before* dispatch, so
+        worker processes only ever receive numpy arrays and scalars -- never ``self``.
         """
-        from sampling.mh import mh_chain
+        from circuit.spin import parallel_row_map
 
         rows_idx = list(range(X.shape[0])) if rows is None else [int(r) for r in rows]
         x0 = tuple(self._input_state)
         s_modes = self._rows                                  # occupied input modes, as in boson_probs
+        # burn-in scales with m (mixing time grows with the state space); re-paid at every call
+        # rather than persisted, per the burn-in caveat in this method's docstring.
+        burn_in = max(200, 20 * self.m)
 
-        seqs = []
-        for row in rows_idx:
-            # V is (k, m), fixed for this row across the whole chain -- sliced from U once, then
-            # every MH step reuses it via the pure-numpy determinant_weight_single_np, which is
-            # 4-11x faster per call than re-slicing/rebuilding torch tensors from U every step
-            # (profiled: torch's per-call dispatch overhead dominates at this matrix size, not the
-            # FLOPs -- see that function's docstring). log_weight is the only per-step cost that
-            # matters for wall-clock time, since mh_chain calls it twice per step.
-            U_row = self.unitary(X[row:row + 1])
-            V_np = U_row[0, s_modes, :].detach().cpu().numpy()
+        if not rows_idx:
+            return []
 
-            def log_weight(state: tuple, V_np=V_np) -> float:
-                w = determinant_weight_single_np(V_np, state, self.bunching_s)
-                return math.log(w) if w > 1e-300 else math.log(1e-300)
-
-            # burn-in scales with m (mixing time grows with the state space); re-paid at every
-            # call rather than persisted, per the burn-in caveat in this method's docstring.
-            burn_in = max(200, 20 * self.m)
-            chain = mh_chain(x0, propose=_fermion_mh_propose(self.m, self.k, shot_seed, offset, row),
-                             log_weight=log_weight, n_steps=int(shots), burn_in=burn_in,
-                             seed=_row_seed(shot_seed, offset, row))
-            seqs.append([tuple(int(v) for v in s) for s in chain])
-        return seqs
+        U = self.unitary(X[rows_idx])                                    # (len(rows_idx), m, m)
+        tasks = [
+            (U[i, s_modes, :].detach().cpu().numpy(), self.m, self.k, self.bunching_s, shot_seed,
+             offset, row, int(shots), burn_in, x0)
+            for i, row in enumerate(rows_idx)
+        ]
+        return parallel_row_map(_fermion_mh_row_worker, tasks, self.n_jobs)
 
     def outcome_keys(self):
         return self._keys

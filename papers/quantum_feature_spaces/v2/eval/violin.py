@@ -71,7 +71,13 @@ def sweep_variant_observable_dist(variants: list[tuple[str, "str | Path"]], obse
         try:
             y = variant_labels(cfg_path, observable, out_root=out_root, scores_root=scores_root)
             labels.append([float(v) for v in y.double()])
-        except Exception as exc:                       # noqa: BLE001 -- one bad variant must not
+        except (Exception, SystemExit) as exc:         # noqa: BLE001 -- one bad variant must not
+                                                        # (pipeline.score/artifact raise SystemExit,
+                                                        # not Exception, on a missing dataset -- a
+                                                        # bare `except Exception` here silently lets
+                                                        # that kill the whole process instead of
+                                                        # skipping just this variant, per the module's
+                                                        # own documented per-cell resilience)
             print(f"[violin] {name} failed: {exc}")     # abort the rest of the plot
             labels.append([])
         names.append(name)
@@ -153,7 +159,7 @@ def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
             (sub / f"variant_violin__{tag}.json").write_text(json.dumps(result, indent=2))
             plot_variant_observable_violin(result, save_path=sub / f"variant_violin__{tag}.png")
             print(f"    wrote {sub / f'variant_violin__{tag}.png'}", flush=True)
-        except Exception as exc:                       # noqa: BLE001 -- one bad subfolder must not
+        except (Exception, SystemExit) as exc:         # noqa: BLE001 -- one bad subfolder must not
             print(f"    violin plot FAILED: {exc}", flush=True)  # stop the rest of the run
             failures.append((sub, exc))
 

@@ -193,7 +193,10 @@ def sweep_variant_eta(variants: list[tuple[str, "str | Path"]], observable: str,
             trace_values.append(trace_mean)
             if debug:
                 debug_by_name[name] = dbg
-        except Exception as exc:                       # noqa: BLE001 -- one bad variant must not
+        except (Exception, SystemExit) as exc:         # noqa: BLE001 -- one bad variant must not
+                                                        # (variant_eta raises SystemExit, not
+                                                        # Exception, on a missing artifact -- see
+                                                        # eval.violin's identical fix)
             print(f"[efficiency_line] {name} failed: {exc}")  # abort the rest of the line
             eta_values.append(None)
             trace_values.append(None)
@@ -289,7 +292,7 @@ def run(*, eval_dir: Path = EVAL_DIR, observable: str = DEFAULT_OBSERVABLE,
             (sub / f"variant_efficiency__{tag}.json").write_text(json.dumps(result, indent=2))
             plot_variant_eta_line(result, save_path=sub / f"variant_efficiency__{tag}.png")
             print(f"    wrote {sub / f'variant_efficiency__{tag}.png'}", flush=True)
-        except Exception as exc:                       # noqa: BLE001 -- one bad subfolder must not
+        except (Exception, SystemExit) as exc:         # noqa: BLE001 -- one bad subfolder must not
             print(f"    efficiency line FAILED: {exc}", flush=True)  # stop the rest of the run
             failures.append((sub, exc))
 

@@ -164,8 +164,10 @@ def _grid_seed_worker(task):
         res = run_config(vpath, obs, lname, out_root=out_root, scores_root=scores_root,
                          n_train=n_train, graph_density=graph_density, split_seed=seed, **kwargs)
         return res["r2"], None
-    except Exception as exc:                                # noqa: BLE001 -- one bad seed must not
+    except (Exception, SystemExit) as exc:                  # noqa: BLE001 -- one bad seed must not
         return None, str(exc)                                # abort the rest of the sweep
+                                                              # (run_config raises SystemExit, not
+                                                              # Exception, on a missing dataset)
 
 
 def sweep_best_of_grid(variants: list[tuple[str, Path]], observables: list[str], *,

@@ -98,8 +98,10 @@ def _seed_fit_worker(task):
         res = run_config(cfg_path, observable, learner_name, out_root=out_root,
                          scores_root=scores_root, n_train=n_train, split_seed=seed, **kwargs)
         return res["r2"], None
-    except Exception as exc:                                # noqa: BLE001 -- one bad seed must not
+    except (Exception, SystemExit) as exc:                  # noqa: BLE001 -- one bad seed must not
         return None, str(exc)                                # abort the rest of the sweep
+                                                              # (run_config raises SystemExit, not
+                                                              # Exception, on a missing dataset)
 
 
 def sweep_size_r2(families: list[tuple[str, list[tuple[int, Path]]]], observable: str,
