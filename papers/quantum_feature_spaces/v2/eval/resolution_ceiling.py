@@ -11,6 +11,20 @@ to separate them. This bounds achievable R^2 before any learner is even fit. Thr
 "Pipeline B": direct empirical, no gradient/Jacobian anywhere -- distinguishability is read straight
 off pairs of measured scores and the shot noise on each, never off ``d<O>/dx``.
 
+**Why the default ``z_thresh`` is 4.0, not the textbook-looking 2.0.** ``estimate_epsilon_x`` tests
+each training point against ``k`` neighbours (default 10) -- a per-point multiple-comparisons
+problem the plain z-gate does not correct for. At ``z_thresh=2.0`` (~95% per single test), the
+expected false-"distinguishable" rate across ``k=10`` independent-ish tests is ``1 - 0.95^10 ~
+40%``, so a point can get spuriously cut off from a cluster it genuinely belongs to by one unlucky
+noisy pair, fragmenting the true cluster structure into a few large clusters plus many noise-driven
+singletons. A singleton cluster's "mean" is then just that one training point's own noisy value --
+worse than the stable, well-averaged prediction a real cluster would give, which is why
+:func:`estimate_r2_max` could score *below* the trivial global-mean baseline at ``z_thresh=2.0``
+(measured directly: 43 of 47 clusters were singletons on a real ``m=10`` shots run, and raising to
+``z_thresh=4.0`` eliminated singletons entirely on that same data). 4.0 is an empirically-checked
+bump, not a derived Bonferroni-style correction for ``k`` -- revisit if ``k`` changes substantially
+from its default, since the correct threshold scales with how many comparisons are actually made.
+
 1. :func:`estimate_epsilon_x` -- for each training point, walk its nearest neighbours outward (by
    x-distance) and find the crossover: the farthest neighbour whose measured score is still
    statistically indistinguishable from this point's own, i.e. ``z = |y_i - y_j| /
@@ -91,7 +105,7 @@ def _z_gate(y_a: np.ndarray, sigma_a: np.ndarray, y_b: np.ndarray,
 
 
 def estimate_epsilon_x(X: np.ndarray, y: np.ndarray, sigma: np.ndarray, *, k: int = 10,
-                       z_thresh: float = 2.0):
+                       z_thresh: float = 4.0):
     """``(eps_x, censored)``, both ``(N,)`` -- Pipeline B, direct empirical, no gradient.
 
     For each point ``i``, its ``k`` nearest neighbours (by x-distance, ascending) are walked
@@ -130,7 +144,7 @@ def estimate_epsilon_x(X: np.ndarray, y: np.ndarray, sigma: np.ndarray, *, k: in
 
 
 def cluster_by_resolution(X: np.ndarray, y: np.ndarray, sigma: np.ndarray, eps_x: np.ndarray, *,
-                          z_thresh: float = 2.0):
+                          z_thresh: float = 4.0):
     """``(n_eff, cluster_labels)`` -- merge training points that are **directly, pairwise**
     indistinguishable by :func:`_z_gate`, and count the resulting connected components, rather than
     dividing volume by one global ``eps_x`` (which cannot see the field's non-uniformity at all).
@@ -173,7 +187,7 @@ def cluster_by_resolution(X: np.ndarray, y: np.ndarray, sigma: np.ndarray, eps_x
 
 def estimate_r2_max(X_train: np.ndarray, y_train: np.ndarray, sigma_train: np.ndarray,
                     cluster_labels: np.ndarray, X_test: np.ndarray, y_test: np.ndarray,
-                    sigma_test: np.ndarray, *, z_thresh: float = 2.0) -> dict:
+                    sigma_test: np.ndarray, *, z_thresh: float = 4.0) -> dict:
     """The ``R^2`` ceiling for a learner restricted to predicting one constant per resolution
     cluster (the best it can do once two points are indistinguishable is output the same value for
     both). Coverage is the direct pairwise gate, not a geometric radius lookup: for each test
@@ -259,7 +273,7 @@ def load_shots_dataset(cfg_path: str | Path, observable: str, *, out_root: str =
 
 
 def run(cfg_path: str | Path, observable: str, *, out_root: str = "datasets", k: int = 10,
-       z_thresh: float = 2.0, n_boot: int = 32, split_seed: int | None = None,
+       z_thresh: float = 4.0, n_boot: int = 32, split_seed: int | None = None,
        boot_seed: int = 0) -> dict:
     from pipeline.split import split_indices
 
@@ -295,7 +309,7 @@ def run(cfg_path: str | Path, observable: str, *, out_root: str = "datasets", k:
 DEFAULT_OBSERVABLES = ["parity", "n_first", "ent", "osc", "sq_parity", "xent_parity"]
 
 
-def fit_best_learner(cfg, observable: str, *, out_root: str = "datasets",
+def fit_best_learner(cfg_path: str | Path, observable: str, *, out_root: str = "datasets",
                      scores_root: str = "scores", split_seed: int | None = None) -> dict:
     """Best-of-``ridge``/``svr``/``mlp`` (:data:`learner.auto.DEFAULT_SWEEP_LEARNERS`) held-out
     ``R^2`` on ``observable`` -- the number the ceiling in this module is meant to be compared
@@ -303,21 +317,21 @@ def fit_best_learner(cfg, observable: str, *, out_root: str = "datasets",
 
     Fits all three (not just the eventual winner) since which learner wins the ``R^2`` race is not
     knowable up front, and reports every arm so a caller can see how close the runner-up was.
+    Loads the dataset once via :func:`~learner.cache.preload_dataset` and reuses it across all
+    three :func:`~learner.cache.cached_fit` calls; each fit is itself cached on disk, so a second
+    run of this module (or of :mod:`eval.size_r2_line` on the same config/observable/learner) is
+    read straight off disk rather than refitting.
     """
     from learner import kernel, nn  # noqa: F401 -- registration side effects
     from learner.auto import DEFAULT_SWEEP_LEARNERS
-    from learner.base import build_learner, evaluate
-    from pipeline.score import load_dataset
-    from pipeline.split import split_indices
+    from learner.cache import cached_fit, preload_dataset
 
-    X, y, _ = load_dataset(cfg, observable, out_root=out_root, scores_root=scores_root)
-    tr, te = split_indices(len(X), test_fraction=cfg.split.test_fraction,
-                           split_seed=cfg.split.split_seed if split_seed is None else split_seed)
+    preloaded = preload_dataset(cfg_path, observable, out_root=out_root, scores_root=scores_root)
 
     per_learner = {}
     for name, kwargs in DEFAULT_SWEEP_LEARNERS:
-        learner = build_learner(name, **kwargs).fit(X[tr], y[tr])
-        res = evaluate(learner, X[te], y[te])
+        res = cached_fit(cfg_path, observable, name, out_root=out_root, scores_root=scores_root,
+                         split_seed=split_seed, _preloaded=preloaded, **kwargs)
         per_learner[name] = {"r2": res["r2"]}
 
     best = max(per_learner, key=lambda n: per_learner[n]["r2"])
@@ -326,7 +340,7 @@ def fit_best_learner(cfg, observable: str, *, out_root: str = "datasets",
 
 def compare_observables(cfg_path: str | Path, observables: list[str] = DEFAULT_OBSERVABLES, *,
                         out_root: str = "datasets", scores_root: str = "scores", k: int = 10,
-                        z_thresh: float = 2.0, n_boot: int = 32,
+                        z_thresh: float = 4.0, n_boot: int = 32,
                         split_seed: int | None = None) -> list[dict]:
     """Ceiling (this module) vs. actual best-of-3-learner performance (:func:`fit_best_learner`),
     one row per observable -- the comparison this module exists to make: is the achieved ``R^2``
@@ -345,7 +359,7 @@ def compare_observables(cfg_path: str | Path, observables: list[str] = DEFAULT_O
         try:
             ceiling = run(cfg_path, obs, out_root=out_root, k=k, z_thresh=z_thresh, n_boot=n_boot,
                           split_seed=split_seed)
-            learned = fit_best_learner(load_config_cached(cfg_path), obs, out_root=out_root,
+            learned = fit_best_learner(cfg_path, obs, out_root=out_root,
                                        scores_root=scores_root, split_seed=split_seed)
         except (Exception, SystemExit) as exc:          # noqa: BLE001 -- one bad observable must
             print(f"[resolution_ceiling] {obs} failed: {exc}")  # not abort the rest of the sweep
@@ -367,12 +381,6 @@ def compare_observables(cfg_path: str | Path, observables: list[str] = DEFAULT_O
     return rows
 
 
-def load_config_cached(cfg_path: str | Path):
-    from config import load_config
-
-    return load_config(cfg_path)
-
-
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", required=True)
@@ -385,7 +393,7 @@ def main(argv=None) -> None:
     ap.add_argument("--scores-root", default="scores")
     ap.add_argument("--k", type=int, default=10, help="neighbours walked per training point when "
                     "crossing-over eps_x(x)")
-    ap.add_argument("--z-thresh", type=float, default=2.0, help="indistinguishability gate: "
+    ap.add_argument("--z-thresh", type=float, default=4.0, help="indistinguishability gate: "
                     "|y_i - y_j| / sqrt(sigma_i^2 + sigma_j^2) < z-thresh")
     ap.add_argument("--n-boot", type=int, default=32, help="bootstrap replicates for the "
                     "per-row shot-noise sigma (O(n_boot * N * shots) -- lower this if slow)")

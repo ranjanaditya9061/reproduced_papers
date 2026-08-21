@@ -45,12 +45,6 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "learner"
 
-import torch
-
-from config import load_config
-from pipeline.score import load_dataset
-from pipeline.split import split_indices
-from .base import build_learner, evaluate
 from . import embedding, kernel, nn  # noqa: F401  -- registration side effects
 
 #: Held-out ``R^2`` above which an arm counts as "succeeds".  A threshold has to be fixed *before*
@@ -65,6 +59,10 @@ def run_arm(cfg_path: str | Path, observable: str, *, learner: str, hparams: dic
     """Fit one arm and return its held-out statistics.  Split indices depend only on the pool size,
     so both arms see identical rows by construction.
 
+    Thin wrapper over :func:`~learner.cache.cached_fit`, fixing ``split_seed`` to the config's own
+    (unlike :func:`~learner.auto.run_config`, which allows an override) -- the paired protocol's
+    "both arms see identical rows by construction" guarantee depends on that being unconditional.
+
     Reads the exact branch when ``cfg.generation.shots == 0``, else the shots branch -- see
     :func:`~pipeline.score.load_dataset`. An arm whose config has ``shots > 0`` while the other
     arm's does not is still a valid *paired* comparison as long as both see the same row count
@@ -72,19 +70,10 @@ def run_arm(cfg_path: str | Path, observable: str, *, learner: str, hparams: dic
     arms in that case -- not this function's concern, since it fits exactly what its own config
     says to.
     """
-    cfg = load_config(cfg_path)
-    X, soft, artifact_name = load_dataset(cfg, observable, out_root=out_root,
-                                          scores_root=scores_root, graph_density=graph_density)
-    tr, te = split_indices(len(X), test_fraction=cfg.split.test_fraction,
-                           split_seed=cfg.split.split_seed)
-    if n_train:
-        tr = tr[:int(n_train)]
+    from .cache import cached_fit
 
-    model = build_learner(learner, **hparams).fit(X[tr], soft[tr])
-    res = evaluate(model, X[te], soft[te])
-    res.update(n_train=len(tr), n_test=len(te), label_var=float(soft[te].double().var()),
-               artifact=artifact_name)
-    return res
+    return cached_fit(cfg_path, observable, learner, out_root=out_root, scores_root=scores_root,
+                      n_train=n_train, graph_density=graph_density, split_seed=None, **hparams)
 
 
 def compare(perm_cfg, det_cfg, observables, *, learner: str = "ridge", hparams: dict | None = None,

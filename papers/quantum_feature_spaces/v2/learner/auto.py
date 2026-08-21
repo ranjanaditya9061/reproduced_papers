@@ -42,8 +42,13 @@ from . import embedding, kernel, nn  # noqa: F401  -- registration side effects
 def run_config(cfg_path: str | Path, observable: str, learner_name: str, *,
                out_root: str = "datasets", scores_root: str = "scores",
                n_train: int | None = None, graph_density: float = 0.5,
-               split_seed: int | None = None, **learner_kwargs) -> dict:
-    """Config -> saved dataset -> fitted ``learner_name`` -> held-out stats, in one call.
+               split_seed: int | None = None, force: bool = False, **learner_kwargs) -> dict:
+    """Config -> cached-or-fitted ``learner_name`` -> held-out stats, in one call.
+
+    Thin wrapper over :func:`~learner.cache.cached_fit` -- the actual load/split/fit/evaluate/cache
+    logic lives there, shared with :func:`~learner.compare.run_arm` and every other learner-fitting
+    call site, so there is exactly one place a fit is ever paid for a given (config, observable,
+    learner, hyperparameters, split) combination.
 
     Raises if the artifact for ``cfg_path`` has not been generated yet.
 
@@ -60,22 +65,12 @@ def run_config(cfg_path: str | Path, observable: str, learner_name: str, *,
     the point where the exact branch cannot be generated (:meth:`~model.fermion.FermionModel.
     shot_counts`'s MH sampler exists precisely for that regime).
     """
-    from config import load_config
-    from pipeline.score import load_dataset
-    from pipeline.split import split_indices
+    from .cache import cached_fit
 
-    cfg = load_config(cfg_path)
-    X, soft, artifact_name = load_dataset(cfg, observable, out_root=out_root,
-                                          scores_root=scores_root, graph_density=graph_density)
-    tr, te = split_indices(len(X), test_fraction=cfg.split.test_fraction,
-                           split_seed=cfg.split.split_seed if split_seed is None else split_seed)
-    if n_train:
-        tr = tr[:int(n_train)]
-
-    model = build_learner(learner_name, **learner_kwargs).fit(X[tr], soft[tr])
-    res = evaluate(model, X[te], soft[te])
-    res.update(n_train=len(tr), n_test=len(te), label_var=float(soft[te].double().var()),
-               artifact=artifact_name, learner=learner_name)
+    res = cached_fit(cfg_path, observable, learner_name, out_root=out_root,
+                     scores_root=scores_root, n_train=n_train, graph_density=graph_density,
+                     split_seed=split_seed, force=force, **learner_kwargs)
+    res["learner"] = learner_name
     return res
 
 
@@ -425,6 +420,10 @@ def main(argv=None) -> None:
     ap.add_argument("--heatmap-degree-grid", action="store_true",
                     help="with --heatmap, add a fourier_grid row: best test R^2 from "
                     "sweep_degree_grid over --orders x --degrees, per observable")
+    ap.add_argument("--force", action="store_true", help="ignore any cached fit for this exact "
+                    "(config, observable, learner, hyperparameters, split) combination and refit, "
+                    "overwriting the cache -- only applies to the plain --learner path, not "
+                    "--degree-grid/--heatmap")
     args = ap.parse_args(argv)
 
     if args.heatmap:
@@ -454,7 +453,7 @@ def main(argv=None) -> None:
                       f"lam={r['lam']:.3g}")
         else:
             res = run_config(args.config, obs, args.learner, n_train=args.n_train,
-                             graph_density=args.graph_density)
+                             graph_density=args.graph_density, force=args.force)
             print(f"{obs:<26} learner={args.learner:<12} r2={res['r2']:>8.4f}  "
                   f"logL={res['log_likelihood']:>9.4f}")
 

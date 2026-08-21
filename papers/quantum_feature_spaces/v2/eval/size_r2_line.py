@@ -88,7 +88,8 @@ def _seed_fit_worker(task):
     raising/printing here: printing happens in the parent, once results are back in task order,
     so output from a parallel run reads the same as the old serial loop instead of interleaving
     across worker processes."""
-    cfg_path, observable, learner_name, out_root, scores_root, n_train, seed, learner_kwargs = task
+    (cfg_path, observable, learner_name, out_root, scores_root, n_train, seed, force,
+     learner_kwargs) = task
     from learner.auto import run_config
     print(task)
 
@@ -96,7 +97,8 @@ def _seed_fit_worker(task):
     kwargs["seed"] = seed
     try:
         res = run_config(cfg_path, observable, learner_name, out_root=out_root,
-                         scores_root=scores_root, n_train=n_train, split_seed=seed, **kwargs)
+                         scores_root=scores_root, n_train=n_train, split_seed=seed, force=force,
+                         **kwargs)
         return res["r2"], None
     except (Exception, SystemExit) as exc:                  # noqa: BLE001 -- one bad seed must not
         return None, str(exc)                                # abort the rest of the sweep
@@ -107,7 +109,7 @@ def _seed_fit_worker(task):
 def sweep_size_r2(families: list[tuple[str, list[tuple[int, Path]]]], observable: str,
                   learner_name: str, *, out_root: str = "datasets", scores_root: str = "scores",
                   n_train: int | None = None, n_seeds: int = DEFAULT_N_SEEDS, n_jobs: int = 1,
-                  **learner_kwargs) -> dict:
+                  force: bool = False, **learner_kwargs) -> dict:
     """Held-out R^2 for every ``(family, size)`` pair, at one fixed ``observable``/``learner_name``,
     each pair averaged over ``n_seeds`` reseeded fits (see module docstring).
 
@@ -127,7 +129,7 @@ def sweep_size_r2(families: list[tuple[str, list[tuple[int, Path]]]], observable
     from circuit.spin import parallel_row_map
 
     cells = [(name, m, cfg_path) for name, sizes in families for m, cfg_path in sizes]
-    tasks = [(cfg_path, observable, learner_name, out_root, scores_root, n_train, seed,
+    tasks = [(cfg_path, observable, learner_name, out_root, scores_root, n_train, seed, force,
              learner_kwargs)
             for _, _, cfg_path in cells for seed in range(int(n_seeds))]
     flat = parallel_row_map(_seed_fit_worker, tasks, n_jobs)
@@ -206,37 +208,36 @@ def run(*, size_dir: Path = SIZE_DIR, observable: str = DEFAULT_OBSERVABLE,
     Output filenames are tagged with ``observable`` and ``learner`` (filesystem-safe fragments) so
     two runs at different observables/learners do not overwrite each other's plot/JSON.
 
-    If the output JSON from a prior run already exists, it is loaded and the (expensive) fit sweep
-    is skipped entirely -- same ``--force``-to-ignore-the-cache convention as
-    :func:`pipeline.generate`.  The plot is always rebuilt from whichever result (loaded or fresh)
-    ends up in hand, so a plotting-code change still shows up without needing ``--force``.
+    **Always re-walks and re-derives the sweep** -- no separate whole-sweep cache of its own.  Every
+    ``(family, m, seed)`` fit goes through :func:`~learner.auto.run_config`, which is itself cached
+    per-cell in :func:`~learner.cache.cached_fit` (one on-disk cache, shared by every learner-fitting
+    call site in this repo, rather than this module keeping its own second, coarser cache blind to
+    ``n_train``/``graph_density``/hyperparameter overrides on top of it). ``force`` is forwarded to
+    every ``run_config`` call so it still means "ignore the cache and refit", same as elsewhere --
+    the assembled JSON is written every run purely as a durable output artifact, not read back as a
+    cache.
     """
     tag = f"{_safe_tag(observable)}__{_safe_tag(learner)}"
     out_json = size_dir / f"size_r2__{tag}.json"
     out_png = size_dir / f"size_r2__{tag}.png"
 
-    if out_json.exists() and not force:
-        print(f"=== {out_json} already exists, reading it (pass force=True to recompute)",
-             flush=True)
-        result = json.loads(out_json.read_text())
-    else:
-        subfolders = sorted(p for p in size_dir.iterdir() if p.is_dir())
-        if not subfolders:
-            raise SystemExit(f"no subfolders found in {size_dir}")
+    subfolders = sorted(p for p in size_dir.iterdir() if p.is_dir())
+    if not subfolders:
+        raise SystemExit(f"no subfolders found in {size_dir}")
 
-        families = []
-        for sub in subfolders:
-            sizes = _sizes_in(sub)
-            if not sizes:
-                print(f"=== {sub.name}: no m{{MM}}k{{KK}}.yaml configs, skipping", flush=True)
-                continue
-            print(f"=== {sub.name}: sizes -> {[m for m, _ in sizes]}", flush=True)
-            families.append((sub.name, sizes))
+    families = []
+    for sub in subfolders:
+        sizes = _sizes_in(sub)
+        if not sizes:
+            print(f"=== {sub.name}: no m{{MM}}k{{KK}}.yaml configs, skipping", flush=True)
+            continue
+        print(f"=== {sub.name}: sizes -> {[m for m, _ in sizes]}", flush=True)
+        families.append((sub.name, sizes))
 
-        result = sweep_size_r2(families, observable, learner, out_root=out_root,
-                               scores_root=scores_root, n_train=n_train, n_seeds=n_seeds,
-                               n_jobs=n_jobs)
-        out_json.write_text(json.dumps(result, indent=2))
+    result = sweep_size_r2(families, observable, learner, out_root=out_root,
+                           scores_root=scores_root, n_train=n_train, n_seeds=n_seeds,
+                           n_jobs=n_jobs, force=force)
+    out_json.write_text(json.dumps(result, indent=2))
 
     _print_result(result)
     plot_size_r2_line(result, save_path=out_png)
@@ -268,8 +269,8 @@ def main(argv=None) -> None:
                                                             "(default)")
     ap.add_argument("--root", default="datasets")
     ap.add_argument("--scores-root", default="scores")
-    ap.add_argument("--force", action="store_true", help="ignore an existing output JSON and "
-                                                          "recompute the fit sweep")
+    ap.add_argument("--force", action="store_true", help="ignore any cached per-cell fit "
+                                                          "(learner.cache) and refit every cell")
     args = ap.parse_args(argv)
 
     run(size_dir=Path(args.size_dir), observable=args.observable, learner=args.learner,

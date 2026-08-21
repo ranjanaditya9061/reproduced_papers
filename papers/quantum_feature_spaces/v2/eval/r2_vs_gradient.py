@@ -6,13 +6,15 @@ gradient, or can an observable be hard to *learn* while its gradient stays healt
 Same "average per learner over seeds, then max across learners" protocol as
 :func:`eval.best_of_grid.sweep_best_of_grid`, so results are directly comparable to every other
 R^2 number reported in this repo -- but loads each ``(config, observable)``'s dataset **once**
-via :func:`pipeline.score.load_dataset` and reuses it across every learner/seed, rather than
-calling :func:`learner.auto.run_config` in a loop (which reloads ``dist.npz`` from disk on every
-single call). Measured at ``m=12`` (12,376 outcomes x 10,000 rows, ~495 MB): ~12-20s per
-``run_config`` call, almost entirely I/O, repeated regardless of whether the score was already
-cached -- with 4 sizes x 6 observables x 3 learners x 10 seeds = 720 fits, that reload cost alone
-would dominate wall time by roughly two orders of magnitude versus loading once per
-(config, observable) cell (24 loads) and fitting in memory.
+via :func:`~learner.cache.preload_dataset` and reuses it across every learner/seed's
+:func:`~learner.cache.cached_fit` call, rather than calling :func:`learner.auto.run_config` in a
+loop (which reloads ``dist.npz`` from disk on every single call). Measured at ``m=12`` (12,376
+outcomes x 10,000 rows, ~495 MB): ~12-20s per reload, almost entirely I/O -- with 4 sizes x 6
+observables x 3 learners x 10 seeds = 720 fits, that reload cost alone would dominate wall time by
+roughly two orders of magnitude versus loading once per (config, observable) cell (24 loads) and
+fitting in memory. The fit itself is still cached per (learner, seed) via
+:func:`~learner.cache.cached_fit`'s own on-disk cache, so a second run of this module is cheap even
+across process restarts, not just within one.
 
 Runs against the SAME configs (:mod:`configs.size.size_photonic_fock`, ``m in {6,8,10,12}``) and
 the SAME observable list as :mod:`eval.gradient_vs_hardness`, so the two JSONs can be joined on
@@ -30,12 +32,9 @@ if __package__ in (None, ""):
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from config import load_config
 from learner.auto import DEFAULT_SWEEP_LEARNERS
-from learner.base import build_learner, evaluate
+from learner.cache import cached_fit, preload_dataset
 from learner import embedding, kernel, nn  # noqa: F401 -- registration side effects
-from pipeline.score import load_dataset
-from pipeline.split import split_indices
 
 CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs" / "size" / "size_photonic_fock"
 CONFIGS = {6: "m06k03.yaml", 8: "m08k04.yaml", 10: "m10k05.yaml", 12: "m12k06.yaml"}
@@ -46,21 +45,22 @@ OBSERVABLES = ["parity", "n_first", "ent", "osc", "sq_parity", "xent_parity"]
 
 def best_r2(cfg_path: Path, observable: str, *, n_seeds: int, out_root: str,
            scores_root: str) -> dict:
-    """Max-of-per-learner-mean R^2 for one (config, observable): loads (X, soft) ONCE, then loops
-    learners/seeds in memory -- one cell of best_of_grid's protocol, standalone."""
-    cfg = load_config(cfg_path)
-    X, soft, _ = load_dataset(cfg, observable, out_root=out_root, scores_root=scores_root)
+    """Max-of-per-learner-mean R^2 for one (config, observable): loads (X, soft) ONCE via
+    :func:`~learner.cache.preload_dataset`, then loops learners/seeds through
+    :func:`~learner.cache.cached_fit` (which reuses that preload rather than reloading) -- one cell
+    of best_of_grid's protocol, standalone."""
+    preloaded = preload_dataset(cfg_path, observable, out_root=out_root, scores_root=scores_root)
 
     per_learner_means = {}
     for lname, kwargs in DEFAULT_SWEEP_LEARNERS:
         scores = []
         for seed in range(int(n_seeds)):
-            tr, te = split_indices(len(X), test_fraction=cfg.split.test_fraction, split_seed=seed)
             k = dict(kwargs)
             k["seed"] = seed
             try:
-                model = build_learner(lname, **k).fit(X[tr], soft[tr])
-                res = evaluate(model, X[te], soft[te])
+                res = cached_fit(cfg_path, observable, lname, out_root=out_root,
+                                 scores_root=scores_root, split_seed=seed, _preloaded=preloaded,
+                                 **k)
                 scores.append(res["r2"])
             except (Exception, SystemExit) as exc:         # noqa: BLE001
                 print(f"  [r2] {observable}/{lname}/seed={seed} failed: {exc}")
