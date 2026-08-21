@@ -484,7 +484,19 @@ class FermionModel(DistributionModel):
              offset, row, int(shots), burn_in, x0)
             for i, row in enumerate(rows_idx)
         ]
-        return parallel_row_map(_fermion_mh_row_worker, tasks, self.n_jobs)
+        # One MH chain's own memory is O((shots + burn_in) * k) -- `sampling.mh.mh_chain` returns
+        # `shots` states, one k-length int tuple each (burn-in states are discarded but still
+        # walked and held as `state` between steps), and each step's own compute
+        # (`determinant_weight_single_np`, this method's docstring) is a determinant over the
+        # `(k, m)` block `V`, itself O(k)-ish per step -- scales with the shot budget and k, NOT
+        # with n_fock(m,k)/the full outcome basis the way the distribution-build workers in
+        # circuit/prep.py are (that basis is never enumerated here at all -- the whole reason this
+        # sampler exists rather than scoring the exact `probs()` branch). ~28 bytes/int (CPython
+        # per-element overhead) x k ints/state is the per-state estimate.
+        bytes_per_state = 28 * max(1, self.k)
+        bytes_per_task = max(1, int(shots) + burn_in) * bytes_per_state
+        return parallel_row_map(_fermion_mh_row_worker, tasks, self.n_jobs,
+                                bytes_per_task=bytes_per_task)
 
     def outcome_keys(self):
         return self._keys

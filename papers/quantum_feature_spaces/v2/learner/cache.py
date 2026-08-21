@@ -68,6 +68,50 @@ def _cache_paths(scores_root: str | Path, artifact_name: str, source: str, obser
     return base / f"{learner_hash}.pt", base / f"{learner_hash}.json"
 
 
+#: fp32 bytes/element -- same convention as `model/base.py`'s `FORWARD_ELEMENTS` (~128MB per
+#: 33.5M fp32 elements), reused here rather than picked independently.
+_BYTES_PER_ELEMENT = 4
+
+
+def fit_task_bytes(cfg_path: str | Path, *, n_train: int | None = None) -> int:
+    """Estimated peak memory of ONE learner fit at ``cfg_path``, for
+    :func:`~circuit.spin.parallel_row_map`'s ``bytes_per_task`` -- computed from the requested
+    ``n_train`` and the config's ``n_features``, rather than a flat constant.
+
+    **Not** a function of ``(m, k)``/``n_out``: :func:`~pipeline.score.load_dataset` returns
+    ``X`` shaped ``(N, n_features)`` and ``soft`` shaped ``(N,)`` -- the huge, ``m``/``k``-scaled
+    ``n_out`` quantity belongs to dataset generation/scoring (already paid for and cached on disk
+    by the time a learner fit runs), not to what a learner actually holds in memory.
+    ``ridge``/``mlp`` scale with ``n_train x n_features`` (plus each learner's own feature
+    expansion -- ``ridge``'s Fourier/polynomial basis is ``O(order x n_features)`` to
+    ``O((order x n_features)^degree)``, small next to the term below at this repo's typical
+    ``n_train``); ``svr``'s kernel Gram matrix is the actual dominant term, ``O(n_train^2)``,
+    independent of ``n_features`` entirely. The quadratic term is kept even for a ``ridge``/``mlp``
+    call (this function does not know which learner a given task will use), since overestimating
+    a non-``svr`` fit's memory only costs a slower run, while undercounting an ``svr`` fit's is the
+    actual OOM/thrash this whole gate exists to prevent.
+
+    Only reads the config (a cheap YAML parse, :func:`~config.load_config`, no simulation) --
+    cheap enough to call once per task when building a task list, unlike actually loading the
+    dataset itself. A config this cannot resolve ``generation.size``/``problem.n_features`` from
+    (should not happen for a well-formed config) falls back to a conservative flat estimate rather
+    than raising, since a sizing helper failing should never be what aborts a sweep.
+    """
+    try:
+        from config import load_config
+
+        cfg = load_config(cfg_path)
+        n_features = int(cfg.problem.n_features)
+        n_rows = int(n_train) if n_train else int(cfg.generation.size)
+        linear_term = n_rows * n_features
+        quadratic_term = n_rows * n_rows              # svr's kernel Gram matrix, the dominant term
+        return max(1, linear_term + quadratic_term) * _BYTES_PER_ELEMENT * 2
+    except Exception:
+        from circuit.spin import _DEFAULT_TASK_BYTES
+
+        return _DEFAULT_TASK_BYTES
+
+
 def preload_dataset(cfg_path: str | Path, observable: str, *, out_root: str | Path = "datasets",
                     scores_root: str | Path = "scores", graph_density: float = 0.5) -> tuple:
     """``(cfg, X, soft, artifact_name)`` for :func:`cached_fit`'s ``_preloaded`` argument -- call

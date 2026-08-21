@@ -127,12 +127,20 @@ def sweep_size_r2(families: list[tuple[str, list[tuple[int, Path]]]], observable
     still wins over threads by avoiding GIL contention on the Python-side bookkeeping between fits.
     """
     from circuit.spin import parallel_row_map
+    from learner.cache import fit_task_bytes
 
     cells = [(name, m, cfg_path) for name, sizes in families for m, cfg_path in sizes]
     tasks = [(cfg_path, observable, learner_name, out_root, scores_root, n_train, seed, force,
              learner_kwargs)
             for _, _, cfg_path in cells for seed in range(int(n_seeds))]
-    flat = parallel_row_map(_seed_fit_worker, tasks, n_jobs)
+    # One process pool covers every cell in this sweep, across every size tier -- size the memory
+    # gate on the LARGEST cell's fit, not an arbitrary/average one, since undercounting is what
+    # causes the actual OOM/thrash this is meant to prevent (see circuit.spin's own conservative-
+    # by-design convention) and every task shares the same pool's fixed worker count regardless of
+    # which cell it belongs to.
+    bytes_per_task = max((fit_task_bytes(cfg_path, n_train=n_train) for _, _, cfg_path in cells),
+                        default=None)
+    flat = parallel_row_map(_seed_fit_worker, tasks, n_jobs, bytes_per_task=bytes_per_task)
 
     import statistics
 

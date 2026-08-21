@@ -199,12 +199,25 @@ def load_dataset(cfg, name: str, *, out_root: str | Path = "datasets",
     while ``X`` still came from the exact one, a row mismatch if sizes ever differ) and an outright
     ``SystemExit`` past the point where the exact branch cannot be generated at all (the whole
     reason :meth:`model.fermion.FermionModel.shot_counts` exists).
+
+    ``artifact_name`` is the real circuit hash (:func:`load_circuit_hash`'s ``meta["hash"]``, the
+    same convention :func:`score_path` already uses for its own cache), joined with the branch's
+    own tag on the shots side -- **not** ``path.name``/``sdir.name``. A bare ``path.name`` on the
+    exact branch is always the literal constant ``"exact"`` (:data:`~pipeline.artifact.EXACT_DIR`),
+    identical for every ``cfg`` regardless of ``m``/``k``/circuit identity, and ``sdir.name`` on the
+    shots branch is only the shot tag (``<method>_s<seed>_n<shots>``), which collides across two
+    different circuits drawn with the same method/seed/shot count. Both were latent bugs (the field
+    was informational-only, cited in printed reports, before anything treated it as a real cache
+    key); :func:`~learner.cache.cached_fit` is the first caller to build actual on-disk cache paths
+    from it, which is what turned the collision from cosmetic into a real one -- two different
+    ``m`` configs silently sharing one cache entry, each fit overwriting the last's, every read
+    after the first returning some earlier ``m``'s stale result instead of refitting.
     """
     from model import build_model
     from model.sampler import sample_X
 
     from .artifact import exact_path
-    from .shots import shots_path
+    from .shots import shot_source_tag, shots_path
 
     model = build_model(cfg)
     if cfg.generation.shots:
@@ -216,7 +229,8 @@ def load_dataset(cfg, name: str, *, out_root: str | Path = "datasets",
                          num_shots=cfg.generation.shots, graph_density=graph_density)
         meta = load_meta(sdir)
         X = sample_X(int(meta["size"]), int(meta["n_features"]), int(meta["sample_seed"]))
-        return X, soft, sdir.name
+        artifact_name = f"{meta['hash']}_{shot_source_tag(meta)}"
+        return X, soft, artifact_name
     else:
         path = exact_path(cfg, model, out_root)
         if not path.exists():
@@ -224,7 +238,7 @@ def load_dataset(cfg, name: str, *, out_root: str | Path = "datasets",
         dist = load_dist(path)
         soft = load_soft(path, name, scores_root=scores_root, force=force,
                          graph_density=graph_density)
-        return dist.X, soft, path.name
+        return dist.X, soft, load_circuit_hash(path)
 
 
 def main(argv=None) -> None:
