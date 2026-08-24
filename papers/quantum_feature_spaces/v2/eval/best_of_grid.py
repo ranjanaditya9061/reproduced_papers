@@ -318,7 +318,7 @@ def main(argv=None) -> None:
                                               "(mean over reseeded fits) for one configs/eval/ group.")
     ap.add_argument("--eval-dir", required=True, help="e.g. configs/eval/havlicek")
     ap.add_argument("--observables", nargs="+", default=DEFAULT_OBSERVABLES)
-    ap.add_argument("--n-seeds", type=int, default=1)
+    ap.add_argument("--n-seeds", type=int, default=10)
     ap.add_argument("--n-train", type=int, default=None)
     ap.add_argument("--n-jobs", type=int, default=-1, help="parallel fits across (observable, "
                                                             "variant, learner, seed) cells; "
