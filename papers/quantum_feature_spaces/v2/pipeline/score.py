@@ -229,7 +229,14 @@ def load_dataset(cfg, name: str, *, out_root: str | Path = "datasets",
                          num_shots=cfg.generation.shots, graph_density=graph_density)
         meta = load_meta(sdir)
         X = sample_X(int(meta["size"]), int(meta["n_features"]), int(meta["sample_seed"]))
-        artifact_name = f"{meta['hash']}_{shot_source_tag(meta)}"
+        # Tag with the REQUESTED (cropped) shot count, cfg.generation.shots -- not meta["shots"],
+        # which is the store's on-disk total and only grows as generate_shots extends it. Reusing
+        # meta["shots"] here made every N cropped from the same store (e.g. 100/1000/10000, all
+        # cropped from one 50000-shot store) collide on one artifact_name, and therefore on one
+        # learner.cache.cached_fit cache entry -- the R^2 for those N's was silently identical
+        # because they were reading back the same cached fit rather than a fit on their own crop.
+        cropped_meta = {**meta, "shots": int(cfg.generation.shots)}
+        artifact_name = f"{meta['hash']}_{shot_source_tag(cropped_meta)}"
         return X, soft, artifact_name
     else:
         path = exact_path(cfg, model, out_root)

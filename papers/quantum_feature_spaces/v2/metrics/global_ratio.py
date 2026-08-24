@@ -4,7 +4,7 @@ restricted to a point's nearest neighbours in x-space.
 
     from metrics.global_ratio import cached_global_ratio, eps_global_of_N
     result = cached_global_ratio("configs/photonic.yaml", "parity")
-    eps_global_of_N(result, N=10000, t=1.0, delta=0.1)
+    eps_global_of_N(result, N=10000, delta=0.1)     # t defaults to 1/delta, see below
 
 **The bound.**  For epsilon > 0, delta in (0, 1], t > 0, and theta, theta' drawn independently from
 the parameter distribution, with probability at least 1 - 2/t, taking
@@ -16,6 +16,15 @@ simultaneously with probability at least 1 - 2*delta.  Solving for epsilon at fi
 "replace the free variable with N" move as :func:`metrics.local_ratio.eps_local_of_N`):
 
     eps_global(N) = sqrt[ t * Var_samp(O) / (delta * N * Var_circ(O)) ]
+
+**``t`` and ``delta`` gate the SAME simultaneous guarantee, not two unrelated stages** -- "with
+probability >= 1-2/t, ... simultaneously with probability >= 1-2*delta" is one combined claim, so
+both must be chosen to give a real confidence level.  An earlier version of this module defaulted
+to ``t=1.0``, which makes ``1-2/t = -1`` -- a negative "probability," i.e. no guarantee at all --
+while calling that "the loosest choice consistent with ``t>0``"; that was wrong, since ``t>0``
+alone doesn't make ``1-2/t`` valid (that needs ``t>2``).  :func:`eps_global_of_N` now defaults to
+``t = 1/delta``, which sets ``1-2/t = 1-2*delta`` so both halves of the simultaneous guarantee are
+equally tight, controlled by the single ``delta`` a caller already has to choose.
 
 **Averaged over x, not theta -- the same substitution as :mod:`metrics.circuit_variance`.**
 ``Var_samp``/``Var_circ`` here are this project's x-averaged construction (built on
@@ -77,13 +86,24 @@ def cached_global_ratio(cfg_path: str | Path, observable: str, *,
     return result
 
 
-def eps_global_of_N(result: dict, *, N: int, t: float = 1.0, delta: float = 0.1) -> float:
+def eps_global_of_N(result: dict, *, N: int, t: float | None = None, delta: float = 0.1) -> float:
     """``eps_global(N) = sqrt[t * Var_samp / (delta * N * Var_circ)]`` -- the resolvable relative
-    error, in units of ``sqrt(Var_circ)``, at shot budget ``N``.  ``t=1`` is the loosest
-    (least-conservative) choice consistent with Proposition 1's own hypothesis ``t > 0`` -- raise
-    it for the probability guarantee on bounding the per-point variance by ``t * Var_samp`` (see
-    the module docstring's Markov-inequality step) to hold with higher confidence.
+    error, in units of ``sqrt(Var_circ)``, at shot budget ``N``.
+
+    Proposition 1's guarantee holds with probability at least ``1 - 2/t`` on the Markov step
+    (bounding the per-point variance by ``t * Var_samp``), **simultaneously** with probability at
+    least ``1 - 2*delta`` on the Chebyshev step (Eq. 34-35) -- both must hold for the stated
+    guarantee to mean anything, so ``t`` and ``delta`` are not independent free choices, they gate
+    the same overall confidence.  ``t=1`` (this function's old default) gives ``1-2/t = -1``, a
+    negative "probability" -- i.e. no guarantee at all -- so it must never be used; ``t>2`` is the
+    bare minimum for ``1-2/t`` to be a valid (non-negative) probability.
+
+    Default here is ``t = 1/delta``, which makes the two halves equally tight:
+    ``1-2/t = 1-2*delta``, matching the Chebyshev side's own confidence rather than leaving it
+    controlled by an unrelated constant. Pass ``t`` explicitly to decouple the two.
     """
+    if t is None:
+        t = 1.0 / float(delta)
     var_samp, var_circ = result["var_samp"], result["var_circ"]
     return (float(t) * var_samp / (float(delta) * int(N) * max(var_circ, 1e-300))) ** 0.5
 
@@ -96,7 +116,9 @@ def main(argv=None) -> None:
     ap.add_argument("--config", required=True)
     ap.add_argument("--observables", nargs="+", required=True)
     ap.add_argument("--N", type=int, default=10000)
-    ap.add_argument("--t", type=float, default=1.0)
+    ap.add_argument("--t", type=float, default=None, help="Markov-step confidence parameter; "
+                                                          "defaults to 1/delta so 1-2/t matches "
+                                                          "1-2*delta (see module docstring)")
     ap.add_argument("--delta", type=float, default=0.1)
     ap.add_argument("--out-root", default="datasets")
     ap.add_argument("--scores-root", default="scores")
