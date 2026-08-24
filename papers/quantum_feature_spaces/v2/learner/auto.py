@@ -39,7 +39,7 @@ from .base import build_learner, evaluate
 from . import embedding, kernel, nn  # noqa: F401  -- registration side effects
 
 
-def run_config(cfg_path: str | Path, observable: str, learner_name: str, *,
+def run_config(cfg_path, observable: str, learner_name: str, *,
                out_root: str = "datasets", scores_root: str = "scores",
                n_train: int | None = None, graph_density: float = 0.5,
                split_seed: int | None = None, force: bool = False, **learner_kwargs) -> dict:
@@ -49,6 +49,13 @@ def run_config(cfg_path: str | Path, observable: str, learner_name: str, *,
     logic lives there, shared with :func:`~learner.compare.run_arm` and every other learner-fitting
     call site, so there is exactly one place a fit is ever paid for a given (config, observable,
     learner, hyperparameters, split) combination.
+
+    ``cfg_path`` accepts a path (``str``/``Path``) or an already-built
+    :class:`~config.ExperimentConfig` -- see :func:`~learner.cache._resolve_config`. Lets a caller
+    sweeping a config field in a loop (e.g. :func:`eval.r2_vs_shots.sweep_r2_vs_shots` varying
+    ``cfg.generation.shots``) pass the mutated in-memory config directly instead of writing one
+    sibling YAML file per value swept -- the on-disk cache is keyed off the resulting dataset
+    identity (``artifact_name``), not off ``cfg_path``, so this changes nothing about caching.
 
     Raises if the artifact for ``cfg_path`` has not been generated yet.
 

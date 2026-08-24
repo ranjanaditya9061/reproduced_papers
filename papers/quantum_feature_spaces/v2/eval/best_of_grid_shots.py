@@ -7,13 +7,16 @@ Same grid (observables x variants, one cell = max over
 the same output convention as :mod:`eval.best_of_grid` -- this module only adds the shots layer on
 top, reusing every other piece of it directly rather than re-implementing the grid/plot logic.
 
-**Why a separate module, not a ``--shots`` flag on ``best_of_grid.py``.**
-:func:`learner.auto.run_config`/:func:`learner.cache.cached_fit` only accept a config **path** (they
-call :func:`config.load_config` unconditionally), so sweeping a shot budget needs a real,
-permanent sibling config per variant with ``generation.shots`` set -- the same
-:func:`eval.r2_vs_shots._shots_variant_path` construction, reused here rather than duplicated, one
-call per variant in the folder before handing the (now shots-tagged) variant paths to
-:func:`eval.best_of_grid.sweep_best_of_grid` unchanged.
+**Why a separate module, not a ``--shots`` flag on ``best_of_grid.py``.**  Every variant's config
+needs ``generation.shots`` set to the swept budget before its shots are generated and its learners
+fit -- :func:`eval.r2_vs_shots._shots_variant_config` builds that as an in-memory
+:class:`~config.ExperimentConfig` copy (no sibling YAML written to disk), one per variant in the
+folder, then hands those config objects to :func:`eval.best_of_grid.sweep_best_of_grid` in place of
+the usual variant paths.  :func:`learner.auto.run_config`/:func:`learner.cache.cached_fit` accept
+either (:func:`~learner.cache._resolve_config`), and the on-disk fit/score cache is keyed off the
+resulting dataset identity, not off a path, so this is cache-equivalent to writing the file --
+:func:`~circuit.spin.parallel_row_map`'s process-pool workers pickle the config objects across
+process boundaries the same way they already pickle every other task argument.
 """
 
 from __future__ import annotations
@@ -29,14 +32,13 @@ if __package__ in (None, ""):                    # allow `python eval/best_of_gr
 def run(*, eval_dir: Path, shots: int, observables=None, n_seeds: int = 10,
        out_root: str = "datasets", scores_root: str = "scores",
        n_train: int | None = None, n_jobs: int = 1) -> dict:
-    """Same as :func:`eval.best_of_grid.run`, but every variant is first rewritten to a
-    ``shots``-tagged sibling config (:func:`eval.r2_vs_shots._shots_variant_path`) and its shots
-    generated (:func:`pipeline.generate.generate_shots`) before the grid is swept."""
-    from config import load_config
-
+    """Same as :func:`eval.best_of_grid.run`, but every variant's config is first given an
+    in-memory ``generation.shots = shots`` override (:func:`eval.r2_vs_shots.
+    _shots_variant_config`) and its shots generated (:func:`pipeline.generate.generate_shots`)
+    before the grid is swept."""
     from eval.best_of_grid import (DEFAULT_OBSERVABLES, _display_label, _safe_tag, _variants_in,
                                    plot_best_of_grid, sweep_best_of_grid)
-    from eval.r2_vs_shots import _shots_variant_path
+    from eval.r2_vs_shots import _shots_variant_config
     from pipeline.generate import generate_shots
 
     from eval.best_of_grid import AXIS_TITLES
@@ -48,9 +50,9 @@ def run(*, eval_dir: Path, shots: int, observables=None, n_seeds: int = 10,
 
     shots_variants = []
     for stem, path in base_variants:
-        variant_path = _shots_variant_path(path, shots)
-        generate_shots(load_config(variant_path), root=out_root)
-        shots_variants.append((stem, variant_path))
+        cfg_n = _shots_variant_config(path, shots)
+        generate_shots(cfg_n, root=out_root)
+        shots_variants.append((stem, cfg_n))
 
     print(f"=== {eval_dir.name} @ shots={shots}: {len(shots_variants)} variants -> "
          f"{[n for n, _ in shots_variants]}", flush=True)

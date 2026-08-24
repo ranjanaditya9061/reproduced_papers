@@ -34,21 +34,21 @@ def _r2_at_shots(cfg_path, observable: str, shots: int, *, n_seeds: int, out_roo
                  scores_root: str) -> float:
     """Max over :data:`learner.auto.DEFAULT_SWEEP_LEARNERS`, each averaged over ``n_seeds``
     reseeded splits, at the given shot budget -- same convention as
-    :func:`eval.best_of_grid.sweep_best_of_grid`, evaluated on the shots-tagged sibling config."""
-    from config import load_config
-
-    from eval.r2_vs_shots import _shots_variant_path
+    :func:`eval.best_of_grid.sweep_best_of_grid`, evaluated on an in-memory
+    ``generation.shots``-overridden config (:func:`eval.r2_vs_shots._shots_variant_config`, no
+    sibling YAML written to disk)."""
+    from eval.r2_vs_shots import _shots_variant_config
     from learner.auto import DEFAULT_SWEEP_LEARNERS, run_config
     from pipeline.generate import generate_shots
 
-    variant_path = _shots_variant_path(cfg_path, shots)
-    generate_shots(load_config(variant_path), root=out_root)
+    cfg_n = _shots_variant_config(cfg_path, shots)
+    generate_shots(cfg_n, root=out_root)
 
     means = []
     for lname, kwargs in DEFAULT_SWEEP_LEARNERS:
         scores = []
         for seed in range(int(n_seeds)):
-            res = run_config(variant_path, observable, lname, out_root=out_root,
+            res = run_config(cfg_n, observable, lname, out_root=out_root,
                              scores_root=scores_root, split_seed=seed, seed=seed, **kwargs)
             scores.append(res["r2"])
         if scores:

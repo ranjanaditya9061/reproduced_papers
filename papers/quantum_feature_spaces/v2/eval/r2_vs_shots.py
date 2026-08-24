@@ -51,46 +51,44 @@ if __package__ in (None, ""):                    # allow `python eval/r2_vs_shot
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def _shots_variant_path(cfg_path: str | Path, n_shots: int) -> Path:
-    """A real, permanent sibling config with ``generation.shots = n_shots`` set -- not a temp file.
+def _shots_variant_config(cfg_path, n_shots: int):
+    """An in-memory copy of ``cfg_path``'s config with ``generation.shots = n_shots`` set -- no
+    sibling YAML file written to disk.
 
-    :func:`learner.auto.run_config`/:func:`learner.cache.cached_fit` only accept a **path**
-    (they call :func:`config.load_config` unconditionally, so an in-memory
-    :class:`config.ExperimentConfig` cannot be passed through them), so each ``N`` in the sweep
-    needs its own config file on disk to reuse the normal caching path -- written once, alongside
-    the base config, at ``<base>__shots<N>.yaml``, so a re-run of this script is a cache hit both
-    at the config-file level and at :func:`~pipeline.generate.generate_shots`'s own shots-store
-    level, exactly like any other config in this repo (matching the ``configs/size_sweep_shots/``
-    naming convention already used elsewhere for this exact purpose).
+    :func:`learner.auto.run_config`/:func:`learner.cache.cached_fit` now accept an
+    :class:`~config.ExperimentConfig` directly (:func:`~learner.cache._resolve_config`), so each
+    ``N`` in this sweep no longer needs its own ``<base>__shots<N>.yaml`` on disk to reuse the
+    normal caching path -- the on-disk cache is keyed off ``artifact_name`` (which already folds
+    in the shot count via :func:`~pipeline.shots.shot_source_tag`), not off a config path, so
+    nothing about cache reuse across repeated runs changes; only the sibling-file clutter goes
+    away. ``deepcopy`` because :class:`~config.ExperimentConfig` is a plain mutable dataclass and
+    every ``N`` in a sweep must not perturb a previous iteration's config object.
     """
-    import yaml
+    import copy
 
-    base = Path(cfg_path)
-    variant_path = base.with_name(f"{base.stem}__shots{int(n_shots)}{base.suffix}")
-    if not variant_path.exists():
-        raw = yaml.safe_load(base.read_text()) or {}
-        raw.setdefault("generation", {})["shots"] = int(n_shots)
-        variant_path.write_text(yaml.safe_dump(raw, sort_keys=False))
-    return variant_path
+    from config import load_config
+
+    base_cfg = cfg_path if hasattr(cfg_path, "generation") else load_config(cfg_path)
+    cfg_n = copy.deepcopy(base_cfg)
+    cfg_n.generation.shots = int(n_shots)
+    return cfg_n
 
 
-def _r2_at_shots(cfg_path: str | Path, observable: str, n_shots: int, *, learners, n_seeds: int,
+def _r2_at_shots(cfg_path, observable: str, n_shots: int, *, learners, n_seeds: int,
                  out_root: str, scores_root: str, n_train: int | None) -> dict:
     """``{learner_name: [r2_seed0, ...]}`` for one ``(cfg_path, observable, n_shots)`` cell,
     generating the shots branch first if it is not already on disk at this budget."""
-    from config import load_config
     from learner.auto import run_config
     from pipeline.generate import generate_shots
 
-    variant_path = _shots_variant_path(cfg_path, n_shots)
-    cfg_n = load_config(variant_path)
+    cfg_n = _shots_variant_config(cfg_path, n_shots)
     generate_shots(cfg_n, root=out_root)
 
     per_learner: dict[str, list[float]] = {}
     for lname, kwargs in learners:
         scores = []
         for seed in range(int(n_seeds)):
-            res = run_config(variant_path, observable, lname, out_root=out_root,
+            res = run_config(cfg_n, observable, lname, out_root=out_root,
                              scores_root=scores_root, n_train=n_train, split_seed=seed, seed=seed,
                              **kwargs)
             scores.append(res["r2"])

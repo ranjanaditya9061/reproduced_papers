@@ -112,21 +112,40 @@ def fit_task_bytes(cfg_path: str | Path, *, n_train: int | None = None) -> int:
         return _DEFAULT_TASK_BYTES
 
 
-def preload_dataset(cfg_path: str | Path, observable: str, *, out_root: str | Path = "datasets",
+def _resolve_config(cfg_path):
+    """``cfg_path`` may already be a built :class:`~config.ExperimentConfig` (an in-memory config
+    for e.g. a shot budget swept in a loop, never written to disk) or a path to load one from --
+    accept either rather than forcing every caller to round-trip through a YAML file on disk just
+    to get a cache key. Detected structurally (``problem``/``generation`` attributes) rather than
+    ``isinstance`` against :class:`~config.ExperimentConfig` to avoid importing :mod:`config` at
+    module load time for what is, on the hot (path) path, an unnecessary import.
+    """
+    if hasattr(cfg_path, "problem") and hasattr(cfg_path, "generation"):
+        return cfg_path
+    from config import load_config
+    return load_config(cfg_path)
+
+
+def preload_dataset(cfg_path, observable: str, *, out_root: str | Path = "datasets",
                     scores_root: str | Path = "scores", graph_density: float = 0.5) -> tuple:
     """``(cfg, X, soft, artifact_name)`` for :func:`cached_fit`'s ``_preloaded`` argument -- call
     this once per (config, observable) and pass the result to every :func:`cached_fit` call for
-    that pair, instead of letting each one reload the dataset from disk."""
-    from config import load_config
+    that pair, instead of letting each one reload the dataset from disk.
+
+    ``cfg_path`` accepts a path or an already-built :class:`~config.ExperimentConfig` (see
+    :func:`_resolve_config`) -- a caller sweeping e.g. a shot budget in a loop can pass a config
+    built and mutated in memory (``cfg.generation.shots = N``) without writing a sibling YAML file
+    for every value swept.
+    """
     from pipeline.score import load_dataset
 
-    cfg = load_config(cfg_path)
+    cfg = _resolve_config(cfg_path)
     X, soft, artifact_name = load_dataset(cfg, observable, out_root=out_root,
                                           scores_root=scores_root, graph_density=graph_density)
     return cfg, X, soft, artifact_name
 
 
-def cached_fit(cfg_path: str | Path, observable: str, learner_name: str, *,
+def cached_fit(cfg_path, observable: str, learner_name: str, *,
               out_root: str | Path = "datasets", scores_root: str | Path = "scores",
               n_train: int | None = None, graph_density: float = 0.5,
               split_seed: int | None = None, force: bool = False,
@@ -140,6 +159,13 @@ def cached_fit(cfg_path: str | Path, observable: str, learner_name: str, *,
     callers do not need to change how they read the result), and additionally a ``"train"`` key
     with the same stats computed on the training split.
 
+    ``cfg_path`` accepts a path OR an already-built :class:`~config.ExperimentConfig` (see
+    :func:`_resolve_config`) -- the on-disk cache under ``scores_root`` is keyed entirely off
+    ``artifact_name`` (from :func:`~pipeline.score.load_dataset`, which already folds in the shot
+    count/circuit hash/graph density -- see :mod:`pipeline.shots`'s ``shot_source_tag``) plus a
+    hash of the fit's own hyperparameters, never off ``cfg_path`` itself, so passing an in-memory
+    config here costs nothing on cache correctness -- it only skips the YAML round-trip.
+
     ``force=True`` ignores any cached entry and refits, overwriting the cache -- same convention as
     :func:`~pipeline.score.load_soft`'s own ``force`` flag.
 
@@ -152,7 +178,6 @@ def cached_fit(cfg_path: str | Path, observable: str, learner_name: str, *,
     time by roughly two orders of magnitude across a multi-seed multi-learner sweep). Internal
     parameter, not part of the public per-cell API other callers use.
     """
-    from config import load_config
     from pipeline.score import load_dataset
     from pipeline.split import split_indices
 
@@ -161,7 +186,7 @@ def cached_fit(cfg_path: str | Path, observable: str, learner_name: str, *,
     if _preloaded is not None:
         cfg, X, soft, artifact_name = _preloaded
     else:
-        cfg = load_config(cfg_path)
+        cfg = _resolve_config(cfg_path)
         X, soft, artifact_name = load_dataset(cfg, observable, out_root=out_root,
                                               scores_root=scores_root, graph_density=graph_density)
     source = "shots" if cfg.generation.shots else "exact"
