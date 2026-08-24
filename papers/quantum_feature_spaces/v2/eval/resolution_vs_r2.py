@@ -5,6 +5,7 @@ to learnability.
 
     python eval/resolution_vs_r2.py --eval-dir configs/eval/photonic_encoding --observable parity \
         --N 10000
+    python eval/resolution_vs_r2.py --configs configs/eval/*/*.yaml --observable parity --N 10000
 
 **Local**: ``mean(min_delta - eps_local(N))`` per config -- the average resolvability margin across
 the pool's nearest-neighbour pairs (:mod:`metrics.local_ratio`), plotted against that config's
@@ -137,8 +138,13 @@ def main(argv=None) -> None:
     import json
 
     ap = argparse.ArgumentParser(description="Local and global resolution vs. R^2, across a "
-                                             "configs/eval/ group.")
-    ap.add_argument("--eval-dir", required=True, help="e.g. configs/eval/photonic_encoding")
+                                             "configs/eval/ group, or an explicit flat list of "
+                                             "configs.")
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("--eval-dir", help="e.g. configs/eval/photonic_encoding")
+    group.add_argument("--configs", nargs="+", help="explicit config paths/globs, e.g. "
+                                                     "configs/eval/*/*.yaml to combine every "
+                                                     "subfolder")
     ap.add_argument("--observable", required=True)
     ap.add_argument("--N", type=int, default=10000)
     ap.add_argument("--k", type=int, default=10)
@@ -151,12 +157,15 @@ def main(argv=None) -> None:
     ap.add_argument("--out-png", default=None)
     args = ap.parse_args(argv)
 
-    from eval.best_of_grid import _variants_in
+    if args.configs:
+        cfg_paths = [Path(p) for p in args.configs]
+    else:
+        from eval.best_of_grid import _variants_in
 
-    variants = _variants_in(Path(args.eval_dir))
-    if not variants:
-        raise SystemExit(f"no *.yaml configs found in {args.eval_dir}")
-    cfg_paths = [path for _, path in variants]
+        variants = _variants_in(Path(args.eval_dir))
+        if not variants:
+            raise SystemExit(f"no *.yaml configs found in {args.eval_dir}")
+        cfg_paths = [path for _, path in variants]
 
     result = collect(cfg_paths, args.observable, N=args.N, k=args.k, delta=args.delta, t=args.t,
                      n_seeds=args.n_seeds, out_root=args.out_root, scores_root=args.scores_root)

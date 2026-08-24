@@ -2,6 +2,7 @@
 
     python eval/best_of_grid.py --eval-dir configs/eval/photonic_encoding
     python eval/best_of_grid.py --eval-dir configs/eval/classical_vs_quantum --n-seeds 10
+    python eval/best_of_grid.py --configs configs/eval/*/*.yaml   # combine every subfolder
 
 For one ``configs/eval/<group>/`` folder (e.g. ``havlicek/``, ``phase/`` -- each ``*.yaml`` inside is
 one model variant), builds a grid with **observables as rows and variants as columns**: the layout
@@ -313,10 +314,46 @@ def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds
     return result
 
 
+def run_configs(*, config_paths: list[str | Path], observables: list[str] = DEFAULT_OBSERVABLES,
+                n_seeds: int = 10, out_root: str = "datasets", scores_root: str = "scores",
+                n_train: int | None = None, n_jobs: int = 1,
+                out_json: str | Path | None = None, out_png: str | Path | None = None) -> dict:
+    """Same grid as :func:`run`, but over an explicit flat list of config paths instead of one
+    ``--eval-dir`` folder -- for combining variants across several ``configs/eval/<group>/``
+    folders in one grid (e.g. ``configs/eval/*/*.yaml``), matching :mod:`eval.gradient_vs_r2`'s
+    own ``--configs`` convention rather than introducing a second, folder-scoped flag pattern.
+
+    Columns are labelled by each config's bare filename stem -- no :data:`VARIANT_LABELS`/
+    :data:`AXIS_TITLES` lookup, since those are curated per single-folder group and a combined
+    run mixes variants from different families that were never meant to share one labelling
+    scheme; deliberately unopinionated rather than guessing a grouped label.
+    """
+    variants = [(Path(p).stem, Path(p)) for p in config_paths]
+    if not variants:
+        raise SystemExit("no config paths given")
+    print(f"=== {len(variants)} configs -> {[n for n, _ in variants]}", flush=True)
+
+    result = sweep_best_of_grid(variants, observables, n_seeds=n_seeds, out_root=out_root,
+                                scores_root=scores_root, n_train=n_train, n_jobs=n_jobs)
+    tag = "-".join(_safe_tag(o) for o in observables)
+    out_json = Path(out_json) if out_json else Path(f"best_of_grid__{tag}.json")
+    out_png = Path(out_png) if out_png else Path(f"best_of_grid__{tag}.pdf")
+    out_json.write_text(json.dumps(result, indent=2))
+    plot_best_of_grid(result, x_label="model", variant_labels=result["variants"],
+                      save_path=out_png)
+    print(f"    wrote {out_png}", flush=True)
+    return result
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Observable x model heatmap, one cell = best learner "
-                                              "(mean over reseeded fits) for one configs/eval/ group.")
-    ap.add_argument("--eval-dir", required=True, help="e.g. configs/eval/havlicek")
+                                              "(mean over reseeded fits) for one configs/eval/ "
+                                              "group, or an explicit flat list of configs.")
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("--eval-dir", help="e.g. configs/eval/havlicek -- one folder's variants")
+    group.add_argument("--configs", nargs="+", help="explicit config paths/globs, e.g. "
+                                                     "configs/eval/*/*.yaml to combine every "
+                                                     "subfolder into one grid")
     ap.add_argument("--observables", nargs="+", default=DEFAULT_OBSERVABLES)
     ap.add_argument("--n-seeds", type=int, default=10)
     ap.add_argument("--n-train", type=int, default=None)
@@ -326,11 +363,19 @@ def main(argv=None) -> None:
                                                             "(default)")
     ap.add_argument("--root", default="datasets")
     ap.add_argument("--scores-root", default="scores")
+    ap.add_argument("--out-json", default=None, help="--configs mode only")
+    ap.add_argument("--out-png", default=None, help="--configs mode only")
     args = ap.parse_args(argv)
 
-    run(eval_dir=Path(args.eval_dir), observables=args.observables, n_seeds=args.n_seeds,
-       out_root=args.root, scores_root=args.scores_root, n_train=args.n_train,
-       n_jobs=args.n_jobs)
+    if args.configs:
+        run_configs(config_paths=args.configs, observables=args.observables,
+                   n_seeds=args.n_seeds, out_root=args.root, scores_root=args.scores_root,
+                   n_train=args.n_train, n_jobs=args.n_jobs, out_json=args.out_json,
+                   out_png=args.out_png)
+    else:
+        run(eval_dir=Path(args.eval_dir), observables=args.observables, n_seeds=args.n_seeds,
+           out_root=args.root, scores_root=args.scores_root, n_train=args.n_train,
+           n_jobs=args.n_jobs)
 
 
 if __name__ == "__main__":
