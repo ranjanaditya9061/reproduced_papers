@@ -165,6 +165,100 @@ class PhaseEncoding(Encoding):
         return ph
 
 
+class RepeatedPhaseEncoding(Encoding):
+    """``L`` repeated ``phase`` blocks (data re-uploading): ``PS(x) -> W -> PS(x) -> W -> ... ->
+    PS(x)``, ``L-1`` internal Haar unitaries ``W`` interleaved between ``L`` phase-shifter layers,
+    all inside this one :meth:`add_to`/:meth:`add_concrete` call.
+
+    Registered as ``phase2`` through ``phase10`` (:data:`REPEATED_PHASE_DEPTHS`), each a fixed
+    ``L``.  ``phase1`` is not registered separately -- it would be identical to plain ``phase``,
+    which already exists.
+
+    **Why this needs no change to** :mod:`circuit.photonic_circuit`.  ``build_sandwich_circuit``
+    seeds ``torch.manual_seed``/``pcvl.random_seed`` once, draws its own first Haar unitary
+    (``W1``), then calls ``encoding.add_to(circuit, ...)`` -- still inside that same seeded
+    stream -- before drawing its own final unitary.  This class's ``add_to`` draws its ``L-1``
+    internal unitaries with plain ``pcvl.Matrix.random_unitary(m)`` calls from right there, so
+    they continue the *same* stream ``W1`` came from, and the sandwich's own final draw becomes
+    this encoding's ``L``-th (last) unitary -- giving ``L+1`` total Haar unitaries end to end
+    (``W1`` from the sandwich, ``L-1`` internal to this class, ``W_{L+1}`` from the sandwich again)
+    with no seed threaded through explicitly.  A depth-``L`` and depth-``L+1`` run therefore share
+    their first ``L+1`` unitaries exactly, by construction of the shared stream -- not by any
+    bookkeeping this class does itself.
+
+    **Photonic (boson-sampling / ``model.kind=photonic``) only.**  The analytic ``det``/``Perm``
+    readouts (:func:`~circuit.photonic_circuit.sandwich_unitaries`/``sandwich_unitary_at``, used by
+    ``model.kind=fermion``) draw only two unitaries total from the seed and hand them to the
+    encoding as fixed ``W1``/``W2`` arguments -- there is no hook for an encoding to draw further
+    internal unitaries of its own on that path, so :meth:`unitary` raises rather than silently
+    running a shorter, wrong circuit.  Every merlin/boson-sampling path (:func:`~circuit.
+    photonic_circuit.build_quantum_layer`, hence :class:`~model.photonic.PhotonicModel`) works
+    unmodified, since it only ever goes through :meth:`add_to`/:meth:`add_concrete`.
+    """
+
+    n_layers: int = 2
+
+    def __init_subclass__(cls, **kwargs):
+        # Each depth needs its own class (not one shared instance) so ENCODINGS[f"phase{L}"]
+        # resolves to a distinct n_layers -- registration itself is unchanged (Encoding's own
+        # __init_subclass__, invoked via super() below).
+        super().__init_subclass__(**kwargs)
+
+    def validate(self, *, m: int, k: int, n_features: int) -> None:
+        if n_features > m:
+            raise ValueError(
+                f"encoding {self.name!r} puts one phase shifter per feature on its own mode "
+                f"(same geometry as 'phase', repeated), so it needs n_features <= m (got "
+                f"n_features={n_features}, m={m}). Raise m, or lower n_features."
+            )
+
+    def add_to(self, circuit, *, m: int, n_features: int, parameterised: bool = True) -> None:
+        import perceval as pcvl
+
+        # One Parameter object per feature, reused (not re-created) at every layer -- data
+        # re-uploading means the SAME x_i drives every occurrence, and perceval rejects two
+        # distinct Parameter objects sharing one name ("two parameters with the same name in the
+        # circuit"), so the object itself, not just the name string, must be shared.
+        params = [pcvl.P(f"x{i}") for i in range(n_features)]
+        for layer in range(self.n_layers):
+            for i in range(n_features):
+                circuit.add(i, pcvl.PS(params[i]))
+            if layer < self.n_layers - 1:
+                circuit.add(0, pcvl.Unitary(pcvl.Matrix.random_unitary(m)), merge=True)
+
+    def add_concrete(self, circuit, x, *, m: int, n_features: int) -> None:
+        import perceval as pcvl
+
+        for layer in range(self.n_layers):
+            for i in range(n_features):
+                circuit.add(i, pcvl.PS(float(x[i])))
+            if layer < self.n_layers - 1:
+                circuit.add(0, pcvl.Unitary(pcvl.Matrix.random_unitary(m)), merge=True)
+
+    def unitary(self, X, *, m: int, n_features: int):
+        raise NotImplementedError(
+            f"encoding {self.name!r} draws its own internal Haar unitaries inside add_to/"
+            "add_concrete, which the analytic det/Perm path (sandwich_unitaries/"
+            "sandwich_unitary_at, used by model.kind='fermion') has no hook for -- it only ever "
+            "draws two fixed unitaries from the seed. Use model.kind='photonic' (the merlin/"
+            "boson-sampling path), which calls add_to directly and needs no such hook."
+        )
+
+    def spec(self) -> dict:
+        return {"encoding": self.name, "n_layers": self.n_layers}
+
+
+#: phase2..phase10 -- one class per depth, registered by name. phase1 is not registered
+#: separately since it would duplicate plain PhaseEncoding ("phase").
+REPEATED_PHASE_DEPTHS = range(2, 11)
+for _L in REPEATED_PHASE_DEPTHS:
+    globals()[f"_RepeatedPhaseEncoding{_L}"] = type(
+        f"RepeatedPhaseEncoding{_L}", (RepeatedPhaseEncoding,),
+        {"name": f"phase{_L}", "n_layers": _L},
+    )
+del _L
+
+
 def _bs_block(theta):
     """``(N, 2, 2)`` beamsplitter unitary at angle(s) ``theta``, perceval's ``BS`` (``Rx``)
     convention: ``[[cos(t/2), i sin(t/2)], [i sin(t/2), cos(t/2)]]``.  Verified against

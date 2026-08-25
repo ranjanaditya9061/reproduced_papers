@@ -78,6 +78,7 @@ VARIANT_LABELS: dict[str, dict[str, str]] = {
         "bs_phase": "Phase +\nBeamsplitter",
         "havlicek": "Havlicek",
     },
+    "photonic_reencoding": {f"depth{_l}": str(_l) for _l in range(1, 11)},
     "qubit_encoding": {
         "phase": "Phase",
         "iqp": "IQP (Havlicek)",
@@ -114,6 +115,7 @@ VARIANT_LABELS: dict[str, dict[str, str]] = {
 #: generic "model" label so the heatmap states its own comparison without needing the caption.
 AXIS_TITLES: dict[str, str] = {
     "photonic_encoding": "Photonic Encoding",
+    "photonic_reencoding": "# of Re-encodings",
     "qubit_encoding": "Qubit Encoding",
     "complex_qubit_encoding": "Havlicek Encoding",
     "classical_vs_quantum": "Classical Equivalent Model",
