@@ -82,9 +82,11 @@ def sweep_eval_obs(cfg_path: str | Path, families: dict[str, list[str]] = DEFAUL
     grouping for the bar-chart renderer.
 
     Returns ``{"families": {label: [obs, ...]}, "observables": [...], "r2": [...],
-    "detail": [...], "n_seeds": n_seeds, "learners": [...], "config": str(cfg_path)}`` --
-    ``r2``/``detail`` are flat lists aligned with ``observables``, not nested per-variant, since
-    there is exactly one variant here.
+    "r2_std": [...], "detail": [...], "n_seeds": n_seeds, "learners": [...],
+    "config": str(cfg_path)}`` -- ``r2``/``r2_std``/``detail`` are flat lists aligned with
+    ``observables``, not nested per-variant, since there is exactly one variant here. ``r2_std`` is
+    the stdev of the per-seed best-of-learners scores (see :func:`sweep_best_of_grid`'s
+    best-of-three-per-seed reduction), for the bar chart's error bars.
     """
     from .best_of_grid import sweep_best_of_grid
 
@@ -95,10 +97,11 @@ def sweep_eval_obs(cfg_path: str | Path, families: dict[str, list[str]] = DEFAUL
                               graph_density=graph_density, n_jobs=n_jobs)
 
     r2 = [row[0] for row in grid["r2"]]
+    r2_std = [row[0] for row in grid["r2_std"]]
     detail = [row[0] for row in grid["detail"]]
     return {"families": {label: list(obs_list) for label, obs_list in families.items()},
-            "observables": observables, "r2": r2, "detail": detail, "n_seeds": n_seeds,
-            "learners": grid["learners"], "config": str(cfg_path)}
+            "observables": observables, "r2": r2, "r2_std": r2_std, "detail": detail,
+            "n_seeds": n_seeds, "learners": grid["learners"], "config": str(cfg_path)}
 
 
 def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bool = False):
@@ -113,6 +116,8 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
 
     observables, r2 = result["observables"], result["r2"]
     r2_arr = np.array([np.nan if v is None else v for v in r2], dtype=float)
+    r2_std = np.array([0.0 if s is None else s for s in result.get("r2_std", [0.0] * len(r2))],
+                      dtype=float)
 
     labels = [OBSERVABLE_LABELS.get(o, o.replace("_", " ").title()) for o in observables]
     #: bar height is clamped to >=0 (axis starts at 0, per house style); a negative R^2 draws as a
@@ -123,7 +128,11 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
 
     fig, ax = plt.subplots(figsize=(max(5, 0.7 * len(observables) + 1.5), 3))
     x = np.arange(len(observables))
-    ax.bar(x, heights, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3)
+    err = np.where(np.isfinite(r2_arr), r2_std, 0.0)
+    #: error bars at +/- one stdev of the per-seed best-of-learners scores (see
+    #: eval.best_of_grid.sweep_best_of_grid's best-of-three-per-seed reduction).
+    ax.bar(x, heights, yerr=err, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3,
+          capsize=3, error_kw={"linewidth": 0.8, "zorder": 4})
     for i, v in enumerate(r2_arr):
         if not np.isfinite(v):
             ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=7, rotation=90)
@@ -158,6 +167,7 @@ def _result_for_family(result: dict, label: str) -> dict:
     return {"families": {label: obs_list},
             "observables": [result["observables"][i] for i in keep],
             "r2": [result["r2"][i] for i in keep],
+            "r2_std": [result["r2_std"][i] for i in keep],
             "detail": [result["detail"][i] for i in keep],
             "n_seeds": result["n_seeds"], "learners": result["learners"],
             "config": result["config"]}

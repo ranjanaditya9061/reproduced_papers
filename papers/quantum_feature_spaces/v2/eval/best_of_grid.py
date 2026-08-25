@@ -178,15 +178,23 @@ def sweep_best_of_grid(variants: list[tuple[str, Path]], observables: list[str],
                        scores_root: str = "scores", n_train: int | None = None,
                        graph_density: float = 0.5, n_jobs: int = 1) -> dict:
     """For every ``(observable, variant)`` cell: fit each learner in ``learners`` at ``n_seeds``
-    reseeded draws, average each learner's R^2 over seeds, then take the max across learners.
+    reseeded draws, take the best-of-``learners`` score **at each seed**, then average (and take the
+    stdev of) those ``n_seeds`` per-seed winners.
 
-    Returns ``{"observables": [...], "variants": [...], "r2": [[...]], "detail": [[...]]}`` --
-    ``r2[i][j]`` is the max-of-per-learner-means for ``(observables[i], variants[j])``; ``detail``
-    holds the same shape but each cell is ``{learner_name: [r2_seed0, r2_seed1, ...]}`` so no raw
-    number is lost even though only the summary feeds the heatmap.  A cell that raises for every
-    learner/seed is recorded as ``None`` in ``r2`` (empty dict in ``detail``) and printed, not fatal
-    to the rest of the grid -- same per-cell failure discipline as every other sweep in
-    :mod:`learner.auto`.
+    **Reduction order, stated precisely because it is easy to get backwards**: this is
+    best-of-three-per-seed, THEN mean-over-seeds -- not mean-over-seeds-per-learner, then
+    best-of-three. The two differ whenever different learners win at different seeds: the former
+    tracks "how well did the best available learner do on this particular split," the latter
+    tracks "which single learner is best on average." A seed where a learner's fit fails (``None``)
+    is excluded from that seed's max, not treated as a zero.
+
+    Returns ``{"observables": [...], "variants": [...], "r2": [[...]], "r2_std": [[...]],
+    "detail": [[...]]}`` -- ``r2[i][j]``/``r2_std[i][j]`` are the mean/stdev of the per-seed
+    best-of-learners scores for ``(observables[i], variants[j])``; ``detail`` holds the same shape
+    but each cell is ``{learner_name: [r2_seed0, r2_seed1, ...]}`` so no raw number is lost even
+    though only the summary feeds the plot.  A cell that raises for every learner/seed is recorded
+    as ``None`` in ``r2`` (empty dict in ``detail``) and printed, not fatal to the rest of the grid
+    -- same per-cell failure discipline as every other sweep in :mod:`learner.auto`.
 
     Every ``(observable, variant, learner, seed)`` fit is independent, so they are flattened into
     one task list and handed to :func:`~v2.circuit.spin.parallel_row_map`, the same ordered
@@ -221,25 +229,29 @@ def sweep_best_of_grid(variants: list[tuple[str, Path]], observables: list[str],
             seed_scores.append(r2)
         cell_seed_scores[(obs, vname, lname)] = seed_scores
 
-    r2_grid, detail_grid = [], []
+    r2_grid, r2_std_grid, detail_grid = [], [], []
     for obs in observables:
-        r2_row, detail_row = [], []
+        r2_row, r2_std_row, detail_row = [], [], []
         for vname, vpath in variants:
             cell_detail: dict[str, list[float]] = {}
-            learner_means = []
             for lname, base_kwargs in learners:
-                seed_scores = cell_seed_scores[(obs, vname, lname)]
-                cell_detail[lname] = seed_scores
-                valid = [s for s in seed_scores if s is not None]
+                cell_detail[lname] = cell_seed_scores[(obs, vname, lname)]
+            # best-of-learners AT EACH SEED, then mean/stdev over seeds -- see docstring.
+            per_seed_best = []
+            for seed in range(n):
+                seed_vals = [cell_detail[lname][seed] for lname, _ in learners]
+                valid = [v for v in seed_vals if v is not None]
                 if valid:
-                    learner_means.append(statistics.mean(valid))
-            r2_row.append(max(learner_means) if learner_means else None)
+                    per_seed_best.append(max(valid))
+            r2_row.append(statistics.mean(per_seed_best) if per_seed_best else None)
+            r2_std_row.append(statistics.stdev(per_seed_best) if len(per_seed_best) > 1 else 0.0)
             detail_row.append(cell_detail)
         r2_grid.append(r2_row)
+        r2_std_grid.append(r2_std_row)
         detail_grid.append(detail_row)
 
     return {"observables": list(observables), "variants": variant_names, "r2": r2_grid,
-            "detail": detail_grid, "n_seeds": n_seeds,
+            "r2_std": r2_std_grid, "detail": detail_grid, "n_seeds": n_seeds,
             "learners": [name for name, _ in learners]}
 
 
@@ -304,7 +316,10 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
     House bar-plot style (matches :func:`eval.eval_obs.plot_eval_obs`): no title/legend, axis
     starts at 0 (a negative R^2 draws as a zero-height bar with its value labelled in red at the
     baseline instead of dipping below the axis), one light flat colour, small figure size, light
-    background grid.
+    background grid, error bars at +/- one stdev of the per-seed best-of-learners scores
+    (``result["r2_std"]``, from :func:`sweep_best_of_grid`'s best-of-three-per-seed reduction --
+    absent/``None`` in an older cached result falls back to 0, drawn as no visible whisker rather
+    than raising).
     """
     import matplotlib
     if not show:
@@ -318,12 +333,16 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
 
     labels = variant_labels if variant_labels is not None else variants
     r2 = np.array([np.nan if v is None else v for v in result["r2"][0]], dtype=float)
+    r2_std_row = result.get("r2_std", [[0.0] * len(variants)])[0]
+    r2_std = np.array([0.0 if s is None else s for s in r2_std_row], dtype=float)
     heights = np.clip(np.nan_to_num(r2, nan=0.0), 0.0, None)
     light_colour = "#a8d5e2"
 
     fig, ax = plt.subplots(figsize=(max(5, 0.7 * len(variants) + 1.5), 3))
     x = np.arange(len(variants))
-    ax.bar(x, heights, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3)
+    err = np.where(np.isfinite(r2), r2_std, 0.0)
+    ax.bar(x, heights, yerr=err, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3,
+          capsize=3, error_kw={"linewidth": 0.8, "zorder": 4})
     for i, v in enumerate(r2):
         if not np.isfinite(v):
             ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=7, rotation=90)
