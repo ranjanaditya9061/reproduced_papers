@@ -137,15 +137,15 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
     #: read as a consistent row regardless of how tall each bar is.
     for i, v in enumerate(r2_arr):
         if not np.isfinite(v):
-            ax.text(i, 0.05, "n/a", ha="center", va="bottom", fontsize=10, rotation=90)
+            ax.text(i, 0.05, "n/a", ha="center", va="bottom", rotation=90)
         elif v < 0:
-            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10, color="red")
+            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", color="red")
         else:
-            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10)
+            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom")
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8)
-    ax.set_ylabel("Coefficient of\nDetermination ($R^2$)", fontsize=10)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Coefficient of\nDetermination ($R^2$)")
     ax.set_ylim(0.0, 1.0)
     ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
 

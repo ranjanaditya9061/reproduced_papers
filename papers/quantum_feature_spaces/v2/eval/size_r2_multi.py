@@ -213,11 +213,11 @@ def plot_size_r2_multi(result: dict, *, save_dir: Path, tag_prefix: str = "size_
         if any(m > cutover_m for row in rows for m in row["m"]):
             ax.axvline(cutover_m, color="grey", linestyle=":", linewidth=1)
 
-        ax.set_xlabel("m", fontsize=8)
-        ax.set_ylabel("Coefficient of\nDetermination ($R^2$)", fontsize=10)
+        ax.set_xlabel("m")
+        ax.set_ylabel("Coefficient of\nDetermination ($R^2$)")
         ax.set_ylim(0.0, 1.0)
         ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
-        ax.legend(loc="best", fontsize=7, frameon=False)
+        ax.legend(loc="best", frameon=False)
 
         fig.tight_layout()
         out_path = save_dir / f"{tag_prefix}__{_safe_tag(obs)}.png"

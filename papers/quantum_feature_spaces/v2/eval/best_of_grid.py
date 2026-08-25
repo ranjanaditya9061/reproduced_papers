@@ -294,7 +294,7 @@ def plot_best_of_grid(result: dict, *, x_label: str = "model",
             v = r2[i][j]
             text = "n/a" if not np.isfinite(v) else f"{v:.2f}"
             colour = "black" if not np.isfinite(v) or -0.4 < v < 0.75 else "white"
-            ax.text(j, i, text, ha="center", va="center", color=colour, fontsize=9)
+            ax.text(j, i, text, ha="center", va="center", color=colour)
 
     fig.colorbar(im, ax=ax, label="Coefficient of Determination (R^2)")
     fig.tight_layout()
@@ -347,16 +347,16 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
     #: read as a consistent row regardless of how tall each bar is.
     for i, v in enumerate(r2):
         if not np.isfinite(v):
-            ax.text(i, 0.05, "n/a", ha="center", va="bottom", fontsize=10, rotation=90)
+            ax.text(i, 0.05, "n/a", ha="center", va="bottom", rotation=90)
         elif v < 0:
-            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10, color="red")
+            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", color="red")
         else:
-            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10)
+            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom")
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=0, ha="center", fontsize=8)
-    ax.set_xlabel(x_label, fontsize=8)
-    ax.set_ylabel("Coefficient of\nDetermination ($R^2$)", fontsize=10)
+    ax.set_xticklabels(labels, rotation=0, ha="center")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Coefficient of\nDetermination ($R^2$)")
     ax.set_ylim(0.0, 1.0)
     ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
 
