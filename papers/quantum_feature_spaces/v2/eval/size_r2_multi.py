@@ -214,7 +214,7 @@ def plot_size_r2_multi(result: dict, *, save_dir: Path, tag_prefix: str = "size_
             ax.axvline(cutover_m, color="grey", linestyle=":", linewidth=1)
 
         ax.set_xlabel("m", fontsize=8)
-        ax.set_ylabel("Coefficient of Determination (R^2)", fontsize=8)
+        ax.set_ylabel("Coefficient of\nDetermination ($R^2$)", fontsize=10)
         ax.set_ylim(0.0, 1.0)
         ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
         ax.legend(loc="best", fontsize=7, frameon=False)

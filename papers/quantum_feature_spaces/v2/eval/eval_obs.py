@@ -145,7 +145,7 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=8)
-    ax.set_ylabel("Coefficient of Determination (R^2)", fontsize=8)
+    ax.set_ylabel("Coefficient of\nDetermination ($R^2$)", fontsize=10)
     ax.set_ylim(0.0, 1.0)
     ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
 
