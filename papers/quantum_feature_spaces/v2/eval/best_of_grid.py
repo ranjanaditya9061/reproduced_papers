@@ -345,16 +345,16 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
           capsize=3, error_kw={"linewidth": 0.8, "zorder": 4})
     for i, v in enumerate(r2):
         if not np.isfinite(v):
-            ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=7, rotation=90)
+            ax.text(i, 0.05, "n/a", ha="center", va="bottom", fontsize=10, rotation=90)
         elif v < 0:
-            ax.text(i, 0.02, f"{v:.2f}", ha="center", va="bottom", fontsize=7, color="red")
+            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10, color="red")
         else:
-            ax.text(i, v + 0.02, f"{v:.2f}", ha="center", va="bottom", fontsize=7)
+            ax.text(i, v + 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10)
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=0, ha="center", fontsize=8)
     ax.set_xlabel(x_label, fontsize=8)
-    ax.set_ylabel("R^2", fontsize=8)
+    ax.set_ylabel("Coefficient of Determination (R^2)", fontsize=8)
     ax.set_ylim(0.0, 1.0)
     ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
 
