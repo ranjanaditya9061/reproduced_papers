@@ -22,6 +22,24 @@ this entirely and are the only Jacobian path used here, at every size.
 **No shots.**  Every ``p``/``dp`` here comes from the exact distribution -- do not add a ``shots=``
 kwarg; see :mod:`metrics.shot_variance`'s module docstring for why an exact-regime metric should
 stay that way rather than growing a shots branch that silently changes what it measures.
+
+**``spin_magic`` readout conditioning (``readout_mu_zero``).**  ``model.probs(x, grad=False)`` on a
+live model returns the *raw*, unconditioned basis -- for ``spin_magic`` that includes its two
+readout modes (:meth:`~model.photonic.PhotonicModel.readout_modes`), doubling the outcome count
+against :func:`~pipeline.distribution.load_dist`'s default (``load_full=False``), which applies the
+``mu = 0`` post-selection at load time.  A saved dataset's ``dist.keys`` is therefore
+post-selection-sized while a fresh finite-difference ``model.probs()`` call is not -- mismatched
+outcome counts across the two, which crashes :func:`dT_dx`'s ``dp.T @ psi`` on a shape mismatch
+whenever the observable was built (via ``resolve_observable``) against the saved, conditioned
+``dist.keys``.  ``readout_mu_zero=True`` (the default) fixes this by conditioning every raw
+``probs()`` call the same way :func:`~pipeline.distribution.load_dist` conditions the saved
+artifact -- via :func:`~pipeline.distribution.readout_condition`, the same function both already
+share (see :func:`~eval_legacy.sweep_delta.readout_zero_probs`, an existing live-model use of it) --
+so the live and saved bases always agree.  A no-op for every model without readout modes (every prep
+except ``spin_magic``).  Pass ``readout_mu_zero=False`` to get the raw, unconditioned basis instead
+(only meaningful together with an observable resolved against the *unconditioned* basis, e.g. via
+``load_dist(path, load_full=True)`` -- mixing conditioned and unconditioned bases is exactly the bug
+this flag exists to prevent).
 """
 
 from __future__ import annotations
@@ -42,16 +60,43 @@ if __package__ in (None, ""):                    # allow `python metrics/gradien
 FD_EPS = 1e-2
 
 
-def probs_and_jacobian_fd(model, x: torch.Tensor, *, eps: float = FD_EPS):
+def _condition_probs(model, P: torch.Tensor, *, readout_mu_zero: bool) -> torch.Tensor:
+    """``P`` (``(1, n_out_raw)``, aligned to ``model.outcome_keys()``), conditioned on the readout
+    modes to match :func:`~pipeline.distribution.load_dist`'s default-loaded basis -- see the
+    module docstring's ``readout_mu_zero`` note.  A no-op when ``readout_mu_zero=False`` or the
+    model has no readout modes (every prep except ``spin_magic``)."""
+    if not readout_mu_zero:
+        return P
+    readout = model.readout_modes()
+    if not readout:
+        return P
+    from pipeline.distribution import readout_condition
+
+    keys = model.outcome_keys()
+    structure = getattr(model.prep, "structure", None)
+    (P,), _ = readout_condition((P,), keys, readout, structure=structure)
+    return P
+
+
+def probs_and_jacobian_fd(model, x: torch.Tensor, *, eps: float = FD_EPS,
+                          readout_mu_zero: bool = True):
     """``(p, dp)`` at one input ``x (n_f,)``: ``p (n_out,)``, ``dp (n_out, n_f)`` by central
-    differences -- ``2 * n_f`` calls to ``model.probs(., grad=False)``, no autograd graph."""
-    p = model.probs(x.unsqueeze(0), grad=False)[0].double()
+    differences -- ``2 * n_f`` calls to ``model.probs(., grad=False)``, no autograd graph.
+
+    ``readout_mu_zero`` (default ``True``) conditions every raw ``probs()`` call on the readout
+    modes before differencing -- see the module docstring; matches the basis a saved-and-reloaded
+    ``spin_magic`` distribution has by default, and is a no-op for every other prep.
+    """
+    p = _condition_probs(model, model.probs(x.unsqueeze(0), grad=False),
+                        readout_mu_zero=readout_mu_zero)[0].double()
     cols = []
     for i in range(int(x.shape[0])):
         h = torch.zeros_like(x)
         h[i] = float(eps)
-        p_plus = model.probs((x + h).unsqueeze(0), grad=False)[0].double()
-        p_minus = model.probs((x - h).unsqueeze(0), grad=False)[0].double()
+        p_plus = _condition_probs(model, model.probs((x + h).unsqueeze(0), grad=False),
+                                 readout_mu_zero=readout_mu_zero)[0].double()
+        p_minus = _condition_probs(model, model.probs((x - h).unsqueeze(0), grad=False),
+                                  readout_mu_zero=readout_mu_zero)[0].double()
         cols.append((p_plus - p_minus) / (2.0 * float(eps)))
     dp = torch.stack(cols, dim=1)
     return p, dp
@@ -77,12 +122,22 @@ DEFAULT_N_X = 100
 
 
 def cached_gradient(cfg_path: str | Path, observable: str, *, n_x: int | None = DEFAULT_N_X,
-                    fd_eps: float = FD_EPS, out_root: str | Path = "datasets",
-                    scores_root: str | Path = "scores", graph_density: float = 0.5,
-                    force: bool = False) -> dict:
+                    fd_eps: float = FD_EPS, readout_mu_zero: bool = True,
+                    out_root: str | Path = "datasets", scores_root: str | Path = "scores",
+                    graph_density: float = 0.5, force: bool = False) -> dict:
     """``||dT/dx||`` and its ``Var_circ``-normalized form at the first ``n_x`` rows (default 100,
     not the full pool -- see :data:`DEFAULT_N_X`) of ``cfg_path``'s input pool, or a prior run's
     cache.  Pass ``n_x=None`` explicitly to use every row instead.
+
+    ``readout_mu_zero`` (default ``True``) -- see the module docstring -- fixes a basis mismatch on
+    ``spin_magic`` configs: without it, the finite-difference ``model.probs()`` calls return the
+    raw, unconditioned (readout-inclusive) basis while the observable is resolved against the
+    saved, ``mu=0``-conditioned ``dist.keys``, crashing on a shape mismatch.  Folded into the cache
+    path (``__mu0`` / ``__full`` suffix) so a cache entry written by a version of this function
+    before this flag existed is never returned for a call that now expects the fix -- that stale
+    entry (from a run that either crashed before writing one, or, on a non-``spin_magic`` config
+    where conditioning is a no-op, wrote an identical result) simply misses and recomputes; pass
+    ``force=True`` to also ignore a same-flag cache entry and refit from scratch.
 
     Returns ``{"g_norm": [...], "g_norm_normalized": [...], "n": N, "artifact": name}``.  Raises for
     ``max_prob`` (or any other ``is_differentiable=False`` observable) -- there is no gradient to
@@ -111,8 +166,9 @@ def cached_gradient(cfg_path: str | Path, observable: str, *, n_x: int | None = 
     dist = load_dist(path)
     artifact_name = str(dist.meta["hash"])
 
+    mu_tag = "mu0" if readout_mu_zero else "full"
     cache_path = (Path(scores_root) / artifact_name / "exact" / "gradient"
-                 / f"{observable}__n{n_x or 'all'}.json")
+                 / f"{observable}__n{n_x or 'all'}__{mu_tag}.json")
     if cache_path.exists() and not force:
         return json.loads(cache_path.read_text())
 
@@ -130,7 +186,8 @@ def cached_gradient(cfg_path: str | Path, observable: str, *, n_x: int | None = 
     n_rows = len(dist) if n_x is None else min(int(n_x), len(dist))
     g_norm = []
     for i in range(n_rows):
-        p, dp = probs_and_jacobian_fd(model, dist.X[i], eps=fd_eps)
+        p, dp = probs_and_jacobian_fd(model, dist.X[i], eps=fd_eps,
+                                      readout_mu_zero=readout_mu_zero)
         g = dT_dx(obs, p, dp)
         g_norm.append(float(g.norm()))
 
@@ -141,6 +198,7 @@ def cached_gradient(cfg_path: str | Path, observable: str, *, n_x: int | None = 
         "artifact": artifact_name,
         "observable": observable,
         "fd_eps": fd_eps,
+        "readout_mu_zero": readout_mu_zero,
         "sqrt_var_circ": sqrt_var_circ,
     }
 
@@ -162,13 +220,17 @@ def main(argv=None) -> None:
                                                                 "rows in the pool)")
     ap.add_argument("--out-root", default="datasets")
     ap.add_argument("--scores-root", default="scores")
-    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--force", action="store_true", help="ignore any cached result and recompute")
+    ap.add_argument("--no-readout-mu-zero", action="store_true",
+                    help="use the raw, unconditioned basis instead of the default mu=0 "
+                         "readout post-selection (spin_magic only; no effect on other preps)")
     args = ap.parse_args(argv)
 
     n_x = None if args.n_x == 0 else args.n_x
     for obs in args.observables:
         res = cached_gradient(args.config, obs, n_x=n_x, out_root=args.out_root,
-                              scores_root=args.scores_root, force=args.force)
+                              scores_root=args.scores_root, force=args.force,
+                              readout_mu_zero=not args.no_readout_mu_zero)
         print(f"{obs:32s} min||g||={min(res['g_norm']):.4g}  "
              f"min||g||_norm={min(res['g_norm_normalized']):.4g}  n={res['n']}")
 

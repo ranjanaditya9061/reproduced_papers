@@ -531,7 +531,6 @@ def _magic_row_worker(task):
     """
     (row, m, k, t_var, n_features, seed, gate_kind, params, structure, structure_params,
      encode_on_spin, encode_circuit, enc_name) = task
-    print(task)
     from perceval import Detector
     from perceval_spoqc import HybridProcessor
 
