@@ -293,6 +293,61 @@ def plot_best_of_grid(result: dict, *, x_label: str = "model",
     return fig
 
 
+def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
+                          variant_labels: list[str] | None = None,
+                          save_path: str | Path | None = None, show: bool = False):
+    """Single-observable variant of :func:`plot_best_of_grid`: one bar per variant instead of a
+    1-row heatmap.  Only sensible when ``result["observables"]`` has exactly one entry (e.g. a
+    ``--observables parity`` run) -- raises otherwise, since a bar plot has nowhere to put a second
+    row and silently picking one would hide the dropped data rather than surfacing it.
+
+    Same colour convention as the heatmap (RdYlGn via bar colour, not cell shading) and the same
+    ``vmin=-0.2, vmax=1.0`` y-axis range, so a reader used to the multi-observable heatmap reads
+    this the same way at a glance.
+    """
+    import matplotlib
+    if not show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    obs, variants = result["observables"], result["variants"]
+    if len(obs) != 1:
+        raise ValueError(f"plot_best_of_grid_bar needs exactly one observable, got {obs!r}")
+
+    labels = variant_labels if variant_labels is not None else variants
+    r2 = np.array([np.nan if v is None else v for v in result["r2"][0]], dtype=float)
+
+    cmap = matplotlib.colormaps["RdYlGn"]
+    norm = matplotlib.colors.Normalize(vmin=-0.2, vmax=1.0)
+    colours = [("lightgrey" if not np.isfinite(v) else cmap(norm(v))) for v in r2]
+
+    fig, ax = plt.subplots(figsize=(max(6, 1.1 * len(variants) + 2), 4))
+    x = np.arange(len(variants))
+    ax.bar(x, np.nan_to_num(r2, nan=0.0), color=colours, edgecolor="black", linewidth=0.5)
+    for i, v in enumerate(r2):
+        if not np.isfinite(v):
+            ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=8, rotation=90)
+        else:
+            ax.text(i, v + (0.02 if v >= 0 else -0.02), f"{v:.2f}", ha="center",
+                    va="bottom" if v >= 0 else "top", fontsize=9)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=0, ha="center")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Coefficient of Determination (R^2)")
+    ax.set_ylim(-0.2, 1.05)
+    ax.axhline(0.0, color="black", linewidth=0.8)
+    ax.set_title(f"Held-out R^2: {OBSERVABLE_LABELS.get(obs[0], obs[0].replace('_', ' ').title())}")
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150)
+    if show:
+        plt.show()
+    return fig
+
+
 def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds: int = 10,
        out_root: str = "datasets", scores_root: str = "scores",
        n_train: int | None = None, n_jobs: int = 1) -> dict:
@@ -311,7 +366,8 @@ def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds
     out_json.write_text(json.dumps(result, indent=2))
     labels = [_display_label(eval_dir.name, stem) for stem in result["variants"]]
     x_label = AXIS_TITLES.get(eval_dir.name, "model")
-    plot_best_of_grid(result, x_label=x_label, variant_labels=labels, save_path=out_png)
+    plot_fn = plot_best_of_grid_bar if len(observables) == 1 else plot_best_of_grid
+    plot_fn(result, x_label=x_label, variant_labels=labels, save_path=out_png)
     print(f"    wrote {out_png}", flush=True)
     return result
 
