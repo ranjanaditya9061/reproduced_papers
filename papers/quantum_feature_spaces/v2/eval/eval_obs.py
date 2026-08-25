@@ -88,7 +88,7 @@ def sweep_eval_obs(cfg_path: str | Path, families: dict[str, list[str]] = DEFAUL
     the stdev of the per-seed best-of-learners scores (see :func:`sweep_best_of_grid`'s
     best-of-three-per-seed reduction), for the bar chart's error bars.
     """
-    from .best_of_grid import sweep_best_of_grid
+    from eval.best_of_grid import sweep_best_of_grid
 
     observables = _flatten_families(families)
     variant = [(Path(cfg_path).stem, Path(cfg_path))]
