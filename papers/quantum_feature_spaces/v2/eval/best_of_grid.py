@@ -100,7 +100,7 @@ VARIANT_LABELS: dict[str, dict[str, str]] = {
         "ghz_enccirc": "GHZ",
         "linear_enccirc": "Linear",
         "linear_u3_enccirc": "Arbitrary \nRandom U3",
-        "linear_encspin": "Linear\nSpin-Encoded",
+        "linear_encspin": "Linear\nSpin-\nEncoded",
         "linear_encboth": "Linear\nSpin-and-\nCircuit",
     },
     "spin": {
@@ -115,7 +115,7 @@ VARIANT_LABELS: dict[str, dict[str, str]] = {
 #: generic "model" label so the heatmap states its own comparison without needing the caption.
 AXIS_TITLES: dict[str, str] = {
     "photonic_encoding": "Photonic Encoding",
-    "photonic_reencoding": "# of Re-encodings",
+    "photonic_reencoding": "Number of Encodings",
     "qubit_encoding": "Qubit Encoding",
     "complex_qubit_encoding": "Havlicek Encoding",
     "classical_vs_quantum": "Classical Equivalent Model",
@@ -343,15 +343,20 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
     err = np.where(np.isfinite(r2), r2_std, 0.0)
     ax.bar(x, heights, yerr=err, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3,
           capsize=3, error_kw={"linewidth": 0.8, "zorder": 4})
-    #: value labels sit at a fixed y=0.05 for every bar (not offset above the bar height), so they
-    #: read as a consistent row regardless of how tall each bar is.
+    #: value-label y-position: a short bar (value in [0.02, 0.15]) would collide with the fixed
+    #: baseline below, so its label sits above the bar's full visual extent -- value PLUS its own
+    #: error-bar whisker, so the label never overlaps the whisker -- plus 0.03; every other bar --
+    #: including a negative value or a failed ("n/a") cell -- gets the fixed y=0.03 baseline, so
+    #: most labels still read as one consistent row.
     for i, v in enumerate(r2):
         if not np.isfinite(v):
-            ax.text(i, 0.05, "n/a", ha="center", va="bottom", rotation=90)
+            ax.text(i, 0.03, "n/a", ha="center", va="bottom", rotation=90)
         elif v < 0:
-            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", color="red")
+            ax.text(i, 0.03, f"{v:.2f}", ha="center", va="bottom", color="red")
+        elif 0.02 <= v <= 0.15:
+            ax.text(i, v + err[i] + 0.03, f"{v:.2f}", ha="center", va="bottom")
         else:
-            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom")
+            ax.text(i, 0.03, f"{v:.2f}", ha="center", va="bottom")
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=0, ha="center")
