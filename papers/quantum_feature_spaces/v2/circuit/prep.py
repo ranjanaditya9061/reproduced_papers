@@ -544,8 +544,15 @@ def _magic_row_worker(task):
     p.with_initial_source_state(np.outer(zero, zero.conj()))
 
     for j in range(k):
-        # caterpillar/GHZ (phi=pi) vs linear (phi=0) -- every gap, both branches re-apply it.
-        _apply_structure_gate(p, phi=np.pi if structure == "ghz" else 0.0)
+        # First gap: a bare Ry(pi/2), not the full branch gate -- matching the reference protocol,
+        # where the spin's initial precession into superposition (before the first emission) has
+        # no Rz(phi) component yet, since no branch choice has been made until the SECOND gap.
+        # Every later gap (and the readout gap below) gets the full branch gate.
+        if j == 0:
+            p.gate.ry(0, np.pi / 2)
+        else:
+            # caterpillar/GHZ (phi=pi) vs linear (phi=0) -- every gap from here on re-applies it.
+            _apply_structure_gate(p, phi=np.pi if structure == "ghz" else 0.0)
         if structure == "linear_u3":
             theta, phi, lam = structure_params[j]           # ZYZ Euler, as in apply_gap_gate's u3
             p.gate.rz(0, float(lam))
@@ -557,7 +564,11 @@ def _magic_row_worker(task):
         if j < t_var:
             _spin.apply_gap_gate(p, magic_kind, params, j)
         p.emit(0, into=(2 * j, 2 * j + 1))
-    p.gate.h(0)
+    # Readout gap: the SAME branch gate as every data gap, not a bare Hadamard -- an earlier
+    # version of this code used `p.gate.h(0)` here, which _apply_structure_gate's own docstring
+    # explicitly warns against (H != Ry(pi/2).Rz(phi).Ry(pi/2) in general). Matching the data
+    # gaps' phi keeps the readout gap structurally identical to every other gap, no special case.
+    _apply_structure_gate(p, phi=np.pi if structure == "ghz" else 0.0)
     p.emit(0, into=(r0, r1))                              # readout photon
     p.add(r0, Detector(), record=r0)
     p.add(r1, Detector(), record=r1)
