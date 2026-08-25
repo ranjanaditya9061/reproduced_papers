@@ -133,13 +133,15 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
     #: eval.best_of_grid.sweep_best_of_grid's best-of-three-per-seed reduction).
     ax.bar(x, heights, yerr=err, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3,
           capsize=3, error_kw={"linewidth": 0.8, "zorder": 4})
+    #: value labels sit at a fixed y=0.05 for every bar (not offset above the bar height), so they
+    #: read as a consistent row regardless of how tall each bar is.
     for i, v in enumerate(r2_arr):
         if not np.isfinite(v):
             ax.text(i, 0.05, "n/a", ha="center", va="bottom", fontsize=10, rotation=90)
         elif v < 0:
             ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10, color="red")
         else:
-            ax.text(i, v + 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10)
+            ax.text(i, 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=10)
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=8)
