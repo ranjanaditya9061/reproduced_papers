@@ -76,8 +76,10 @@ def run(*, eval_dir: Path, shots: int, observables=None, n_seeds: int = 10,
     result = sweep_best_of_grid(shots_variants, observables, n_seeds=n_seeds, out_root=out_root,
                                 scores_root=scores_root, n_train=n_train, n_jobs=n_jobs)
     tag = "-".join(_safe_tag(o) for o in observables)
-    out_json = eval_dir / f"best_of_grid_shots{shots}__{tag}.json"
-    out_png = eval_dir / f"best_of_grid_shots{shots}__{tag}.pdf"
+    # written into eval_dir's PARENT with the folder name prefixed, same convention as
+    # eval.best_of_grid.run -- see that function's docstring for why.
+    out_json = eval_dir.parent / f"{eval_dir.name}_best_of_grid_shots{shots}__{tag}.json"
+    out_png = eval_dir.parent / f"{eval_dir.name}_best_of_grid_shots{shots}__{tag}.pdf"
     out_json.write_text(json.dumps(result, indent=2))
     labels = [_display_label(eval_dir.name, stem) for stem, _ in base_variants]
     x_label = AXIS_TITLES.get(eval_dir.name, "model")

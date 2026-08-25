@@ -376,7 +376,11 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
 def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds: int = 10,
        out_root: str = "datasets", scores_root: str = "scores",
        n_train: int | None = None, n_jobs: int = 1) -> dict:
-    """One ``configs/eval/<group>/`` folder -> one saved grid (PNG + JSON) inside that folder."""
+    """One ``configs/eval/<group>/`` folder -> one saved grid (PNG + JSON), written into
+    ``eval_dir``'s PARENT (e.g. ``configs/eval/``) with the folder name prefixed to the filename
+    (``<folder>_best_of_grid__<tag>.png``) rather than into ``eval_dir`` itself -- so every
+    folder's output collects in one place with collision-safe names, instead of same-named files
+    scattered one per subfolder."""
     variants = _variants_in(eval_dir)
     if not variants:
         raise SystemExit(f"no *.yaml configs found in {eval_dir}")
@@ -386,8 +390,8 @@ def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds
     result = sweep_best_of_grid(variants, observables, n_seeds=n_seeds, out_root=out_root,
                                 scores_root=scores_root, n_train=n_train, n_jobs=n_jobs)
     tag = "-".join(_safe_tag(o) for o in observables)
-    out_json = eval_dir / f"best_of_grid__{tag}.json"
-    out_png = eval_dir / f"best_of_grid__{tag}.png"
+    out_json = eval_dir.parent / f"{eval_dir.name}_best_of_grid__{tag}.json"
+    out_png = eval_dir.parent / f"{eval_dir.name}_best_of_grid__{tag}.png"
     out_json.write_text(json.dumps(result, indent=2))
     labels = [_display_label(eval_dir.name, stem) for stem in result["variants"]]
     x_label = AXIS_TITLES.get(eval_dir.name, "model")
