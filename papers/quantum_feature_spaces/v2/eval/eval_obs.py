@@ -36,7 +36,9 @@ EVAL_DIR = Path(__file__).resolve().parents[1] / "configs" / "eval"
 #: deliberately rather than enumerating every registered observable.
 DEFAULT_FAMILIES: dict[str, list[str]] = {
     "Boson-phase (counting)": ["parity", "majority", "n_first", "bunching"],
-    "Polynomial": ["prod_parity__lo3", "prod_parity_consecutive"],
+    "Polynomial": ["prod_parity__lo3", "prod_parity_consecutive",
+                  "prod_parity_diag_prime_const", "prod_parity_diag_prime_log",
+                  "prod_parity_diag_prime_sqrt"],
     "Graph": ["connected_maxcc", "connected_paritymaxcc_pair"],
     "Nonlinear": ["ent", "osc", "sq_parity", "pairprod"],
 }
@@ -49,6 +51,9 @@ OBSERVABLE_LABELS: dict[str, str] = {
     "n_first": "Mode 1\nParity",
     "prod_parity__lo3": "Prod Parity\n(deg <= 3)",
     "prod_parity_consecutive": "Prod Parity\n(consecutive)",
+    "prod_parity_diag_prime_const": "Diag Prime\n(p = O(1))",
+    "prod_parity_diag_prime_log": "Diag Prime\n(p = O(log k))",
+    "prod_parity_diag_prime_sqrt": "Diag Prime\n(p = O(sqrt k))",
     "connected_maxcc": "Connected\nComponent",
     "connected_paritymaxcc_pair": "Parity x MaxCC\n(pair graph)",
     "sq_parity": "Squared\nParity",
@@ -109,36 +114,29 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
     observables, r2 = result["observables"], result["r2"]
     r2_arr = np.array([np.nan if v is None else v for v in r2], dtype=float)
 
-    family_of = {obs: label for label, obs_list in result["families"].items()
-                for obs in obs_list}
-    family_order = list(result["families"])
-    cmap = matplotlib.colormaps["tab10"]
-    family_colour = {label: cmap(i % 10) for i, label in enumerate(family_order)}
-
     labels = [OBSERVABLE_LABELS.get(o, o.replace("_", " ").title()) for o in observables]
-    colours = [family_colour[family_of[o]] for o in observables]
+    #: bar height is clamped to >=0 (axis starts at 0, per house style); a negative R^2 draws as a
+    #: zero-height bar with its true value labelled in red above the baseline instead of dipping
+    #: below the axis.
+    heights = np.clip(np.nan_to_num(r2_arr, nan=0.0), 0.0, None)
+    light_colour = "#a8d5e2"
 
-    fig, ax = plt.subplots(figsize=(max(8, 1.1 * len(observables) + 2), 5))
+    fig, ax = plt.subplots(figsize=(max(5, 0.7 * len(observables) + 1.5), 3))
     x = np.arange(len(observables))
-    bars = ax.bar(x, np.nan_to_num(r2_arr, nan=0.0), color=colours,
-                  edgecolor="black", linewidth=0.5)
+    ax.bar(x, heights, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3)
     for i, v in enumerate(r2_arr):
         if not np.isfinite(v):
-            ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=8, rotation=90)
+            ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=7, rotation=90)
+        elif v < 0:
+            ax.text(i, 0.02, f"{v:.2f}", ha="center", va="bottom", fontsize=7, color="red")
         else:
-            ax.text(i, v + (0.02 if v >= 0 else -0.02), f"{v:.2f}", ha="center",
-                    va="bottom" if v >= 0 else "top", fontsize=8)
+            ax.text(i, v + 0.02, f"{v:.2f}", ha="center", va="bottom", fontsize=7)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=9)
-    ax.set_ylabel("Coefficient of Determination (R^2)")
-    ax.set_ylim(min(-0.2, float(np.nanmin(r2_arr)) - 0.1 if np.isfinite(r2_arr).any() else -0.2),
-               1.05)
-    ax.axhline(0.0, color="black", linewidth=0.8)
-    ax.set_title(f"Held-out R^2 by observable family -- {Path(result['config']).stem}")
-
-    handles = [plt.Rectangle((0, 0), 1, 1, color=family_colour[label]) for label in family_order]
-    ax.legend(handles, family_order, loc="upper right", fontsize=8, framealpha=0.9)
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_ylabel("R^2", fontsize=8)
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
 
     fig.tight_layout()
     if save_path:
@@ -177,7 +175,7 @@ def run(*, cfg_path: Path, families: dict[str, list[str]] = DEFAULT_FAMILIES, n_
     out_dir = out_dir or cfg_path.parent
     tag = _safe_tag(cfg_path.stem)
     out_json = out_dir / f"eval_obs__{tag}.json"
-    out_png = out_dir / f"eval_obs__{tag}.pdf"
+    out_png = out_dir / f"eval_obs__{tag}.png"
     out_json.write_text(json.dumps(result, indent=2))
     plot_eval_obs(result, save_path=out_png)
     print(f"    wrote {out_png}", flush=True)
@@ -185,7 +183,7 @@ def run(*, cfg_path: Path, families: dict[str, list[str]] = DEFAULT_FAMILIES, n_
     if per_family:
         for label in families:
             family_result = _result_for_family(result, label)
-            family_png = out_dir / f"eval_obs__{tag}__{_safe_tag(label)}.pdf"
+            family_png = out_dir / f"eval_obs__{tag}__{_safe_tag(label)}.png"
             plot_eval_obs(family_result, save_path=family_png)
             print(f"    wrote {family_png}", flush=True)
 

@@ -301,9 +301,10 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
     ``--observables parity`` run) -- raises otherwise, since a bar plot has nowhere to put a second
     row and silently picking one would hide the dropped data rather than surfacing it.
 
-    Same colour convention as the heatmap (RdYlGn via bar colour, not cell shading) and the same
-    ``vmin=-0.2, vmax=1.0`` y-axis range, so a reader used to the multi-observable heatmap reads
-    this the same way at a glance.
+    House bar-plot style (matches :func:`eval.eval_obs.plot_eval_obs`): no title/legend, axis
+    starts at 0 (a negative R^2 draws as a zero-height bar with its value labelled in red at the
+    baseline instead of dipping below the axis), one light flat colour, small figure size, light
+    background grid.
     """
     import matplotlib
     if not show:
@@ -317,28 +318,26 @@ def plot_best_of_grid_bar(result: dict, *, x_label: str = "model",
 
     labels = variant_labels if variant_labels is not None else variants
     r2 = np.array([np.nan if v is None else v for v in result["r2"][0]], dtype=float)
+    heights = np.clip(np.nan_to_num(r2, nan=0.0), 0.0, None)
+    light_colour = "#a8d5e2"
 
-    cmap = matplotlib.colormaps["RdYlGn"]
-    norm = matplotlib.colors.Normalize(vmin=-0.2, vmax=1.0)
-    colours = [("lightgrey" if not np.isfinite(v) else cmap(norm(v))) for v in r2]
-
-    fig, ax = plt.subplots(figsize=(max(6, 1.1 * len(variants) + 2), 4))
+    fig, ax = plt.subplots(figsize=(max(5, 0.7 * len(variants) + 1.5), 3))
     x = np.arange(len(variants))
-    ax.bar(x, np.nan_to_num(r2, nan=0.0), color=colours, edgecolor="black", linewidth=0.5)
+    ax.bar(x, heights, color=light_colour, edgecolor="black", linewidth=0.5, zorder=3)
     for i, v in enumerate(r2):
         if not np.isfinite(v):
-            ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=8, rotation=90)
+            ax.text(i, 0.02, "n/a", ha="center", va="bottom", fontsize=7, rotation=90)
+        elif v < 0:
+            ax.text(i, 0.02, f"{v:.2f}", ha="center", va="bottom", fontsize=7, color="red")
         else:
-            ax.text(i, v + (0.02 if v >= 0 else -0.02), f"{v:.2f}", ha="center",
-                    va="bottom" if v >= 0 else "top", fontsize=9)
+            ax.text(i, v + 0.02, f"{v:.2f}", ha="center", va="bottom", fontsize=7)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=0, ha="center")
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("Coefficient of Determination (R^2)")
-    ax.set_ylim(-0.2, 1.05)
-    ax.axhline(0.0, color="black", linewidth=0.8)
-    ax.set_title(f"Held-out R^2: {OBSERVABLE_LABELS.get(obs[0], obs[0].replace('_', ' ').title())}")
+    ax.set_xticklabels(labels, rotation=0, ha="center", fontsize=8)
+    ax.set_xlabel(x_label, fontsize=8)
+    ax.set_ylabel("R^2", fontsize=8)
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.5, zorder=0)
 
     fig.tight_layout()
     if save_path:
@@ -362,7 +361,7 @@ def run(*, eval_dir: Path, observables: list[str] = DEFAULT_OBSERVABLES, n_seeds
                                 scores_root=scores_root, n_train=n_train, n_jobs=n_jobs)
     tag = "-".join(_safe_tag(o) for o in observables)
     out_json = eval_dir / f"best_of_grid__{tag}.json"
-    out_png = eval_dir / f"best_of_grid__{tag}.pdf"
+    out_png = eval_dir / f"best_of_grid__{tag}.png"
     out_json.write_text(json.dumps(result, indent=2))
     labels = [_display_label(eval_dir.name, stem) for stem in result["variants"]]
     x_label = AXIS_TITLES.get(eval_dir.name, "model")
@@ -395,7 +394,7 @@ def run_configs(*, config_paths: list[str | Path], observables: list[str] = DEFA
                                 scores_root=scores_root, n_train=n_train, n_jobs=n_jobs)
     tag = "-".join(_safe_tag(o) for o in observables)
     out_json = Path(out_json) if out_json else Path(f"best_of_grid__{tag}.json")
-    out_png = Path(out_png) if out_png else Path(f"best_of_grid__{tag}.pdf")
+    out_png = Path(out_png) if out_png else Path(f"best_of_grid__{tag}.png")
     out_json.write_text(json.dumps(result, indent=2))
     plot_best_of_grid(result, x_label="model", variant_labels=result["variants"],
                       save_path=out_png)
