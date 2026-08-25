@@ -39,7 +39,8 @@ DEFAULT_FAMILIES: dict[str, list[str]] = {
     "Polynomial": ["prod_parity__lo3", "prod_parity_consecutive",
                   "prod_parity_diag_prime_const", "prod_parity_diag_prime_log",
                   "prod_parity_diag_prime_sqrt"],
-    "Graph": ["connected_maxcc", "connected_paritymaxcc_pair"],
+    "Graph": ["connected_maxcc_pair", "connected_paritymaxcc_pair",
+             "connected_numloops_pair", "connected_paritynumloops_pair"],
     "Nonlinear": ["ent", "osc", "sq_parity", "pairprod"],
 }
 
@@ -54,8 +55,10 @@ OBSERVABLE_LABELS: dict[str, str] = {
     "prod_parity_diag_prime_const": "Diag Prime\n(p = O(1))",
     "prod_parity_diag_prime_log": "Diag Prime\n(p = O(log k))",
     "prod_parity_diag_prime_sqrt": "Diag Prime\n(p = O(sqrt k))",
-    "connected_maxcc": "Connected\nComponent",
+    "connected_maxcc_pair": "MaxCC\n(pair graph)",
     "connected_paritymaxcc_pair": "Parity x MaxCC\n(pair graph)",
+    "connected_numloops_pair": "NumLoops\n(pair graph)",
+    "connected_paritynumloops_pair": "Parity x (Loops+1)\n(pair graph)",
     "sq_parity": "Squared\nParity",
     "pairprod": "Pair\nProduct",
 }

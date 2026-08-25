@@ -745,7 +745,65 @@ def pair_parity_maxcc(key, edges, *, m: int) -> float:
     return float(parity_score(key, parity_modes(m)) * pair_max_component(key, edges, m=m))
 
 
-#: ``connected_<reading>_pair`` readings -- both read the ``m*(m+1)/2``-vertex mode-pair graph
+#: Fixed offset from a reading's own ``graph_seed`` used to draw the SECOND background graph for
+#: ``numloops``/``paritynumloops`` (see :func:`pair_num_loops`) -- arbitrary but fixed, so the
+#: second graph is deterministic and reproducible from the one seed already threaded through
+#: :class:`~observable.base.ObservableContext`, with no new context field needed.
+SECOND_GRAPH_SEED_OFFSET = 1337
+
+
+def _union_edges(edges_a, edges_b):
+    """Set-union of two edge lists, each already a normalised ``(u, v)`` (``u < v``) pair -- an
+    edge present in both inputs appears once in the result (plain union, not a multigraph: a
+    coincidental double-draw is not treated as stronger evidence of connectivity than a single
+    draw). Returns a sorted list, matching :func:`build_vertex_graph`'s own return convention.
+    """
+    return sorted(set(edges_a) | set(edges_b))
+
+
+def pair_num_loops(key, edges_a, edges_b, *, m: int) -> int:
+    """``numloops`` on the mode-pair graph: cycle rank (first Betti number) of ``A_x U B``, where
+    ``A_x`` is graph A's edges restricted (induced) to the outcome's active mode-pair vertices
+    (:func:`_pair_active_set`) and ``B`` is a SECOND, independently seeded graph's edges, kept as
+    its full, unrestricted edge set (not induced on the active vertices) -- ``B`` can therefore
+    bridge through vertices outside the active set, unlike ``A_x`` alone.
+
+    Why: ``A_x`` alone is generically a tree (cycle rank 0) at the default bounded degree -- the
+    active set is small and graph A's own global connectivity guarantee
+    (:func:`build_vertex_graph`'s spanning-path backbone) does not survive restriction to an
+    arbitrary vertex subset, since the edges that carried that backbone through the *inactive*
+    vertices are simply absent from ``A_x``.  Unioning in ``B``'s full edge set fixes this: edges
+    only ever add and components only ever merge under a union, so ``A_x U B``'s cycle rank is
+    provably ``>= max(ell(A_x), ell(B))`` -- a real fix, not just an empirical one.  Cycle rank is
+    computed over the union's OWN vertex set (every vertex touched by ``A_x U B``'s edges), not
+    just the active set, since ``B``'s full edges generally touch vertices ``A_x`` never does.
+    """
+    active_set, adj_a = _pair_induced_subgraph(key, edges_a, m=m)
+    a_x = [(u, w) for u, w in edges_a if u in active_set and w in active_set]
+    union = _union_edges(a_x, edges_b)
+
+    vertex_set = {v for edge in union for v in edge}
+    adj: dict = {v: [] for v in vertex_set}
+    for u, w in union:
+        adj[u].append(w)
+        adj[w].append(u)
+    n_components = len(_components(vertex_set, adj))
+    return len(union) - len(vertex_set) + n_components
+
+
+def pair_parity_num_loops(key, edges_a, edges_b, *, m: int) -> float:
+    """``pair_paritynumloops``: ``parity(key) * (numloops(key) + 1)`` on ``A_x U B``
+    (:func:`pair_num_loops`) -- the ``+1`` keeps the product from being silently zeroed out
+    whenever ``numloops`` is exactly 0, which -- even after the two-graph union -- remains the
+    modal value for many outcomes (the union raises the cycle rank relative to a single graph, but
+    does not guarantee a nonzero one at every outcome).  Without the ``+1``, every such outcome
+    would collapse this observable's score to 0 regardless of parity, discarding the parity signal
+    entirely at exactly the (still-common) outcomes where a loop fails to close.
+    """
+    return float(parity_score(key, parity_modes(m)) * (pair_num_loops(key, edges_a, edges_b, m=m) + 1))
+
+
+#: ``connected_<reading>_pair`` readings -- all read the ``m*(m+1)/2``-vertex mode-pair graph
 #: (:func:`_pair_induced_subgraph`), whose active set is co-occupied mode *pairs* plus per-mode
 #: bunching via the diagonal (:func:`pair_vertex_index`'s docstring), not individual mode occupation
 #: levels: a structurally different selection mechanism from every ``*_layered`` reading, which is
@@ -753,12 +811,20 @@ def pair_parity_maxcc(key, edges, *, m: int) -> float:
 #: direct size reading; ``ccparity`` is the domain-restriction construction that proved out on the
 #: layered graph, ported to this graph's own selection rule; ``paritymaxcc`` is the plain product
 #: (not domain restriction) that reseed-checked as a null result on the layered graph, included here
-#: for the matching direct comparison against ``ccparity`` on this graph too.
+#: for the matching direct comparison against ``ccparity`` on this graph too; ``numloops``/
+#: ``paritynumloops`` are the two-graph-union cycle-rank readings (:func:`pair_num_loops`), the only
+#: two readings in this dict that need a SECOND background graph, not just ``graph_seed``'s one.
 PAIR_READINGS = {
     "maxcc": pair_max_component,
     "ccparity": pair_maxcc_parity,
     "paritymaxcc": pair_parity_maxcc,
+    "numloops": pair_num_loops,
+    "paritynumloops": pair_parity_num_loops,
 }
+
+#: Readings in :data:`PAIR_READINGS` that take TWO edge lists (``edges_a``, ``edges_b``) instead of
+#: one -- see :func:`pair_num_loops`.  Everything else takes one.
+_TWO_GRAPH_READINGS = frozenset({"numloops", "paritynumloops"})
 
 _PAIR_RE = re.compile(rf"^connected_({'|'.join(PAIR_READINGS)})_pair$")
 
@@ -786,7 +852,14 @@ class ConnectedPairFamily(ObservableFamily):
         reading = _PAIR_RE.match(name).group(1)
         n_vertices = ctx.m * (ctx.m + 1) // 2
         edges = build_vertex_graph(n_vertices, ctx.graph_density, ctx.graph_seed)
-        if reading == "maxcc":
+        if reading in _TWO_GRAPH_READINGS:
+            edges_b = build_vertex_graph(n_vertices, ctx.graph_density,
+                                         ctx.graph_seed + SECOND_GRAPH_SEED_OFFSET)
+            if reading == "numloops":
+                v = [pair_num_loops(key, edges, edges_b, m=ctx.m) for key in ctx.keys]
+            else:
+                v = [pair_parity_num_loops(key, edges, edges_b, m=ctx.m) for key in ctx.keys]
+        elif reading == "maxcc":
             v = [pair_max_component(key, edges, m=ctx.m) for key in ctx.keys]
         elif reading == "paritymaxcc":
             v = [pair_parity_maxcc(key, edges, m=ctx.m) for key in ctx.keys]
@@ -798,11 +871,14 @@ class ConnectedPairFamily(ObservableFamily):
 
     def spec(self, name: str, ctx: ObservableContext) -> dict:
         reading = _PAIR_RE.match(name).group(1)
-        return {"observable": f"connected_{reading}_pair",
+        spec = {"observable": f"connected_{reading}_pair",
                 "graph_density": ctx.graph_density,
                 "graph_seed": ctx.graph_seed,
                 "max_vertex_degree": MAX_VERTEX_DEGREE,
                 "n_vertices": ctx.m * (ctx.m + 1) // 2}
+        if reading in _TWO_GRAPH_READINGS:
+            spec["second_graph_seed"] = ctx.graph_seed + SECOND_GRAPH_SEED_OFFSET
+        return spec
 
 
 def mode_coupling_strengths(m: int, model_seed: int, n_features: int) -> "np.ndarray":

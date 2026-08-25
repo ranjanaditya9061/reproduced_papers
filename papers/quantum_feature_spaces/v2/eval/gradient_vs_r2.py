@@ -138,6 +138,60 @@ def collect(cfg_paths: list[str | Path], observable: str, *, n_x=_USE_GRADIENT_D
            "observable": observable, "n_x": n_x, "n_seeds": n_seeds}
 
 
+def collect_observables(cfg_path: str | Path, observables: list[str], *, n_x=_USE_GRADIENT_DEFAULT,
+                        n_seeds: int = 10, out_root: str = "datasets",
+                        scores_root: str = "scores") -> dict:
+    """The transpose of :func:`collect`: ONE circuit config fixed, one row per OBSERVABLE instead
+    of one row per config -- the section-2 axis (:mod:`eval.eval_obs`'s fixed-circuit,
+    varying-observable picture) applied to the gradient-vs-R^2 screen instead of to the plain
+    best-of-learners R^2 bar chart.  Same three-panel plot, same Pearson-correlation printout,
+    same underlying :func:`metrics.gradient.cached_gradient`/:func:`learner.auto.run_config`
+    cache-hit-or-compute calls -- only which axis is held fixed changes, so this reuses every
+    other function in this module unmodified.
+
+    Returns the same shape as :func:`collect`, with ``"configs"`` renamed ``"observables"`` (still
+    aligned 1:1 with every other list) and ``"config"`` (singular, the one fixed circuit) in place
+    of ``"observable"``.
+    """
+    import statistics
+
+    from metrics.gradient import cached_gradient
+
+    gradient_kwargs = {} if n_x is _USE_GRADIENT_DEFAULT else {"n_x": n_x}
+    labels, g_mean, g_min, g_max = [], [], [], []
+    gn_mean, gn_min, gn_max, var_circ, r2 = [], [], [], [], []
+    for obs in observables:
+        grad = cached_gradient(cfg_path, obs, out_root=out_root, scores_root=scores_root,
+                               **gradient_kwargs)
+        r2_val = _best_r2(cfg_path, obs, n_seeds=n_seeds, out_root=out_root,
+                          scores_root=scores_root)
+        labels.append(obs)
+        g_mean.append(statistics.mean(grad["g_norm"]))
+        g_min.append(min(grad["g_norm"]))
+        g_max.append(max(grad["g_norm"]))
+        gn_mean.append(statistics.mean(grad["g_norm_normalized"]))
+        gn_min.append(min(grad["g_norm_normalized"]))
+        gn_max.append(max(grad["g_norm_normalized"]))
+        var_circ.append(grad["sqrt_var_circ"] ** 2)
+        r2.append(r2_val)
+        print(f"{labels[-1]:32s} ||g||={g_mean[-1]:.4g} [{g_min[-1]:.4g}, {g_max[-1]:.4g}]  "
+             f"||g||_norm={gn_mean[-1]:.4g} [{gn_min[-1]:.4g}, {gn_max[-1]:.4g}]  "
+             f"Var_circ={var_circ[-1]:.4g}  R^2={r2_val:.4g}")
+
+    corr_g = _pearson(g_mean, r2)
+    corr_gn = _pearson(gn_mean, r2)
+    corr_var = _pearson(var_circ, r2)
+    print()
+    print(f"Pearson r vs R^2:  ||g|| (mean)={corr_g:+.3f}   ||g_norm|| (mean)={corr_gn:+.3f}   "
+         f"Var_circ={corr_var:+.3f}")
+
+    return {"configs": labels, "mean_g_norm": g_mean, "min_g_norm": g_min, "max_g_norm": g_max,
+           "mean_g_norm_normalized": gn_mean, "min_g_norm_normalized": gn_min,
+           "max_g_norm_normalized": gn_max, "var_circ": var_circ, "r2": r2,
+           "corr_g_mean_r2": corr_g, "corr_g_norm_mean_r2": corr_gn, "corr_var_circ_r2": corr_var,
+           "observable": f"config={Path(cfg_path).stem}", "n_x": n_x, "n_seeds": n_seeds}
+
+
 def _asymmetric_xerr(mean, lo, hi):
     """``(2, N)`` array for ``ax.errorbar(xerr=...)``: distance from mean down to ``lo`` and up to
     ``hi`` -- clamped at 0 so float round-off (mean landing a hair outside [lo, hi]) never gives
@@ -217,10 +271,19 @@ def main(argv=None) -> None:
     import argparse
     import json
 
-    ap = argparse.ArgumentParser(description="Min gradient / min normalized gradient vs. R^2, "
-                                             "one point per config.")
-    ap.add_argument("--configs", nargs="+", required=True)
-    ap.add_argument("--observable", required=True)
+    ap = argparse.ArgumentParser(description="Min gradient / min normalized gradient vs. R^2. "
+                                             "--configs (many configs, one observable) and "
+                                             "--config (one config, many observables) are "
+                                             "mutually exclusive.")
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("--configs", nargs="+", help="many configs, --observable fixed -- one "
+                                                     "point per config")
+    group.add_argument("--config", help="one config, --observables varying -- one point per "
+                                        "observable (the eval.eval_obs axis)")
+    ap.add_argument("--observable", help="required with --configs")
+    ap.add_argument("--observables", nargs="+", help="required with --config; defaults to "
+                                                      "eval.eval_obs.DEFAULT_FAMILIES flattened "
+                                                      "if omitted")
     ap.add_argument("--n-x", type=int, default=100, help="subsample this many rows per config "
                                                          "(default 100; pass 0 for all rows)")
     ap.add_argument("--n-seeds", type=int, default=10)
@@ -231,11 +294,24 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
 
     n_x = None if args.n_x == 0 else args.n_x
-    result = collect(args.configs, args.observable, n_x=n_x, n_seeds=args.n_seeds,
-                     out_root=args.out_root, scores_root=args.scores_root)
 
-    out_json = args.out_json or f"gradient_vs_r2__{args.observable}.json"
-    out_png = args.out_png or f"gradient_vs_r2__{args.observable}.png"
+    if args.configs:
+        if not args.observable:
+            ap.error("--observable is required with --configs")
+        result = collect(args.configs, args.observable, n_x=n_x, n_seeds=args.n_seeds,
+                         out_root=args.out_root, scores_root=args.scores_root)
+        tag = args.observable
+    else:
+        observables = args.observables
+        if not observables:
+            from eval.eval_obs import _flatten_families, DEFAULT_FAMILIES
+            observables = _flatten_families(DEFAULT_FAMILIES)
+        result = collect_observables(args.config, observables, n_x=n_x, n_seeds=args.n_seeds,
+                                     out_root=args.out_root, scores_root=args.scores_root)
+        tag = Path(args.config).stem
+
+    out_json = args.out_json or f"gradient_vs_r2__{tag}.json"
+    out_png = args.out_png or f"gradient_vs_r2__{tag}.png"
     Path(out_json).write_text(json.dumps(result, indent=2))
     plot_gradient_vs_r2(result, save_path=out_png)
     print(f"wrote {out_json}")
