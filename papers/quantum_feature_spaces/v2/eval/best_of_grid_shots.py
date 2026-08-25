@@ -18,6 +18,18 @@ either (:func:`~learner.cache._resolve_config`), and the on-disk fit/score cache
 resulting dataset identity, not off a path, so this is cache-equivalent to writing the file --
 :func:`~circuit.spin.parallel_row_map`'s process-pool workers pickle the config objects across
 process boundaries the same way they already pickle every other task argument.
+
+**Models with no native shot sampler** (``model.supports_shots == False`` -- ``quadratic_fock``,
+``mlp_fock``, ``mlp``, ``analytical``: the classical-control arms in e.g.
+``configs/eval/classical_vs_quantum/``) cannot go through :func:`~pipeline.generate.generate_shots`
+at all -- it raises ``NotImplementedError`` for them by design (:mod:`pipeline.shots`'s own module
+docstring explains why a multinomial-from-stored-``p`` method was deliberately left out of that
+path).  This module skips ``generate_shots`` for those variants; :func:`~pipeline.score.
+load_dataset` (called downstream by every fit, via ``run_config``/``cached_fit``, completely
+unchanged) already knows to route them to :func:`~metrics.multinomial_shots.
+cached_multinomial_shots` instead -- a cached fallback that samples shot-noisy labels directly from
+the already-generated exact distribution.  Every model WITH a native sampler is completely
+unaffected by this.
 """
 
 from __future__ import annotations
@@ -49,10 +61,13 @@ def run(*, eval_dir: Path, shots: int, observables=None, n_seeds: int = 10,
     if not base_variants:
         raise SystemExit(f"no *.yaml configs found in {eval_dir}")
 
+    from model import build_model
+
     shots_variants = []
     for stem, path in base_variants:
         cfg_n = _shots_variant_config(path, shots)
-        generate_shots(cfg_n, root=out_root)
+        if build_model(cfg_n).supports_shots:
+            generate_shots(cfg_n, root=out_root)
         shots_variants.append((stem, cfg_n))
 
     print(f"=== {eval_dir.name} @ shots={shots}: {len(shots_variants)} variants -> "
@@ -90,11 +105,14 @@ def run_configs(*, config_paths: list, shots: int, observables=None, n_seeds: in
     if not config_paths:
         raise SystemExit("no config paths given")
 
+    from model import build_model
+
     shots_variants = []
     for p in config_paths:
         stem = Path(p).stem
         cfg_n = _shots_variant_config(p, shots)
-        generate_shots(cfg_n, root=out_root)
+        if build_model(cfg_n).supports_shots:
+            generate_shots(cfg_n, root=out_root)
         shots_variants.append((stem, cfg_n))
 
     print(f"=== {len(shots_variants)} configs @ shots={shots}: "

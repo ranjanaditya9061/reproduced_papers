@@ -220,6 +220,16 @@ def load_dataset(cfg, name: str, *, out_root: str | Path = "datasets",
     from .shots import shot_source_tag, shots_path
 
     model = build_model(cfg)
+    if cfg.generation.shots and not model.supports_shots:
+        # No native sampler (quadratic_fock, mlp_fock, mlp, analytical): pipeline.shots has no
+        # counts-store path for these by design (see its own module docstring on why a
+        # multinomial-from-stored-p method was deliberately left out) -- fall back to the cached
+        # multinomial-shots metric on the exact distribution instead. Cached (unlike an in-memory
+        # draw), so every repeat call from cached_fit across a learner/seed sweep is a cache hit,
+        # not a redraw -- see metrics.multinomial_shots's own docstring.
+        from metrics.multinomial_shots import cached_multinomial_shots
+        return cached_multinomial_shots(cfg, name, out_root=out_root, scores_root=scores_root,
+                                        graph_density=graph_density, force=force)
     if cfg.generation.shots:
         sdir = shots_path(cfg, model, root=out_root)
         if not sdir.exists():
