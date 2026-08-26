@@ -285,11 +285,20 @@ class Quadratic(Observable):
                 np.asarray(pair_kernel, dtype=np.float64), dtype=torch.float32))
 
     def score(self, probs: torch.Tensor) -> torch.Tensor:
-        return (probs @ self.pair_kernel * probs).sum(dim=1)
+        kernel = self.pair_kernel.to(probs.dtype)
+        return (probs @ kernel * probs).sum(dim=1)
 
     def influence(self, probs: torch.Tensor) -> torch.Tensor:
-        """``psi_n = 2 (K p)_n`` -- ``x``-dependent, unlike an Expectation's constant ``v``."""
-        return 2.0 * (probs @ self.pair_kernel)
+        """``psi_n = 2 (K p)_n`` -- ``x``-dependent, unlike an Expectation's constant ``v``.
+
+        ``pair_kernel`` is stored ``float32`` (see ``__init__``); cast to ``probs``'s own dtype
+        before the matmul rather than the other way around, since ``torch.matmul`` requires exact
+        dtype agreement (no auto-promotion the way elementwise ops get) and callers such as
+        :mod:`metrics.gradient`'s finite-difference path pass ``float64`` probs for precision --
+        forcing probs down to ``float32`` here would silently degrade that.
+        """
+        kernel = self.pair_kernel.to(probs.dtype)
+        return 2.0 * (probs @ kernel)
 
     def u_statistic_degeneracy(self, probs: torch.Tensor) -> torch.Tensor:
         """``zeta_1 / zeta_2`` per row -- a **flag**, not an exclusion.
@@ -300,10 +309,10 @@ class Quadratic(Observable):
         scale -- so ``eta`` is still well-defined but the shot-count reading is not.  Report it
         alongside; do not drop the cell.
         """
-        w = probs @ self.pair_kernel                                   # (N, n_out)
+        K = self.pair_kernel.to(probs.dtype)                            # see influence()'s docstring
+        w = probs @ K                                                   # (N, n_out)
         m1 = (probs * w).sum(dim=1, keepdim=True)
         zeta1 = (probs * (w - m1) ** 2).sum(dim=1)
-        K = self.pair_kernel
         # zeta_2 = Var of K[n1, n2] over independent draws n1, n2 ~ p.
         mean_k = (probs @ K * probs).sum(dim=1)
         second = (probs @ (K * K) * probs).sum(dim=1)

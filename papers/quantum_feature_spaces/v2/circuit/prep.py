@@ -513,9 +513,9 @@ def _apply_structure_gate(p, *, phi: float) -> None:
     """``Ry(pi/2) . Rz(phi) . Ry(pi/2)`` on the spin -- the branch gate that distinguishes a
     linear cluster (``phi=0``) from a GHZ/caterpillar branch (``phi=pi``); not a Hadamard, despite
     an earlier version of this code using ``H`` here."""
-    p.gate.ry(0, np.pi / 2)
+    p.gate.ry(0, np.pi / 4)
     p.gate.rz(0, float(phi))
-    p.gate.ry(0, np.pi / 2)
+    p.gate.ry(0, np.pi / 4)
 
 
 def _magic_row_worker(task):
