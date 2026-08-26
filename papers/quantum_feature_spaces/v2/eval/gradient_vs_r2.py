@@ -202,6 +202,54 @@ def _asymmetric_xerr(mean, lo, hi):
     return np.vstack([np.clip(mean - lo, 0, None), np.clip(hi - mean, 0, None)])
 
 
+#: MAD multiplier for outlier flagging in :func:`_log_outlier_mask` -- a point whose
+#: log10(x) is more than this many median-absolute-deviations from the median is flagged.
+#: 2 MAD is a standard robust-statistics threshold (Iglewicz & Hoya's rule of thumb uses a
+#: modified z-score of 3.5 with a 0.6745 MAD scaling, roughly 2.3 raw MAD -- 2 is close to
+#: that and simple to state on a slide).
+OUTLIER_MAD_THRESHOLD = 2.0
+
+
+def _log_outlier_mask(x, *, threshold: float = OUTLIER_MAD_THRESHOLD):
+    """Boolean array, ``True`` where ``log10(x)`` is more than ``threshold`` median-absolute-
+    deviations from the median of ``log10(x)`` -- flags points that dominate a fit/correlation on
+    a log-x-axis plot (e.g. one observable's gradient 40x every other's) so they can be shown
+    distinctly and excluded from a robustness-check fit line, rather than silently driving the
+    whole-dataset statistic. Works on log-x since these plots are always log-scaled on x (a
+    multiplicative outlier, not an additive one, is what matters here). Returns all-``False`` for
+    fewer than 4 points (MAD is not meaningful on tiny samples).
+    """
+    import numpy as np
+
+    x = np.asarray(x, dtype=float)
+    if len(x) < 4:
+        return np.zeros_like(x, dtype=bool)
+    logx = np.log10(x)
+    med = np.median(logx)
+    mad = np.median(np.abs(logx - med))
+    if mad == 0:
+        return np.zeros_like(x, dtype=bool)
+    return np.abs(logx - med) / mad > threshold
+
+
+def _fit_log_x_line(x, y, mask):
+    """Least-squares fit of ``y = a*log10(x) + b`` on the points where ``mask`` is True -- returns
+    ``(a, b, r)`` (slope, intercept, Pearson r on the fitted subset) or ``None`` if fewer than 3
+    points survive the mask (not enough to fit meaningfully). Used to draw a robustness-check fit
+    line that excludes flagged outliers, contrasted against the whole-dataset correlation already
+    printed in each panel's title.
+    """
+    import numpy as np
+
+    x, y, mask = np.asarray(x, dtype=float), np.asarray(y, dtype=float), np.asarray(mask, dtype=bool)
+    xf, yf = np.log10(x[~mask]), y[~mask]
+    if len(xf) < 3:
+        return None
+    a, b = np.polyfit(xf, yf, 1)
+    r = np.corrcoef(xf, yf)[0, 1] if len(xf) > 1 else float("nan")
+    return a, b, r
+
+
 def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, show: bool = False):
     """Three panels, side by side: mean||g|| vs. R^2 (unbounded, own scale), mean normalized ||g||
     vs. R^2 (scale-invariant, comparable across configs), and Var_circ vs. R^2 (the scale
@@ -212,7 +260,17 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     directly comparable scale, and plotting them together invites reading a scale difference as a
     hardness difference.  Comparing panel 1 against panel 3 is the actual test for whether raw
     ||g||'s correlation with R^2 is riding on Var_circ alone -- see the module docstring.
+
+    **Outlier-aware fit line, panels 1-2.** A point flagged by :func:`_log_outlier_mask` (>2 MAD
+    from the median on log10(x)) is drawn as a hollow red marker instead of the usual filled one,
+    and is excluded from a dashed least-squares fit line drawn on top of the scatter -- this makes
+    the "is the whole-dataset correlation actually riding on one extreme point" check visible
+    directly on the plot, rather than requiring a reader to recompute it separately. The panel
+    title's Pearson r is still the WHOLE-dataset value (unchanged); the fit line's own r (if it
+    could be computed) is annotated on the legend instead, so both numbers are visible at once and
+    a large gap between them is the signal that the headline r is fragile.
     """
+    import numpy as np
     import matplotlib
     if not show:
         matplotlib.use("Agg")
@@ -220,31 +278,48 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
 
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(17, 5.5))
 
+    def _scatter_with_outlier_fit(ax, x_vals, y_vals, labels, xerr, color, xlabel, title):
+        x_arr, y_arr = np.asarray(x_vals, dtype=float), np.asarray(y_vals, dtype=float)
+        outlier = _log_outlier_mask(x_arr)
+        inlier = ~outlier
+
+        ax.errorbar(x_arr[inlier], y_arr[inlier], xerr=xerr[:, inlier], fmt="o", markersize=6,
+                   alpha=0.7, color=color, ecolor=color, elinewidth=1, capsize=3,
+                   label="in-lier")
+        if outlier.any():
+            ax.errorbar(x_arr[outlier], y_arr[outlier], xerr=xerr[:, outlier], fmt="o",
+                       markersize=8, markerfacecolor="none", markeredgecolor="red",
+                       ecolor="red", elinewidth=1, capsize=3, label="outlier (>2 MAD)")
+        for x, y, label in zip(x_vals, y_vals, labels):
+            ax.annotate(label, (x, y), fontsize=7, alpha=0.7)
+
+        fit = _fit_log_x_line(x_arr, y_arr, outlier)
+        if fit is not None:
+            a, b, r_fit = fit
+            xs = np.geomspace(max(x_arr.min(), 1e-12), x_arr.max(), 50)
+            ax.plot(xs, a * np.log10(xs) + b, linestyle="--", color="black", linewidth=1.2,
+                   label=f"fit excl. outliers (r={r_fit:+.2f})")
+
+        ax.set_xscale("log")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("R^2 (max over learners)")
+        ax.set_title(title)
+        ax.set_ylim(-0.05, 1.02)
+        ax.grid(alpha=0.3, which="both")
+        ax.legend(fontsize=7, loc="best")
+
     xerr1 = _asymmetric_xerr(result["mean_g_norm"], result["min_g_norm"], result["max_g_norm"])
-    ax1.errorbar(result["mean_g_norm"], result["r2"], xerr=xerr1, fmt="o", markersize=6,
-                alpha=0.7, color="tab:blue", ecolor="tab:blue", elinewidth=1, capsize=3)
-    for x, y, label in zip(result["mean_g_norm"], result["r2"], result["configs"]):
-        ax1.annotate(label, (x, y), fontsize=7, alpha=0.7)
-    ax1.set_xscale("log")
-    ax1.set_xlabel("||dT/dx|| over pool (mean, error bar = min-max)")
-    ax1.set_ylabel("R^2 (max over learners)")
-    ax1.set_title(f"Raw gradient vs. R^2  (r={result.get('corr_g_mean_r2', float('nan')):+.2f})")
-    ax1.set_ylim(-0.05, 1.02)
-    ax1.grid(alpha=0.3, which="both")
+    _scatter_with_outlier_fit(
+        ax1, result["mean_g_norm"], result["r2"], result["configs"], xerr1, "tab:blue",
+        "||dT/dx|| over pool (mean, error bar = min-max)",
+        f"Raw gradient vs. R^2  (r={result.get('corr_g_mean_r2', float('nan')):+.2f})")
 
     xerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
                              result["max_g_norm_normalized"])
-    ax2.errorbar(result["mean_g_norm_normalized"], result["r2"], xerr=xerr2, fmt="o", markersize=6,
-                alpha=0.7, color="tab:orange", ecolor="tab:orange", elinewidth=1, capsize=3)
-    for x, y, label in zip(result["mean_g_norm_normalized"], result["r2"], result["configs"]):
-        ax2.annotate(label, (x, y), fontsize=7, alpha=0.7)
-    ax2.set_xscale("log")
-    ax2.set_xlabel("||dT/dx|| / sqrt(Var_circ) over pool (mean, error bar = min-max)")
-    ax2.set_ylabel("R^2 (max over learners)")
-    ax2.set_title(f"Normalized gradient vs. R^2  "
-                 f"(r={result.get('corr_g_norm_mean_r2', float('nan')):+.2f})")
-    ax2.set_ylim(-0.05, 1.02)
-    ax2.grid(alpha=0.3, which="both")
+    _scatter_with_outlier_fit(
+        ax2, result["mean_g_norm_normalized"], result["r2"], result["configs"], xerr2,
+        "tab:orange", "||dT/dx|| / sqrt(Var_circ) over pool (mean, error bar = min-max)",
+        f"Normalized gradient vs. R^2  (r={result.get('corr_g_norm_mean_r2', float('nan')):+.2f})")
 
     if "var_circ" in result:
         ax3.scatter(result["var_circ"], result["r2"], s=30, alpha=0.7, color="tab:green")

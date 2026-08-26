@@ -36,12 +36,10 @@ EVAL_DIR = Path(__file__).resolve().parents[1] / "configs" / "eval"
 #: deliberately rather than enumerating every registered observable.
 DEFAULT_FAMILIES: dict[str, list[str]] = {
     "Boson-phase (counting)": ["parity", "majority", "n_first", "bunching"],
-    "Polynomial": ["prod_parity__lo3", "prod_parity_consecutive",
-                  "prod_parity_diag_prime_const", "prod_parity_diag_prime_log",
-                  "prod_parity_diag_prime_sqrt"],
+    "Polynomial": ["prod_parity__lo3", "prod_parity_consecutive", "prod_parity_diag_prime_sqrt"],
     "Graph": ["connected_maxcc_pair", "connected_paritymaxcc_pair",
              "connected_numloops_pair", "connected_paritynumloops_pair"],
-    "Nonlinear": ["ent", "osc", "sq_parity", "pairprod"],
+    "Nonlinear": ["sq_parity", "pairprod", "ent", "osc"],
 }
 
 #: Display label for an observable key that isn't already readable title-cased -- mirrors
@@ -50,17 +48,17 @@ DEFAULT_FAMILIES: dict[str, list[str]] = {
 #: for what is otherwise a self-contained script).
 OBSERVABLE_LABELS: dict[str, str] = {
     "n_first": "Mode 1\nParity",
-    "prod_parity__lo3": "Prod Parity\n(deg <= 3)",
-    "prod_parity_consecutive": "Prod Parity\n(consecutive)",
-    "prod_parity_diag_prime_const": "Diag Prime\n(p = O(1))",
-    "prod_parity_diag_prime_log": "Diag Prime\n(p = O(log k))",
-    "prod_parity_diag_prime_sqrt": "Diag Prime\n(p = O(sqrt k))",
-    "connected_maxcc_pair": "MaxCC\n(pair graph)",
-    "connected_paritymaxcc_pair": "Parity x MaxCC\n(pair graph)",
-    "connected_numloops_pair": "NumLoops\n(pair graph)",
-    "connected_paritynumloops_pair": "Parity x (Loops+1)\n(pair graph)",
-    "sq_parity": "Squared\nParity",
-    "pairprod": "Pair\nProduct",
+    "prod_parity__lo3": "Degree 3\nProduct",
+    "prod_parity_consecutive": "Consecutive\nProduct",
+    "prod_parity_diag_prime_sqrt": "Quadratic\nMonbroussou et al.",
+    "connected_maxcc_pair": "Max Size\nConnected",
+    "connected_paritymaxcc_pair": "Parity x\nMax Size\nConnected",
+    "connected_numloops_pair": "Num Loops",
+    "connected_paritynumloops_pair": "Parity x\nNum Loops",
+    "sq_parity": "Quadratic\nParity",
+    "pairprod": "Quadratic\nProduct",
+    "ent": "Entropy-\nBased",
+    "osc": "Oscillatory",
 }
 
 
@@ -102,9 +100,14 @@ def sweep_eval_obs(cfg_path: str | Path, families: dict[str, list[str]] = DEFAUL
     r2 = [row[0] for row in grid["r2"]]
     r2_std = [row[0] for row in grid["r2_std"]]
     detail = [row[0] for row in grid["detail"]]
+    #: parity's own R^2, carried separately so every per-family chart (including one that doesn't
+    #: contain "parity" itself, e.g. the Graph family) can still draw it as a reference line --
+    #: None if "parity" wasn't in the swept observable list at all.
+    parity_r2 = r2[observables.index("parity")] if "parity" in observables else None
     return {"families": {label: list(obs_list) for label, obs_list in families.items()},
             "observables": observables, "r2": r2, "r2_std": r2_std, "detail": detail,
-            "n_seeds": n_seeds, "learners": grid["learners"], "config": str(cfg_path)}
+            "parity_r2": parity_r2, "n_seeds": n_seeds, "learners": grid["learners"],
+            "config": str(cfg_path)}
 
 
 def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bool = False):
@@ -151,6 +154,16 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
         else:
             ax.text(i, 0.03, f"{v:.2f}", ha="center", va="bottom")
 
+    #: parity's own R^2 as a reference line -- shown on every chart, including a per-family one
+    #: that doesn't contain "parity" itself (e.g. Graph), since parity_r2 is carried through
+    #: _result_for_family regardless of which family was sliced out. Labelled with a direct text
+    #: annotation rather than a legend box, matching the house no-legend style.
+    parity_r2 = result.get("parity_r2")
+    if parity_r2 is not None and np.isfinite(parity_r2):
+        ax.axhline(parity_r2, color="red", linestyle=":", linewidth=1.2, zorder=2)
+        ax.text(len(observables) - 0.5, parity_r2, f"Parity ({parity_r2:.2f})", color="red",
+               fontsize=8, ha="right", va="bottom")
+
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Coefficient of\nDetermination ($R^2$)")
@@ -180,7 +193,7 @@ def _result_for_family(result: dict, label: str) -> dict:
             "r2_std": [result["r2_std"][i] for i in keep],
             "detail": [result["detail"][i] for i in keep],
             "n_seeds": result["n_seeds"], "learners": result["learners"],
-            "config": result["config"]}
+            "config": result["config"], "parity_r2": result.get("parity_r2")}
 
 
 def run(*, cfg_path: Path, families: dict[str, list[str]] = DEFAULT_FAMILIES, n_seeds: int = 10,

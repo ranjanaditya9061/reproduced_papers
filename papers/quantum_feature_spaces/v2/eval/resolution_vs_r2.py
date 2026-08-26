@@ -37,13 +37,21 @@ def _r2_at_shots(cfg_path, observable: str, shots: int, *, n_seeds: int, out_roo
     reseeded splits, at the given shot budget -- same convention as
     :func:`eval.best_of_grid.sweep_best_of_grid`, evaluated on an in-memory
     ``generation.shots``-overridden config (:func:`eval.r2_vs_shots._shots_variant_config`, no
-    sibling YAML written to disk)."""
+    sibling YAML written to disk).
+
+    Skips :func:`~pipeline.generate.generate_shots` for models with ``supports_shots == False``
+    (``quadratic_fock``, ``mlp_fock``, ``mlp``, ``analytical``), same guard as
+    :mod:`eval.best_of_grid_shots` -- :func:`~pipeline.score.load_dataset` (called downstream by
+    ``run_config``) already routes those to :func:`~metrics.multinomial_shots.
+    cached_multinomial_shots` instead."""
     from eval.r2_vs_shots import _shots_variant_config
     from learner.auto import DEFAULT_SWEEP_LEARNERS, run_config
+    from model import build_model
     from pipeline.generate import generate_shots
 
     cfg_n = _shots_variant_config(cfg_path, shots)
-    generate_shots(cfg_n, root=out_root)
+    if build_model(cfg_n).supports_shots:
+        generate_shots(cfg_n, root=out_root)
 
     means = []
     for lname, kwargs in DEFAULT_SWEEP_LEARNERS:
