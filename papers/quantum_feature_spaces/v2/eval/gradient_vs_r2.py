@@ -286,6 +286,31 @@ def _fit_line_r2_x(r2_vals, y_vals, mask):
     return a, b, r2_fit
 
 
+def _fit_line_r2_x_linear(r2_vals, y_vals, mask):
+    """Least-squares fit of ``y = a*R^2 + b`` (linear space, no log) on the points where ``mask``
+    is False -- the linear-``y``-axis counterpart of :func:`_fit_line_r2_x`, used now that both
+    panels plot on a linear y-axis rather than log. Returns ``(a, b, r2_fit)`` or ``None`` if fewer
+    than 3 points survive the mask.
+    """
+    import numpy as np
+
+    r2_vals = np.asarray(r2_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    mask = np.asarray(mask, dtype=bool)
+    xf, yf = r2_vals[~mask], y_vals[~mask]
+    if len(xf) < 3:
+        return None
+    a, b = np.polyfit(xf, yf, 1)
+    if len(xf) > 1 and np.std(yf) > 0:
+        pred = a * xf + b
+        ss_res = np.sum((yf - pred) ** 2)
+        ss_tot = np.sum((yf - yf.mean()) ** 2)
+        r2_fit = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    else:
+        r2_fit = float("nan")
+    return a, b, r2_fit
+
+
 def _axis_title(result: dict) -> str:
     """``"Circuit: ..., Observable: ..."`` -- whichever axis was held fixed gets named, the swept
     axis reads "Variable". :func:`collect` (circuit axis) stores the fixed observable name in
@@ -313,8 +338,8 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     the payoff; putting it on x here matches that and lets both panels share one x-axis meaning
     across the whole figure.
 
-    **Fit line, no outlier exclusion.** A dashed least-squares fit (:func:`_fit_line_r2_x`,
-    ``log10(y) = a*R^2 + b``) is drawn on ALL points -- an earlier version of this function flagged
+    **Fit line, no outlier exclusion.** A dashed least-squares fit (:func:`_fit_line_r2_x_linear`,
+    ``y = a*R^2 + b``, linear y-axis) is drawn on ALL points -- an earlier version of this function flagged
     and excluded statistical outliers from the fit, but that machinery is removed; every point
     counts. The fit's own slope ``a`` and r-squared are shown in a small boxed annotation per
     series -- slope as the headline (how fast the quantity moves per unit R^2, directly
@@ -342,11 +367,11 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
                    alpha=0.7, color=color, ecolor=color, elinewidth=1, capsize=3,
                    label=series_label)
 
-        fit = _fit_line_r2_x(r2_arr, y_arr, no_outliers)
+        fit = _fit_line_r2_x_linear(r2_arr, y_arr, no_outliers)
         if fit is not None:
             a, b, r2_fit = fit
             xs = np.linspace(r2_arr.min(), r2_arr.max(), 50)
-            ax.plot(xs, 10 ** (a * xs + b), linestyle="--", color=color, linewidth=1.2)
+            ax.plot(xs, a * xs + b, linestyle="--", color=color, linewidth=1.2)
             return [f"{series_label} fit: slope = {a:+.2f}, fit quality (R^2) = {r2_fit:.2f}"]
         return [f"{series_label} fit: not enough points to fit"]
 
@@ -356,7 +381,6 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
 
     yerr1 = _asymmetric_xerr(result["mean_g_norm"], result["min_g_norm"], result["max_g_norm"])
     box1 = _series_with_fit(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue", "Gradient")
-    ax1.set_yscale("log")
     ax1.set_xlabel(R2_LABEL)
     ax1.set_ylabel("Gradient", color="tab:blue")
     ax1.tick_params(axis="y", labelcolor="tab:blue")
@@ -369,7 +393,6 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     box1_var = _series_with_fit(ax1_var, result["r2"], result["var_circ"],
                                 np.zeros((2, len(result["var_circ"]))), "tab:green",
                                 "Circuit Variance")
-    ax1_var.set_yscale("log")
     ax1_var.set_ylabel("Circuit Variance", color="tab:green")
     ax1_var.tick_params(axis="y", labelcolor="tab:green")
 
@@ -381,7 +404,6 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
                              result["max_g_norm_normalized"])
     box2 = _series_with_fit(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2,
                             "tab:orange", "Normalized Gradient")
-    ax2.set_yscale("log")
     ax2.set_xlabel(R2_LABEL)
     ax2.set_ylabel("Normalized Gradient")
     ax2.grid(alpha=0.3, which="both")
@@ -414,6 +436,11 @@ def main(argv=None) -> None:
     ap.add_argument("--observables", nargs="+", help="required with --config; defaults to "
                                                       "eval.eval_obs.DEFAULT_FAMILIES flattened "
                                                       "if omitted")
+    ap.add_argument("--exclude-observables", nargs="*", default=["osc"],
+                    help="drop these observables (exact match) from --observables before "
+                         "plotting -- default drops 'osc', whose Var_circ/gradient sit orders of "
+                         "magnitude above every other observable and dominate the panels; pass "
+                         "--exclude-observables with no values to keep everything")
     ap.add_argument("--n-x", type=int, default=100, help="subsample this many rows per config "
                                                          "(default 100; pass 0 for all rows)")
     ap.add_argument("--n-seeds", type=int, default=10)
@@ -436,6 +463,8 @@ def main(argv=None) -> None:
         if not observables:
             from eval.eval_obs import _flatten_families, DEFAULT_FAMILIES
             observables = _flatten_families(DEFAULT_FAMILIES)
+        excluded = set(args.exclude_observables or [])
+        observables = [obs for obs in observables if obs not in excluded]
         result = collect_observables(args.config, observables, n_x=n_x, n_seeds=args.n_seeds,
                                      out_root=args.out_root, scores_root=args.scores_root)
         tag = Path(args.config).stem
