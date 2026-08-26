@@ -309,7 +309,7 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     def _corr_text(corr_key, spearman_key):
         pearson_r = result.get(corr_key, float("nan"))
         spearman_r = result.get(spearman_key, float("nan"))
-        return f"Pearson r = {pearson_r:+.3f}\nSpearman rho = {spearman_r:+.3f}"
+        return f"Pearson = {pearson_r:+.3f}\nSpearman = {spearman_r:+.3f}"
 
     #: Coefficient-of-Determination axis label -- the house style already used by
     #: eval.best_of_grid/eval.eval_obs/eval.size_r2_multi, single line here (no "\n").
