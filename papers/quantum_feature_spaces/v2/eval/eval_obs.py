@@ -154,16 +154,6 @@ def plot_eval_obs(result: dict, *, save_path: str | Path | None = None, show: bo
         else:
             ax.text(i, 0.03, f"{v:.2f}", ha="center", va="bottom")
 
-    #: parity's own R^2 as a reference line -- shown on every chart, including a per-family one
-    #: that doesn't contain "parity" itself (e.g. Graph), since parity_r2 is carried through
-    #: _result_for_family regardless of which family was sliced out. Labelled with a direct text
-    #: annotation rather than a legend box, matching the house no-legend style.
-    parity_r2 = result.get("parity_r2")
-    if parity_r2 is not None and np.isfinite(parity_r2):
-        ax.axhline(parity_r2, color="red", linestyle=":", linewidth=1.2, zorder=2)
-        ax.text(len(observables) - 0.5, parity_r2, f"Parity ({parity_r2:.2f})", color="red",
-               fontsize=8, ha="right", va="bottom")
-
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Coefficient of\nDetermination ($R^2$)")
