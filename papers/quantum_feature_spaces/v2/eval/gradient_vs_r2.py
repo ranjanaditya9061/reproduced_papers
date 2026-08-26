@@ -311,16 +311,26 @@ def _fit_line_r2_x_linear(r2_vals, y_vals, mask):
     return a, b, r2_fit
 
 
+#: Display label for a circuit config stem that isn't already readable title-cased -- mirrors
+#: :mod:`eval.eval_obs`'s ``OBSERVABLE_LABELS`` convention, but for the config-stem side of the
+#: title instead of the observable side.
+CIRCUIT_LABELS: dict[str, str] = {
+    "phase": "Photonic Phase Encoding",
+}
+
+
 def _axis_title(result: dict) -> str:
     """``"Circuit: ..., Observable: ..."`` -- whichever axis was held fixed gets named, the swept
     axis reads "Variable". :func:`collect` (circuit axis) stores the fixed observable name in
     ``result["observable"]``; :func:`collect_observables` (observable axis) stores
     ``f"config={stem}"`` there instead -- that prefix is how the two cases are told apart, since
-    both funnel into the same ``"observable"`` dict key.
+    both funnel into the same ``"observable"`` dict key. The config stem is looked up in
+    :data:`CIRCUIT_LABELS` for a human-readable name, falling back to the raw stem if absent.
     """
     obs_field = result.get("observable", "")
     if isinstance(obs_field, str) and obs_field.startswith("config="):
         circuit = obs_field[len("config="):]
+        circuit = CIRCUIT_LABELS.get(circuit, circuit)
         return f"Circuit: {circuit}, Observable: Variable"
     return f"Circuit: Variable, Observable: {obs_field}"
 
@@ -348,6 +358,14 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     Title is normal (default) font size, not embedded with the r-value the way the original did --
     see :func:`_axis_title` for the "Circuit: ..., Observable: ..." template, which states which
     axis was held fixed and which one swept, replacing the old ``fig.suptitle`` entirely.
+
+    Each point in the Gradient panel (left) and Normalized Gradient panel (right) is labelled with
+    its ``result["configs"]`` entry (the observable name in :func:`collect_observables` mode, or
+    the config stem in :func:`collect` mode) -- lets a reader identify an outlier (e.g. one
+    observable whose raw scale dwarfs the rest) directly from the figure instead of needing the
+    console printout. The twin-axis Circuit Variance series is left unlabelled since it shares
+    x/y-position with the Gradient series' own points closely enough that a second label set would
+    just overlap.
     """
     import numpy as np
     import matplotlib
@@ -357,8 +375,9 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
     title = _axis_title(result)
+    point_labels = result.get("configs")
 
-    def _series_with_fit(ax, r2_vals, y_vals, yerr, color, series_label):
+    def _series_with_fit(ax, r2_vals, y_vals, yerr, color, series_label, *, annotate=False):
         r2_arr = np.asarray(r2_vals, dtype=float)
         y_arr = np.asarray(y_vals, dtype=float)
         no_outliers = np.zeros_like(y_arr, dtype=bool)   # every point counts, none excluded
@@ -366,6 +385,11 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
         ax.errorbar(r2_arr, y_arr, yerr=yerr, fmt="o", markersize=6,
                    alpha=0.7, color=color, ecolor=color, elinewidth=1, capsize=3,
                    label=series_label)
+
+        if annotate and point_labels:
+            for xi, yi, name in zip(r2_arr, y_arr, point_labels):
+                ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(4, 4),
+                           fontsize=6, color=color, alpha=0.85)
 
         fit = _fit_line_r2_x_linear(r2_arr, y_arr, no_outliers)
         if fit is not None:
@@ -380,7 +404,8 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     R2_LABEL = "Coefficient of Determination ($R^2$)"
 
     yerr1 = _asymmetric_xerr(result["mean_g_norm"], result["min_g_norm"], result["max_g_norm"])
-    box1 = _series_with_fit(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue", "Gradient")
+    box1 = _series_with_fit(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue", "Gradient",
+                            annotate=True)
     ax1.set_xlabel(R2_LABEL)
     ax1.set_ylabel("Gradient", color="tab:blue")
     ax1.tick_params(axis="y", labelcolor="tab:blue")
@@ -403,7 +428,7 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     yerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
                              result["max_g_norm_normalized"])
     box2 = _series_with_fit(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2,
-                            "tab:orange", "Normalized Gradient")
+                            "tab:orange", "Normalized Gradient", annotate=True)
     ax2.set_xlabel(R2_LABEL)
     ax2.set_ylabel("Normalized Gradient")
     ax2.grid(alpha=0.3, which="both")
