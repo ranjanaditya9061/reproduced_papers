@@ -265,19 +265,20 @@ def _axis_title(result: dict) -> str:
 
 
 def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, show: bool = False):
-    """Two panels, side by side, BOTH with R^2 on the x-axis: left panel overlays Gradient
-    (``tab:blue``, log-scaled y) and Circuit Variance (``tab:green``, log-scaled y) as two series
-    on the SAME x-axis (R^2) but each with its OWN y-axis (Gradient on the left, Circuit Variance
-    on a ``twinx()`` right axis) -- different units/scales, so a shared axis squashed one series
-    against the other; right panel is Normalized Gradient (``tab:orange``) alone, linear y.
+    """Two panels, side by side, BOTH with R^2 on the x-axis and log-scaled y: left panel overlays
+    Gradient (``tab:blue``) and Circuit Variance (``tab:green``) as two series on the SAME x-axis
+    (R^2) but each with its OWN y-axis (Gradient on the left, Circuit Variance on a ``twinx()``
+    right axis) -- different units/scales, so a shared axis squashed one series against the other;
+    right panel is Normalized Gradient (``tab:orange``) alone.
 
-    **Why the Gradient/Circuit-Variance panel is log-scaled and Normalized Gradient isn't.** Raw
-    ``||g||`` and ``Var_circ`` can span multiple orders of magnitude across observables purely from
-    each observable's own arbitrary output scale (e.g. ``connected_paritynumloops_pair``'s
-    ``Var_circ`` measured ~280x every other observable's in one run) -- log-y keeps that spread
-    readable instead of collapsing every other point to the axis floor. ``||g_norm||`` is exactly
-    the quantity constructed to remove that scale dependence (``||g|| = ||g_norm|| * sqrt(Var_circ)``,
-    see the module docstring), so its panel does not need a log axis to stay readable.
+    **Why every y-axis here is log-scaled.** Raw ``||g||`` and ``Var_circ`` can span multiple
+    orders of magnitude across observables purely from each observable's own arbitrary output scale
+    (e.g. ``connected_paritynumloops_pair``'s ``Var_circ`` measured ~280x every other observable's
+    in one run) -- log-y keeps that spread readable instead of collapsing every other point to the
+    axis floor. ``||g_norm||`` removes most of that scale dependence by construction
+    (``||g|| = ||g_norm|| * sqrt(Var_circ)``, see the module docstring) but can still range over an
+    order of magnitude or more across observables, so its panel is log-scaled too for the same
+    reason and for visual consistency with the left panel.
 
     **No fit line.** A least-squares fit line (linear or log-space) is a stronger claim than this
     data supports -- these are three-to-fourteen points per config/observable sweep, and a fit
@@ -354,6 +355,7 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     yerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
                              result["max_g_norm_normalized"])
     _scatter(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2, "tab:orange")
+    ax2.set_yscale("log")
     ax2.set_xlabel(R2_LABEL, fontsize=FONT_SIZE)
     ax2.set_ylabel("Normalized Gradient", fontsize=FONT_SIZE)
     ax2.tick_params(axis="both", labelsize=FONT_SIZE)
