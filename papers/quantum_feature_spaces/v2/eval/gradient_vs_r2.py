@@ -302,54 +302,67 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
     title = _axis_title(result)
 
-    def _scatter(ax, r2_vals, y_vals, yerr, color, series_label):
+    def _scatter(ax, r2_vals, y_vals, yerr, color):
         ax.errorbar(r2_vals, y_vals, yerr=yerr, fmt="o", markersize=6,
-                   alpha=0.7, color=color, ecolor=color, elinewidth=1, capsize=3,
-                   label=series_label)
+                   alpha=0.7, color=color, ecolor=color, elinewidth=1, capsize=3)
 
-    def _corr_text(series_label, corr_key, spearman_key):
+    def _corr_text(corr_key, spearman_key):
         pearson_r = result.get(corr_key, float("nan"))
         spearman_r = result.get(spearman_key, float("nan"))
-        return f"{series_label}: Pearson r = {pearson_r:+.3f}, Spearman r = {spearman_r:+.3f}"
+        return f"Pearson r = {pearson_r:+.3f}\nSpearman rho = {spearman_r:+.3f}"
 
     #: Coefficient-of-Determination axis label -- the house style already used by
     #: eval.best_of_grid/eval.eval_obs/eval.size_r2_multi, single line here (no "\n").
     R2_LABEL = "Coefficient of Determination ($R^2$)"
 
+    #: Single font size for EVERY piece of text in the figure -- title, axis labels, tick labels,
+    #: and the boxed correlation text -- so nothing reads as more or less important by size alone;
+    #: matplotlib's defaults would otherwise make the suptitle larger than the axis labels and the
+    #: boxed text smaller than both.
+    FONT_SIZE = 10
+
     yerr1 = _asymmetric_xerr(result["mean_g_norm"], result["min_g_norm"], result["max_g_norm"])
-    _scatter(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue", "Gradient")
+    _scatter(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue")
     ax1.set_yscale("log")
-    ax1.set_xlabel(R2_LABEL)
-    ax1.set_ylabel("Gradient", color="tab:blue")
-    ax1.tick_params(axis="y", labelcolor="tab:blue")
+    ax1.set_xlabel(R2_LABEL, fontsize=FONT_SIZE)
+    ax1.set_ylabel("Gradient", color="tab:blue", fontsize=FONT_SIZE)
+    ax1.tick_params(axis="y", labelcolor="tab:blue", labelsize=FONT_SIZE)
+    ax1.tick_params(axis="x", labelsize=FONT_SIZE)
     ax1.grid(alpha=0.3, which="both")
 
     #: Var_circ shares the x-axis (R^2) but gets its OWN y-axis on the right -- different units
     #: and a different natural scale from the gradient, so squashing them onto one shared axis
     #: (the original combined-panel attempt) made both series hard to read.
     ax1_var = ax1.twinx()
-    _scatter(ax1_var, result["r2"], result["var_circ"], None, "tab:green", "Circuit Variance")
+    _scatter(ax1_var, result["r2"], result["var_circ"], None, "tab:green")
     ax1_var.set_yscale("log")
-    ax1_var.set_ylabel("Circuit Variance", color="tab:green")
-    ax1_var.tick_params(axis="y", labelcolor="tab:green")
+    ax1_var.set_ylabel("Circuit Variance", color="tab:green", fontsize=FONT_SIZE)
+    ax1_var.tick_params(axis="y", labelcolor="tab:green", labelsize=FONT_SIZE)
 
-    box1_text = "\n".join([_corr_text("Gradient", "corr_g_mean_r2", "spearman_g_mean_r2"),
-                          _corr_text("Circuit Variance", "corr_var_circ_r2", "spearman_var_circ_r2")])
-    ax1.text(0.02, 0.02, box1_text, transform=ax1.transAxes, fontsize=7, va="bottom",
-            ha="left", bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85}, zorder=10)
+    #: Two black-bordered boxes, top-right, one per series -- the series is identified by its text
+    #: color matching its axis label/ticks (same convention as the twin y-axes), not by a
+    #: written-out name or a matplotlib legend.
+    ax1.text(0.98, 0.98, _corr_text("corr_g_mean_r2", "spearman_g_mean_r2"), transform=ax1.transAxes,
+            fontsize=FONT_SIZE, va="top", ha="right", color="tab:blue",
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "black"},
+            zorder=10)
+    ax1.text(0.98, 0.80, _corr_text("corr_var_circ_r2", "spearman_var_circ_r2"), transform=ax1.transAxes,
+            fontsize=FONT_SIZE, va="top", ha="right", color="tab:green",
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "black"},
+            zorder=10)
 
     yerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
                              result["max_g_norm_normalized"])
-    _scatter(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2, "tab:orange",
-            "Normalized Gradient")
-    ax2.set_xlabel(R2_LABEL)
-    ax2.set_ylabel("Normalized Gradient")
+    _scatter(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2, "tab:orange")
+    ax2.set_xlabel(R2_LABEL, fontsize=FONT_SIZE)
+    ax2.set_ylabel("Normalized Gradient", fontsize=FONT_SIZE)
+    ax2.tick_params(axis="both", labelsize=FONT_SIZE)
     ax2.grid(alpha=0.3, which="both")
-    box2_text = _corr_text("Normalized Gradient", "corr_g_norm_mean_r2", "spearman_g_norm_mean_r2")
-    ax2.text(0.02, 0.02, box2_text, transform=ax2.transAxes, fontsize=7, va="bottom",
-            ha="left", bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85})
+    ax2.text(0.98, 0.98, _corr_text("corr_g_norm_mean_r2", "spearman_g_norm_mean_r2"),
+            transform=ax2.transAxes, fontsize=FONT_SIZE, va="top", ha="right", color="tab:orange",
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "black"})
 
-    fig.suptitle(title)
+    fig.suptitle(title, fontsize=FONT_SIZE)
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150)
