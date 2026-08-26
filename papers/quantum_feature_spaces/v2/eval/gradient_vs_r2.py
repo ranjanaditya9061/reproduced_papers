@@ -250,25 +250,79 @@ def _fit_log_x_line(x, y, mask):
     return a, b, r
 
 
-def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, show: bool = False):
-    """Three panels, side by side: mean||g|| vs. R^2 (unbounded, own scale), mean normalized ||g||
-    vs. R^2 (scale-invariant, comparable across configs), and Var_circ vs. R^2 (the scale
-    ingredient alone, no gradient) -- each gradient point's horizontal error bar spans [min, max]
-    over the sampled pool points; ``Var_circ`` is a single pool-level scalar per config, so it has
-    none.  Kept as three separate axes rather than overlaid, same reasoning as
-    :func:`eval_legacy.gradient_vs_hardness.plot_gradient`'s own split: none of the three are on a
-    directly comparable scale, and plotting them together invites reading a scale difference as a
-    hardness difference.  Comparing panel 1 against panel 3 is the actual test for whether raw
-    ||g||'s correlation with R^2 is riding on Var_circ alone -- see the module docstring.
+def _outlier_mask_on_y(y, *, threshold: float = OUTLIER_MAD_THRESHOLD):
+    """Same rule as :func:`_log_outlier_mask` but flagging on ``log10(y)`` instead of ``log10(x)``
+    -- used once the axes are flipped (R^2 on x, gradient/Var_circ on y, log-scaled), so the
+    outlier check runs on whichever axis is actually log-scaled and multi-order-of-magnitude.
+    """
+    return _log_outlier_mask(y, threshold=threshold)
 
-    **Outlier-aware fit line, panels 1-2.** A point flagged by :func:`_log_outlier_mask` (>2 MAD
-    from the median on log10(x)) is drawn as a hollow red marker instead of the usual filled one,
-    and is excluded from a dashed least-squares fit line drawn on top of the scatter -- this makes
-    the "is the whole-dataset correlation actually riding on one extreme point" check visible
-    directly on the plot, rather than requiring a reader to recompute it separately. The panel
-    title's Pearson r is still the WHOLE-dataset value (unchanged); the fit line's own r (if it
-    could be computed) is annotated on the legend instead, so both numbers are visible at once and
-    a large gap between them is the signal that the headline r is fragile.
+
+def _fit_line_r2_x(r2_vals, y_vals, mask):
+    """Least-squares fit of ``log10(y) = a*R^2 + b`` on the points where ``mask`` is False (i.e.
+    NOT an outlier) -- the R^2-on-x, log-y counterpart of :func:`_fit_log_x_line`, needed once the
+    axes are flipped.  Returns ``(a, b, r2_fit)`` -- ``a`` is the fit's own slope (log10(y) per
+    unit R^2, the more directly interpretable number: "gradient roughly Nx per 0.1 drop in R^2" is
+    ``10**(-0.1*a)``), ``b`` the intercept, ``r2_fit`` the fit's own r-squared (fraction of
+    log10(y)'s variance explained by R^2 on the kept points) -- or ``None`` if fewer than 3 points
+    survive the mask.
+    """
+    import numpy as np
+
+    r2_vals = np.asarray(r2_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    mask = np.asarray(mask, dtype=bool)
+    xf, yf = r2_vals[~mask], np.log10(y_vals[~mask])
+    if len(xf) < 3:
+        return None
+    a, b = np.polyfit(xf, yf, 1)
+    if len(xf) > 1 and np.std(yf) > 0:
+        pred = a * xf + b
+        ss_res = np.sum((yf - pred) ** 2)
+        ss_tot = np.sum((yf - yf.mean()) ** 2)
+        r2_fit = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    else:
+        r2_fit = float("nan")
+    return a, b, r2_fit
+
+
+def _axis_title(result: dict) -> str:
+    """``"Circuit: ..., Observable: ..."`` -- whichever axis was held fixed gets named, the swept
+    axis reads "Variable". :func:`collect` (circuit axis) stores the fixed observable name in
+    ``result["observable"]``; :func:`collect_observables` (observable axis) stores
+    ``f"config={stem}"`` there instead -- that prefix is how the two cases are told apart, since
+    both funnel into the same ``"observable"`` dict key.
+    """
+    obs_field = result.get("observable", "")
+    if isinstance(obs_field, str) and obs_field.startswith("config="):
+        circuit = obs_field[len("config="):]
+        return f"Circuit: {circuit}, Observable: Variable"
+    return f"Circuit: Variable, Observable: {obs_field}"
+
+
+def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, show: bool = False):
+    """Two panels, side by side, BOTH with R^2 on the x-axis (flipped from the original R^2-on-y
+    layout): left panel overlays Gradient (``tab:blue``) and Circuit Variance (``tab:green``) as
+    two series on the SAME x-axis (R^2) but each with its OWN y-axis (Gradient on the left, Circuit
+    Variance on a ``twinx()`` right axis) -- different units/scales, so a shared axis squashed one
+    series against the other; right panel is Normalized Gradient (``tab:orange``) alone.
+
+    **Why R^2 on x now, not y.** The original layout put R^2 on y and the metric being tested on
+    x (log-scaled) -- reasonable for reading off "does R^2 climb as gradient shrinks," but the
+    house convention on every OTHER chart in this deck has R^2 on the axis a reader scans last, as
+    the payoff; putting it on x here matches that and lets both panels share one x-axis meaning
+    across the whole figure.
+
+    **Fit line, no outlier exclusion.** A dashed least-squares fit (:func:`_fit_line_r2_x`,
+    ``log10(y) = a*R^2 + b``) is drawn on ALL points -- an earlier version of this function flagged
+    and excluded statistical outliers from the fit, but that machinery is removed; every point
+    counts. The fit's own slope ``a`` and r-squared are shown in a small boxed annotation per
+    series -- slope as the headline (how fast the quantity moves per unit R^2, directly
+    interpretable), r-squared as the trustworthiness check on that slope.
+
+    Title is normal (default) font size, not embedded with the r-value the way the original did --
+    see :func:`_axis_title` for the "Circuit: ..., Observable: ..." template, which states which
+    axis was held fixed and which one swept, replacing the old ``fig.suptitle`` entirely.
     """
     import numpy as np
     import matplotlib
@@ -276,64 +330,65 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(17, 5.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
+    title = _axis_title(result)
 
-    def _scatter_with_outlier_fit(ax, x_vals, y_vals, labels, xerr, color, xlabel, title):
-        x_arr, y_arr = np.asarray(x_vals, dtype=float), np.asarray(y_vals, dtype=float)
-        outlier = _log_outlier_mask(x_arr)
-        inlier = ~outlier
+    def _series_with_fit(ax, r2_vals, y_vals, yerr, color, series_label):
+        r2_arr = np.asarray(r2_vals, dtype=float)
+        y_arr = np.asarray(y_vals, dtype=float)
+        no_outliers = np.zeros_like(y_arr, dtype=bool)   # every point counts, none excluded
 
-        ax.errorbar(x_arr[inlier], y_arr[inlier], xerr=xerr[:, inlier], fmt="o", markersize=6,
+        ax.errorbar(r2_arr, y_arr, yerr=yerr, fmt="o", markersize=6,
                    alpha=0.7, color=color, ecolor=color, elinewidth=1, capsize=3,
-                   label="in-lier")
-        if outlier.any():
-            ax.errorbar(x_arr[outlier], y_arr[outlier], xerr=xerr[:, outlier], fmt="o",
-                       markersize=8, markerfacecolor="none", markeredgecolor="red",
-                       ecolor="red", elinewidth=1, capsize=3, label="outlier (>2 MAD)")
-        for x, y, label in zip(x_vals, y_vals, labels):
-            ax.annotate(label, (x, y), fontsize=7, alpha=0.7)
+                   label=series_label)
 
-        fit = _fit_log_x_line(x_arr, y_arr, outlier)
+        fit = _fit_line_r2_x(r2_arr, y_arr, no_outliers)
         if fit is not None:
-            a, b, r_fit = fit
-            xs = np.geomspace(max(x_arr.min(), 1e-12), x_arr.max(), 50)
-            ax.plot(xs, a * np.log10(xs) + b, linestyle="--", color="black", linewidth=1.2,
-                   label=f"fit excl. outliers (r={r_fit:+.2f})")
+            a, b, r2_fit = fit
+            xs = np.linspace(r2_arr.min(), r2_arr.max(), 50)
+            ax.plot(xs, 10 ** (a * xs + b), linestyle="--", color=color, linewidth=1.2)
+            return [f"{series_label} fit: slope = {a:+.2f}, fit quality (R^2) = {r2_fit:.2f}"]
+        return [f"{series_label} fit: not enough points to fit"]
 
-        ax.set_xscale("log")
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("R^2 (max over learners)")
-        ax.set_title(title)
-        ax.set_ylim(-0.05, 1.02)
-        ax.grid(alpha=0.3, which="both")
-        ax.legend(fontsize=7, loc="best")
+    #: Coefficient-of-Determination axis label -- the house style already used by
+    #: eval.best_of_grid/eval.eval_obs/eval.size_r2_multi, single line here (no "\n").
+    R2_LABEL = "Coefficient of Determination ($R^2$)"
 
-    xerr1 = _asymmetric_xerr(result["mean_g_norm"], result["min_g_norm"], result["max_g_norm"])
-    _scatter_with_outlier_fit(
-        ax1, result["mean_g_norm"], result["r2"], result["configs"], xerr1, "tab:blue",
-        "||dT/dx|| over pool (mean, error bar = min-max)",
-        f"Raw gradient vs. R^2  (r={result.get('corr_g_mean_r2', float('nan')):+.2f})")
+    yerr1 = _asymmetric_xerr(result["mean_g_norm"], result["min_g_norm"], result["max_g_norm"])
+    box1 = _series_with_fit(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue", "Gradient")
+    ax1.set_yscale("log")
+    ax1.set_xlabel(R2_LABEL)
+    ax1.set_ylabel("Gradient", color="tab:blue")
+    ax1.tick_params(axis="y", labelcolor="tab:blue")
+    ax1.grid(alpha=0.3, which="both")
 
-    xerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
+    #: Var_circ shares the x-axis (R^2) but gets its OWN y-axis on the right -- different units
+    #: and a different natural scale from the gradient, so squashing them onto one shared log
+    #: axis (the original combined-panel attempt) made both series hard to read.
+    ax1_var = ax1.twinx()
+    box1_var = _series_with_fit(ax1_var, result["r2"], result["var_circ"],
+                                np.zeros((2, len(result["var_circ"]))), "tab:green",
+                                "Circuit Variance")
+    ax1_var.set_yscale("log")
+    ax1_var.set_ylabel("Circuit Variance", color="tab:green")
+    ax1_var.tick_params(axis="y", labelcolor="tab:green")
+
+    box1_text = "\n".join(box1 + box1_var)
+    ax1.text(0.02, 0.02, box1_text, transform=ax1.transAxes, fontsize=7, va="bottom",
+            ha="left", bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85}, zorder=10)
+
+    yerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
                              result["max_g_norm_normalized"])
-    _scatter_with_outlier_fit(
-        ax2, result["mean_g_norm_normalized"], result["r2"], result["configs"], xerr2,
-        "tab:orange", "||dT/dx|| / sqrt(Var_circ) over pool (mean, error bar = min-max)",
-        f"Normalized gradient vs. R^2  (r={result.get('corr_g_norm_mean_r2', float('nan')):+.2f})")
+    box2 = _series_with_fit(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2,
+                            "tab:orange", "Normalized Gradient")
+    ax2.set_yscale("log")
+    ax2.set_xlabel(R2_LABEL)
+    ax2.set_ylabel("Normalized Gradient")
+    ax2.grid(alpha=0.3, which="both")
+    ax2.text(0.02, 0.02, "\n".join(box2), transform=ax2.transAxes, fontsize=7, va="bottom",
+            ha="left", bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85})
 
-    if "var_circ" in result:
-        ax3.scatter(result["var_circ"], result["r2"], s=30, alpha=0.7, color="tab:green")
-        for x, y, label in zip(result["var_circ"], result["r2"], result["configs"]):
-            ax3.annotate(label, (x, y), fontsize=7, alpha=0.7)
-        ax3.set_xscale("log")
-        ax3.set_xlabel("Var_circ = Var_x[<O>_x]  (scale ingredient alone)")
-        ax3.set_ylabel("R^2 (max over learners)")
-        ax3.set_title(f"Var_circ vs. R^2  (r={result.get('corr_var_circ_r2', float('nan')):+.2f})")
-        ax3.set_ylim(-0.05, 1.02)
-        ax3.grid(alpha=0.3, which="both")
-
-    fig.suptitle(f"observable={result['observable']}  n_x={result['n_x'] or 'all'}  "
-                f"n_seeds={result['n_seeds']}")
+    fig.suptitle(title)
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150)
