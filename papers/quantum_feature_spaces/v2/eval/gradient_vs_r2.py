@@ -340,17 +340,20 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     ax1_var.set_ylabel("Circuit Variance", color="tab:green", fontsize=FONT_SIZE)
     ax1_var.tick_params(axis="y", labelcolor="tab:green", labelsize=FONT_SIZE)
 
-    #: Two black-bordered boxes, top-right, one per series -- the series is identified by its text
-    #: color matching its axis label/ticks (same convention as the twin y-axes), not by a
-    #: written-out name or a matplotlib legend.
-    ax1.text(0.98, 0.98, _corr_text("corr_g_mean_r2", "spearman_g_mean_r2"), transform=ax1.transAxes,
-            fontsize=FONT_SIZE, va="top", ha="right", color="tab:blue",
+    #: Two black-bordered boxes ABOVE the axes (y slightly > 1 in axes-fraction coords, so they sit
+    #: outside the plot area rather than over any data point) -- Gradient at top-left, Circuit
+    #: Variance at top-right, matching the left-Gradient/right-Var_circ axis convention already
+    #: used for the twin y-axes. Each box is identified by its text color, not a written-out name
+    #: or a matplotlib legend. A small y-offset above 1.0 gives breathing room between the boxes
+    #: and the plot border.
+    ax1.text(0.0, 1.04, _corr_text("corr_g_mean_r2", "spearman_g_mean_r2"), transform=ax1.transAxes,
+            fontsize=FONT_SIZE, va="bottom", ha="left", color="tab:blue",
             bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "black"},
-            zorder=10)
-    ax1.text(0.98, 0.80, _corr_text("corr_var_circ_r2", "spearman_var_circ_r2"), transform=ax1.transAxes,
-            fontsize=FONT_SIZE, va="top", ha="right", color="tab:green",
+            zorder=10, clip_on=False)
+    ax1.text(1.0, 1.04, _corr_text("corr_var_circ_r2", "spearman_var_circ_r2"), transform=ax1.transAxes,
+            fontsize=FONT_SIZE, va="bottom", ha="right", color="tab:green",
             bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "black"},
-            zorder=10)
+            zorder=10, clip_on=False)
 
     yerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
                              result["max_g_norm_normalized"])
@@ -360,9 +363,10 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
     ax2.set_ylabel("Normalized Gradient", fontsize=FONT_SIZE)
     ax2.tick_params(axis="both", labelsize=FONT_SIZE)
     ax2.grid(alpha=0.3, which="both")
-    ax2.text(0.98, 0.98, _corr_text("corr_g_norm_mean_r2", "spearman_g_norm_mean_r2"),
-            transform=ax2.transAxes, fontsize=FONT_SIZE, va="top", ha="right", color="tab:orange",
-            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "black"})
+    ax2.text(0.0, 1.04, _corr_text("corr_g_norm_mean_r2", "spearman_g_norm_mean_r2"),
+            transform=ax2.transAxes, fontsize=FONT_SIZE, va="bottom", ha="left", color="tab:orange",
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "black"},
+            clip_on=False)
 
     fig.suptitle(title, fontsize=FONT_SIZE)
     fig.tight_layout()
