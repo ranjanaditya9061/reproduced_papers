@@ -82,6 +82,36 @@ def _pearson(a: list[float], b: list[float]) -> float:
     return cov / (va ** 0.5 * vb ** 0.5)
 
 
+def _rank(a: list[float]) -> list[float]:
+    """Average (fractional) ranks, 1-indexed, ties broken by the mean rank of the tied block --
+    the standard convention :func:`_spearman` needs (matches ``scipy.stats.rankdata`` default)."""
+    n = len(a)
+    order = sorted(range(n), key=lambda i: a[i])
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and a[order[j + 1]] == a[order[i]]:
+            j += 1
+        avg_rank = (i + j) / 2.0 + 1.0
+        for idx in order[i:j + 1]:
+            ranks[idx] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def _spearman(a: list[float], b: list[float]) -> float:
+    """Spearman rank correlation -- Pearson correlation on ranks, no numpy/scipy dependency.
+    Unlike Pearson, this only assumes a monotonic (not linear) relationship and is insensitive to
+    one point's absolute scale, so it survives a multi-order-of-magnitude outlier (e.g.
+    ``connected_paritynumloops_pair``'s ``Var_circ`` sitting ~280x every other observable's) without
+    that point dominating the statistic the way it would a least-squares fit or even Pearson's own
+    second-moment sums."""
+    if len(a) < 2:
+        return float("nan")
+    return _pearson(_rank(a), _rank(b))
+
+
 def collect(cfg_paths: list[str | Path], observable: str, *, n_x=_USE_GRADIENT_DEFAULT,
            n_seeds: int = 10, out_root: str = "datasets", scores_root: str = "scores") -> dict:
     """One row per config: ``mean||g||`` (with its min/max range), the same for the normalized
@@ -122,12 +152,14 @@ def collect(cfg_paths: list[str | Path], observable: str, *, n_x=_USE_GRADIENT_D
              f"||g||_norm={gn_mean[-1]:.4g} [{gn_min[-1]:.4g}, {gn_max[-1]:.4g}]  "
              f"Var_circ={var_circ[-1]:.4g}  R^2={r2_val:.4g}")
 
-    corr_g = _pearson(g_mean, r2)
-    corr_gn = _pearson(gn_mean, r2)
-    corr_var = _pearson(var_circ, r2)
+    corr_g, scorr_g = _pearson(g_mean, r2), _spearman(g_mean, r2)
+    corr_gn, scorr_gn = _pearson(gn_mean, r2), _spearman(gn_mean, r2)
+    corr_var, scorr_var = _pearson(var_circ, r2), _spearman(var_circ, r2)
     print()
-    print(f"Pearson r vs R^2:  ||g|| (mean)={corr_g:+.3f}   ||g_norm|| (mean)={corr_gn:+.3f}   "
+    print(f"Pearson r vs R^2:   ||g|| (mean)={corr_g:+.3f}   ||g_norm|| (mean)={corr_gn:+.3f}   "
          f"Var_circ={corr_var:+.3f}")
+    print(f"Spearman r vs R^2:  ||g|| (mean)={scorr_g:+.3f}   ||g_norm|| (mean)={scorr_gn:+.3f}   "
+         f"Var_circ={scorr_var:+.3f}")
     print("(if Var_circ's |r| is close to ||g||'s, the raw ||g|| correlation may just be riding "
          "on Var_circ, i.e. an artifact of the observable's own scale -- see the module docstring)")
 
@@ -135,6 +167,8 @@ def collect(cfg_paths: list[str | Path], observable: str, *, n_x=_USE_GRADIENT_D
            "mean_g_norm_normalized": gn_mean, "min_g_norm_normalized": gn_min,
            "max_g_norm_normalized": gn_max, "var_circ": var_circ, "r2": r2,
            "corr_g_mean_r2": corr_g, "corr_g_norm_mean_r2": corr_gn, "corr_var_circ_r2": corr_var,
+           "spearman_g_mean_r2": scorr_g, "spearman_g_norm_mean_r2": scorr_gn,
+           "spearman_var_circ_r2": scorr_var,
            "observable": observable, "n_x": n_x, "n_seeds": n_seeds}
 
 
@@ -178,17 +212,21 @@ def collect_observables(cfg_path: str | Path, observables: list[str], *, n_x=_US
              f"||g||_norm={gn_mean[-1]:.4g} [{gn_min[-1]:.4g}, {gn_max[-1]:.4g}]  "
              f"Var_circ={var_circ[-1]:.4g}  R^2={r2_val:.4g}")
 
-    corr_g = _pearson(g_mean, r2)
-    corr_gn = _pearson(gn_mean, r2)
-    corr_var = _pearson(var_circ, r2)
+    corr_g, scorr_g = _pearson(g_mean, r2), _spearman(g_mean, r2)
+    corr_gn, scorr_gn = _pearson(gn_mean, r2), _spearman(gn_mean, r2)
+    corr_var, scorr_var = _pearson(var_circ, r2), _spearman(var_circ, r2)
     print()
-    print(f"Pearson r vs R^2:  ||g|| (mean)={corr_g:+.3f}   ||g_norm|| (mean)={corr_gn:+.3f}   "
+    print(f"Pearson r vs R^2:   ||g|| (mean)={corr_g:+.3f}   ||g_norm|| (mean)={corr_gn:+.3f}   "
          f"Var_circ={corr_var:+.3f}")
+    print(f"Spearman r vs R^2:  ||g|| (mean)={scorr_g:+.3f}   ||g_norm|| (mean)={scorr_gn:+.3f}   "
+         f"Var_circ={scorr_var:+.3f}")
 
     return {"configs": labels, "mean_g_norm": g_mean, "min_g_norm": g_min, "max_g_norm": g_max,
            "mean_g_norm_normalized": gn_mean, "min_g_norm_normalized": gn_min,
            "max_g_norm_normalized": gn_max, "var_circ": var_circ, "r2": r2,
            "corr_g_mean_r2": corr_g, "corr_g_norm_mean_r2": corr_gn, "corr_var_circ_r2": corr_var,
+           "spearman_g_mean_r2": scorr_g, "spearman_g_norm_mean_r2": scorr_gn,
+           "spearman_var_circ_r2": scorr_var,
            "observable": f"config={Path(cfg_path).stem}", "n_x": n_x, "n_seeds": n_seeds}
 
 
@@ -200,115 +238,6 @@ def _asymmetric_xerr(mean, lo, hi):
 
     mean, lo, hi = np.asarray(mean), np.asarray(lo), np.asarray(hi)
     return np.vstack([np.clip(mean - lo, 0, None), np.clip(hi - mean, 0, None)])
-
-
-#: MAD multiplier for outlier flagging in :func:`_log_outlier_mask` -- a point whose
-#: log10(x) is more than this many median-absolute-deviations from the median is flagged.
-#: 2 MAD is a standard robust-statistics threshold (Iglewicz & Hoya's rule of thumb uses a
-#: modified z-score of 3.5 with a 0.6745 MAD scaling, roughly 2.3 raw MAD -- 2 is close to
-#: that and simple to state on a slide).
-OUTLIER_MAD_THRESHOLD = 2.0
-
-
-def _log_outlier_mask(x, *, threshold: float = OUTLIER_MAD_THRESHOLD):
-    """Boolean array, ``True`` where ``log10(x)`` is more than ``threshold`` median-absolute-
-    deviations from the median of ``log10(x)`` -- flags points that dominate a fit/correlation on
-    a log-x-axis plot (e.g. one observable's gradient 40x every other's) so they can be shown
-    distinctly and excluded from a robustness-check fit line, rather than silently driving the
-    whole-dataset statistic. Works on log-x since these plots are always log-scaled on x (a
-    multiplicative outlier, not an additive one, is what matters here). Returns all-``False`` for
-    fewer than 4 points (MAD is not meaningful on tiny samples).
-    """
-    import numpy as np
-
-    x = np.asarray(x, dtype=float)
-    if len(x) < 4:
-        return np.zeros_like(x, dtype=bool)
-    logx = np.log10(x)
-    med = np.median(logx)
-    mad = np.median(np.abs(logx - med))
-    if mad == 0:
-        return np.zeros_like(x, dtype=bool)
-    return np.abs(logx - med) / mad > threshold
-
-
-def _fit_log_x_line(x, y, mask):
-    """Least-squares fit of ``y = a*log10(x) + b`` on the points where ``mask`` is True -- returns
-    ``(a, b, r)`` (slope, intercept, Pearson r on the fitted subset) or ``None`` if fewer than 3
-    points survive the mask (not enough to fit meaningfully). Used to draw a robustness-check fit
-    line that excludes flagged outliers, contrasted against the whole-dataset correlation already
-    printed in each panel's title.
-    """
-    import numpy as np
-
-    x, y, mask = np.asarray(x, dtype=float), np.asarray(y, dtype=float), np.asarray(mask, dtype=bool)
-    xf, yf = np.log10(x[~mask]), y[~mask]
-    if len(xf) < 3:
-        return None
-    a, b = np.polyfit(xf, yf, 1)
-    r = np.corrcoef(xf, yf)[0, 1] if len(xf) > 1 else float("nan")
-    return a, b, r
-
-
-def _outlier_mask_on_y(y, *, threshold: float = OUTLIER_MAD_THRESHOLD):
-    """Same rule as :func:`_log_outlier_mask` but flagging on ``log10(y)`` instead of ``log10(x)``
-    -- used once the axes are flipped (R^2 on x, gradient/Var_circ on y, log-scaled), so the
-    outlier check runs on whichever axis is actually log-scaled and multi-order-of-magnitude.
-    """
-    return _log_outlier_mask(y, threshold=threshold)
-
-
-def _fit_line_r2_x(r2_vals, y_vals, mask):
-    """Least-squares fit of ``log10(y) = a*R^2 + b`` on the points where ``mask`` is False (i.e.
-    NOT an outlier) -- the R^2-on-x, log-y counterpart of :func:`_fit_log_x_line`, needed once the
-    axes are flipped.  Returns ``(a, b, r2_fit)`` -- ``a`` is the fit's own slope (log10(y) per
-    unit R^2, the more directly interpretable number: "gradient roughly Nx per 0.1 drop in R^2" is
-    ``10**(-0.1*a)``), ``b`` the intercept, ``r2_fit`` the fit's own r-squared (fraction of
-    log10(y)'s variance explained by R^2 on the kept points) -- or ``None`` if fewer than 3 points
-    survive the mask.
-    """
-    import numpy as np
-
-    r2_vals = np.asarray(r2_vals, dtype=float)
-    y_vals = np.asarray(y_vals, dtype=float)
-    mask = np.asarray(mask, dtype=bool)
-    xf, yf = r2_vals[~mask], np.log10(y_vals[~mask])
-    if len(xf) < 3:
-        return None
-    a, b = np.polyfit(xf, yf, 1)
-    if len(xf) > 1 and np.std(yf) > 0:
-        pred = a * xf + b
-        ss_res = np.sum((yf - pred) ** 2)
-        ss_tot = np.sum((yf - yf.mean()) ** 2)
-        r2_fit = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
-    else:
-        r2_fit = float("nan")
-    return a, b, r2_fit
-
-
-def _fit_line_r2_x_linear(r2_vals, y_vals, mask):
-    """Least-squares fit of ``y = a*R^2 + b`` (linear space, no log) on the points where ``mask``
-    is False -- the linear-``y``-axis counterpart of :func:`_fit_line_r2_x`, used now that both
-    panels plot on a linear y-axis rather than log. Returns ``(a, b, r2_fit)`` or ``None`` if fewer
-    than 3 points survive the mask.
-    """
-    import numpy as np
-
-    r2_vals = np.asarray(r2_vals, dtype=float)
-    y_vals = np.asarray(y_vals, dtype=float)
-    mask = np.asarray(mask, dtype=bool)
-    xf, yf = r2_vals[~mask], y_vals[~mask]
-    if len(xf) < 3:
-        return None
-    a, b = np.polyfit(xf, yf, 1)
-    if len(xf) > 1 and np.std(yf) > 0:
-        pred = a * xf + b
-        ss_res = np.sum((yf - pred) ** 2)
-        ss_tot = np.sum((yf - yf.mean()) ** 2)
-        r2_fit = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
-    else:
-        r2_fit = float("nan")
-    return a, b, r2_fit
 
 
 #: Display label for a circuit config stem that isn't already readable title-cased -- mirrors
@@ -336,38 +265,35 @@ def _axis_title(result: dict) -> str:
 
 
 def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, show: bool = False):
-    """Two panels, side by side, BOTH with R^2 on the x-axis (flipped from the original R^2-on-y
-    layout): left panel overlays Gradient (``tab:blue``) and Circuit Variance (``tab:green``) as
-    two series on the SAME x-axis (R^2) but each with its OWN y-axis (Gradient on the left, Circuit
-    Variance on a ``twinx()`` right axis) -- different units/scales, so a shared axis squashed one
-    series against the other; right panel is Normalized Gradient (``tab:orange``) alone.
+    """Two panels, side by side, BOTH with R^2 on the x-axis: left panel overlays Gradient
+    (``tab:blue``, log-scaled y) and Circuit Variance (``tab:green``, log-scaled y) as two series
+    on the SAME x-axis (R^2) but each with its OWN y-axis (Gradient on the left, Circuit Variance
+    on a ``twinx()`` right axis) -- different units/scales, so a shared axis squashed one series
+    against the other; right panel is Normalized Gradient (``tab:orange``) alone, linear y.
 
-    **Why R^2 on x now, not y.** The original layout put R^2 on y and the metric being tested on
-    x (log-scaled) -- reasonable for reading off "does R^2 climb as gradient shrinks," but the
-    house convention on every OTHER chart in this deck has R^2 on the axis a reader scans last, as
-    the payoff; putting it on x here matches that and lets both panels share one x-axis meaning
-    across the whole figure.
+    **Why the Gradient/Circuit-Variance panel is log-scaled and Normalized Gradient isn't.** Raw
+    ``||g||`` and ``Var_circ`` can span multiple orders of magnitude across observables purely from
+    each observable's own arbitrary output scale (e.g. ``connected_paritynumloops_pair``'s
+    ``Var_circ`` measured ~280x every other observable's in one run) -- log-y keeps that spread
+    readable instead of collapsing every other point to the axis floor. ``||g_norm||`` is exactly
+    the quantity constructed to remove that scale dependence (``||g|| = ||g_norm|| * sqrt(Var_circ)``,
+    see the module docstring), so its panel does not need a log axis to stay readable.
 
-    **Fit line, no outlier exclusion.** A dashed least-squares fit (:func:`_fit_line_r2_x_linear`,
-    ``y = a*R^2 + b``, linear y-axis) is drawn on ALL points -- an earlier version of this function flagged
-    and excluded statistical outliers from the fit, but that machinery is removed; every point
-    counts. The fit's own slope ``a`` and r-squared are shown in a small boxed annotation per
-    series -- slope as the headline (how fast the quantity moves per unit R^2, directly
-    interpretable), r-squared as the trustworthiness check on that slope.
+    **No fit line.** A least-squares fit line (linear or log-space) is a stronger claim than this
+    data supports -- these are three-to-fourteen points per config/observable sweep, and a fit
+    invites reading a slope as if it were a physical rate. Only the scatter and the correlation
+    coefficients are shown.
 
-    Title is normal (default) font size, not embedded with the r-value the way the original did --
-    see :func:`_axis_title` for the "Circuit: ..., Observable: ..." template, which states which
-    axis was held fixed and which one swept, replacing the old ``fig.suptitle`` entirely.
+    **Pearson AND Spearman, not just Pearson.** Pearson only detects a *linear* relationship and is
+    sensitive to any single point's absolute scale; Spearman (rank correlation) only assumes a
+    monotonic relationship and is insensitive to how far out an outlier sits, only its rank --
+    exactly the property that matters here given the Circuit-Variance outlier described above.
+    Both are computed once in :func:`collect`/:func:`collect_observables` (``corr_*_r2``/
+    ``spearman_*_r2`` keys) and simply displayed here, not recomputed.
 
-    Each point in the Gradient panel (left) and Normalized Gradient panel (right) is labelled with
-    its ``result["configs"]`` entry (the observable name in :func:`collect_observables` mode, or
-    the config stem in :func:`collect` mode) -- lets a reader identify an outlier (e.g. one
-    observable whose raw scale dwarfs the rest) directly from the figure instead of needing the
-    console printout. The twin-axis Circuit Variance series is left unlabelled since it shares
-    x/y-position with the Gradient series' own points closely enough that a second label set would
-    just overlap.
+    Title is normal (default) font size -- see :func:`_axis_title` for the "Circuit: ...,
+    Observable: ..." template, which states which axis was held fixed and which one swept.
     """
-    import numpy as np
     import matplotlib
     if not show:
         matplotlib.use("Agg")
@@ -375,64 +301,52 @@ def plot_gradient_vs_r2(result: dict, *, save_path: str | Path | None = None, sh
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
     title = _axis_title(result)
-    point_labels = result.get("configs")
 
-    def _series_with_fit(ax, r2_vals, y_vals, yerr, color, series_label, *, annotate=False):
-        r2_arr = np.asarray(r2_vals, dtype=float)
-        y_arr = np.asarray(y_vals, dtype=float)
-        no_outliers = np.zeros_like(y_arr, dtype=bool)   # every point counts, none excluded
-
-        ax.errorbar(r2_arr, y_arr, yerr=yerr, fmt="o", markersize=6,
+    def _scatter(ax, r2_vals, y_vals, yerr, color, series_label):
+        ax.errorbar(r2_vals, y_vals, yerr=yerr, fmt="o", markersize=6,
                    alpha=0.7, color=color, ecolor=color, elinewidth=1, capsize=3,
                    label=series_label)
 
-        if annotate and point_labels:
-            for xi, yi, name in zip(r2_arr, y_arr, point_labels):
-                ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(4, 4),
-                           fontsize=6, color=color, alpha=0.85)
-
-        fit = _fit_line_r2_x_linear(r2_arr, y_arr, no_outliers)
-        if fit is not None:
-            a, b, r2_fit = fit
-            xs = np.linspace(r2_arr.min(), r2_arr.max(), 50)
-            ax.plot(xs, a * xs + b, linestyle="--", color=color, linewidth=1.2)
-            return [f"{series_label} fit: slope = {a:+.2f}, fit quality (R^2) = {r2_fit:.2f}"]
-        return [f"{series_label} fit: not enough points to fit"]
+    def _corr_text(series_label, corr_key, spearman_key):
+        pearson_r = result.get(corr_key, float("nan"))
+        spearman_r = result.get(spearman_key, float("nan"))
+        return f"{series_label}: Pearson r = {pearson_r:+.3f}, Spearman r = {spearman_r:+.3f}"
 
     #: Coefficient-of-Determination axis label -- the house style already used by
     #: eval.best_of_grid/eval.eval_obs/eval.size_r2_multi, single line here (no "\n").
     R2_LABEL = "Coefficient of Determination ($R^2$)"
 
     yerr1 = _asymmetric_xerr(result["mean_g_norm"], result["min_g_norm"], result["max_g_norm"])
-    box1 = _series_with_fit(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue", "Gradient",
-                            annotate=True)
+    _scatter(ax1, result["r2"], result["mean_g_norm"], yerr1, "tab:blue", "Gradient")
+    ax1.set_yscale("log")
     ax1.set_xlabel(R2_LABEL)
     ax1.set_ylabel("Gradient", color="tab:blue")
     ax1.tick_params(axis="y", labelcolor="tab:blue")
     ax1.grid(alpha=0.3, which="both")
 
     #: Var_circ shares the x-axis (R^2) but gets its OWN y-axis on the right -- different units
-    #: and a different natural scale from the gradient, so squashing them onto one shared log
-    #: axis (the original combined-panel attempt) made both series hard to read.
+    #: and a different natural scale from the gradient, so squashing them onto one shared axis
+    #: (the original combined-panel attempt) made both series hard to read.
     ax1_var = ax1.twinx()
-    box1_var = _series_with_fit(ax1_var, result["r2"], result["var_circ"],
-                                np.zeros((2, len(result["var_circ"]))), "tab:green",
-                                "Circuit Variance")
+    _scatter(ax1_var, result["r2"], result["var_circ"], None, "tab:green", "Circuit Variance")
+    ax1_var.set_yscale("log")
     ax1_var.set_ylabel("Circuit Variance", color="tab:green")
     ax1_var.tick_params(axis="y", labelcolor="tab:green")
 
-    box1_text = "\n".join(box1 + box1_var)
+    box1_text = "\n".join([_corr_text("Gradient", "corr_g_mean_r2", "spearman_g_mean_r2"),
+                          _corr_text("Circuit Variance", "corr_var_circ_r2", "spearman_var_circ_r2")])
     ax1.text(0.02, 0.02, box1_text, transform=ax1.transAxes, fontsize=7, va="bottom",
             ha="left", bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85}, zorder=10)
 
     yerr2 = _asymmetric_xerr(result["mean_g_norm_normalized"], result["min_g_norm_normalized"],
                              result["max_g_norm_normalized"])
-    box2 = _series_with_fit(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2,
-                            "tab:orange", "Normalized Gradient", annotate=True)
+    _scatter(ax2, result["r2"], result["mean_g_norm_normalized"], yerr2, "tab:orange",
+            "Normalized Gradient")
     ax2.set_xlabel(R2_LABEL)
     ax2.set_ylabel("Normalized Gradient")
     ax2.grid(alpha=0.3, which="both")
-    ax2.text(0.02, 0.02, "\n".join(box2), transform=ax2.transAxes, fontsize=7, va="bottom",
+    box2_text = _corr_text("Normalized Gradient", "corr_g_norm_mean_r2", "spearman_g_norm_mean_r2")
+    ax2.text(0.02, 0.02, box2_text, transform=ax2.transAxes, fontsize=7, va="bottom",
             ha="left", bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85})
 
     fig.suptitle(title)
